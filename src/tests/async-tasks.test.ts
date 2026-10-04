@@ -395,6 +395,41 @@ describe("AsyncTaskRuntime", () => {
     expect(clientSupportsAsyncTasks({})).toBe(false);
   });
 
+  it.each([true, false, null, {}, [], "true"])(
+    "requires literal true for provider-neutral async task opt-in (%j)",
+    (asyncTasks) => {
+      expect(clientSupportsAsyncTasks({ _meta: { "async-tasks": asyncTasks } })).toBe(
+        asyncTasks === true,
+      );
+    },
+  );
+
+  it("publishes tasks for a provider-neutral opt-in", async () => {
+    const published: AcpSessionNotification[] = [];
+    const runtime = new AsyncTaskRuntime(
+      clientSupportsAsyncTasks({ _meta: { "async-tasks": true } }),
+      "session",
+      async (notification) => {
+        published.push(notification);
+      },
+    );
+
+    await runtime.taskStarted({
+      taskId: "task-1",
+      taskType: "local_workflow",
+      description: "Build generated assets",
+      isBackgrounded: true,
+    });
+    await runtime.taskNotification("task-1", "completed", "Done");
+
+    expect(published.map(({ update }) => update.sessionUpdate)).toEqual([
+      "async_task_spawned",
+      "async_task_state_update",
+    ]);
+    expect(published[1].update).toMatchObject({ state: "completed" });
+    expect(JSON.stringify(published)).not.toContain("jetbrains");
+  });
+
   it("publishes one durable lifecycle with progress and a terminal state", async () => {
     const published: AcpSessionNotification[] = [];
     const runtime = new AsyncTaskRuntime(true, "session", async (notification) => {

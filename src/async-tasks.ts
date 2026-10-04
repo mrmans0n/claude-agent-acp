@@ -1,6 +1,10 @@
 import type { ClientCapabilities } from "@agentclientprotocol/sdk";
 import type { AcpSessionNotification, AsyncTaskState } from "./acp-subagents.js";
-import { AIR_ASYNC_TASKS_CAPABILITY, clientSupportsAirCapability } from "./air-extension.js";
+import {
+  AIR_ASYNC_TASKS_CAPABILITY,
+  clientSupportsAirCapability,
+  isAirClient,
+} from "./air-extension.js";
 import { noticeOrTranscriptUpdate } from "./session-notices.js";
 
 type Publish = (notification: AcpSessionNotification) => Promise<void>;
@@ -100,11 +104,39 @@ type BackgroundTaskLevel = TaskIdentity & {
   description?: unknown;
 };
 
+export const ASYNC_TASK_EXTENSION_VERSION = 1 as const;
+export const ASYNC_TASK_CONTROL_METHOD = "_session/async_task/stop";
+export const ASYNC_TASK_ACTIONS = ["stop"] as const;
+
 export function clientSupportsAsyncTasks(capabilities?: ClientCapabilities | null): boolean {
-  return clientSupportsAirCapability(capabilities, AIR_ASYNC_TASKS_CAPABILITY);
+  const meta = capabilities?._meta as Record<string, unknown> | undefined;
+  return (
+    clientSupportsAirCapability(capabilities, AIR_ASYNC_TASKS_CAPABILITY) ||
+    meta?.["async-tasks"] === true
+  );
 }
 
-/** Publishes Claude's non-agent background work as a separate AIR task lifecycle. */
+export function asyncTaskCapabilityMeta(
+  capabilities: unknown,
+  meta?: Record<string, unknown> | null,
+): Record<string, unknown> | undefined {
+  if (isAirClient(capabilities)) return meta ?? undefined;
+  const clientMeta =
+    capabilities && typeof capabilities === "object" && !Array.isArray(capabilities)
+      ? (capabilities as { _meta?: Record<string, unknown> })._meta
+      : undefined;
+  if (clientMeta?.["async-tasks"] !== true) return meta ?? undefined;
+  return {
+    ...meta,
+    "async-tasks": {
+      version: ASYNC_TASK_EXTENSION_VERSION,
+      controlMethod: ASYNC_TASK_CONTROL_METHOD,
+      actions: [...ASYNC_TASK_ACTIONS],
+    },
+  };
+}
+
+/** Publishes Claude's non-agent background work as a separate async task lifecycle. */
 export class AsyncTaskRuntime {
   /**
    * One registry owns both active tasks and terminal tombstones. Keeping an
