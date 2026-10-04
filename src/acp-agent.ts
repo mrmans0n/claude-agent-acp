@@ -129,7 +129,9 @@ import {
   withAirMeta,
 } from "./air-extension.js";
 import {
+  ASYNC_TASK_CONTROL_METHOD,
   AsyncTaskRuntime,
+  asyncTaskCapabilityMeta,
   backgroundBashTaskFromToolResult,
   clientSupportsAsyncTasks,
 } from "./async-tasks.js";
@@ -509,8 +511,6 @@ const TURN_NO_RESULT_MESSAGE =
 const STEER_METHOD = "_session/steering";
 
 /** Stops one Claude background task without cancelling the parent prompt turn. */
-const ASYNC_TASK_STOP_METHOD = "_session/async_task/stop";
-
 type AsyncTaskStopRequest = {
   sessionId: string;
   asyncTaskId: string;
@@ -2700,7 +2700,7 @@ export class ClaudeAcpAgent {
       // Top-level `_meta` (sibling of `agentCapabilities`), per the existing ACP
       // steering extension contract: advertises the `_session/steering` request
       // so clients know they may inject a follow-up into a running turn.
-      _meta: {
+      _meta: asyncTaskCapabilityMeta(this.clientCapabilities, {
         ...goalMeta(
           this.clientCapabilities,
           {
@@ -2719,10 +2719,8 @@ export class ClaudeAcpAgent {
               )
             : undefined,
         ),
-        steering: {
-          supported: true,
-        },
-      },
+        steering: { supported: true },
+      }),
     };
   }
 
@@ -6893,7 +6891,7 @@ export class ClaudeAcpAgent {
                 backgroundedBashToolCall(
                   acceptedPlanToolResult(notification, acceptedPlanToolUseId),
                   backgroundBashTask,
-                  asyncTasks.enabled,
+                  asyncTasks.enabled && this.toolCallCapabilities.air.client,
                 ),
               );
             }
@@ -11373,7 +11371,7 @@ export function v1AgentApp(
       agent.steer(ctx.params),
     )
     .onRequest<AsyncTaskStopRequest, AsyncTaskStopResponse>(
-      ASYNC_TASK_STOP_METHOD,
+      ASYNC_TASK_CONTROL_METHOD,
       { parse: parseAsyncTaskStopRequest },
       (ctx) => agent.stopAsyncTask(ctx.params),
     )
