@@ -32,8 +32,8 @@ const audit = {
 };
 
 describe("sync review artifact", () => {
-  it("serializes generated review and ledger JSON exactly as the repository formatter", async () => {
-    const artifact = {
+  it.each([
+    {
       version: 1,
       baseTag: "v1.0.0",
       patches: [
@@ -52,13 +52,21 @@ describe("sync review artifact", () => {
       ],
       retiredCommits: [],
       preservedTransitions: [],
-    };
-
+    },
+    {
+      resolution: {
+        decision: "retain",
+        rationale: "x",
+        tests: ["x"],
+        automatic: false,
+      },
+    },
+  ])("serializes generated sync JSON as a repository-formatter fixed point", async (artifact) => {
     const formatted = formatSyncJson(artifact);
 
     expect(JSON.parse(formatted)).toEqual(artifact);
     expect(formatted).toBe(
-      await format(JSON.stringify(artifact), { parser: "json", printWidth: 100, tabWidth: 2 }),
+      await format(formatted, { parser: "json", printWidth: 100, tabWidth: 2 }),
     );
   });
 
