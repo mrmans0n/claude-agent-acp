@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "fromTag": "v0.85.1",
+  "toTag": "v0.85.1",
+  "toCommit": "686c0c99b3b89217b74d1f5de8272e7c9ef1aab4",
+  "patches": [
+    {
+      "name": "goal-capability-opt-in",
+      "commit": "60749d07ff50308ef96c5251152a8d4986fe680f",
+      "upstreamPr": 1245,
+      "files": ["docs/air-extensions.md", "src/acp-agent.ts", "src/goal-extension.ts"],
+      "tests": ["src/tests/acp-agent.test.ts"],
+      "classification": "unaffected",
+      "equivalent": false,
+      "overlappingFiles": [],
+      "resolution": {
+        "decision": "retain",
+        "rationale": "No equivalent upstream patch or overlapping path was detected.",
+        "tests": ["src/tests/acp-agent.test.ts"],
+        "automatic": true
+      }
+    },
+    {
+      "name": "async-tasks-opt-in",
+      "commit": "3e098c71628cc7d5927ee8a3d794faa433dce12d",
+      "upstreamPr": null,
+      "files": ["src/acp-agent.ts", "src/async-tasks.ts"],
+      "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
+      "classification": "unaffected",
+      "equivalent": false,
+      "overlappingFiles": [],
+      "resolution": {
+        "decision": "retain",
+        "rationale": "No equivalent upstream patch or overlapping path was detected.",
+        "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
+        "automatic": true
+      }
+    }
+  ],
+  "preservedCommits": [],
+  "resolved": true
+}
