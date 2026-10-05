@@ -3,11 +3,32 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { auditDownstreamPatches } from "./audit-downstream-patches.mjs";
+import {
+  auditDownstreamPatches,
+  validateClaudePatchIdentities,
+} from "./audit-downstream-patches.mjs";
 import { buildProtectedIntegration, buildSyncCandidate } from "./build-sync-candidate.mjs";
 import { verifyAlasSource } from "./verify-alas-source.mjs";
 
 const roots = [];
+const CLAUDE_PATCHES = [
+  {
+    name: "goal-capability-opt-in",
+    identityCommit: "60749d07ff50308ef96c5251152a8d4986fe680f",
+    commit: "60749d07ff50308ef96c5251152a8d4986fe680f",
+    upstreamPr: 1245,
+    files: ["docs/air-extensions.md", "src/acp-agent.ts", "src/goal-extension.ts"],
+    tests: ["src/tests/acp-agent.test.ts"],
+  },
+  {
+    name: "async-tasks-opt-in",
+    identityCommit: "3e098c71628cc7d5927ee8a3d794faa433dce12d",
+    commit: "3e098c71628cc7d5927ee8a3d794faa433dce12d",
+    upstreamPr: null,
+    files: ["src/acp-agent.ts", "src/async-tasks.ts"],
+    tests: ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
+  },
+];
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -66,6 +87,7 @@ describe("auditDownstreamPatches", () => {
       cwd,
       targetRef: "refs/test-target",
       targetTag: "v1.1.0",
+      enforceKnownIdentities: false,
       ledger: {
         version: 1,
         baseTag: "v1.0.0",
@@ -94,6 +116,65 @@ describe("auditDownstreamPatches", () => {
     expect(result.manualReview).toBe(manualReview);
   });
 
+  it.each([
+    ["missing", (patches) => patches.slice(0, 1)],
+    ["duplicate", (patches) => [patches[0], patches[0]]],
+    ["renamed", (patches) => [{ ...patches[0], name: "renamed-opt-in" }, patches[1]]],
+    [
+      "substituted",
+      (patches) => [
+        { ...patches[0], identityCommit: "f".repeat(40), commit: "f".repeat(40) },
+        patches[1],
+      ],
+    ],
+    [
+      "unexpected",
+      (patches) => [
+        ...patches,
+        {
+          name: "unexpected-functional-patch",
+          identityCommit: "e".repeat(40),
+          commit: "e".repeat(40),
+          upstreamPr: null,
+          files: ["src/unexpected.ts"],
+          tests: ["src/tests/unexpected.test.ts"],
+        },
+      ],
+    ],
+  ])("rejects a %s functional patch identity", (_label, mutate) => {
+    const { cwd } = fixture();
+    const ledger = {
+      version: 1,
+      baseTag: "v1.0.0",
+      patches: mutate(structuredClone(CLAUDE_PATCHES)),
+    };
+    expect(() => auditDownstreamPatches({ cwd, ledger, targetRef: "v1.1.0" })).toThrow(
+      /exact.*patch identities|patch identities.*exact/i,
+    );
+  });
+
+  it("keeps the original identity anchored across an authenticated second adaptation", () => {
+    const ledger = {
+      version: 1,
+      baseTag: "v1.2.0",
+      patches: structuredClone(CLAUDE_PATCHES),
+    };
+    ledger.patches[0] = {
+      ...ledger.patches[0],
+      commit: "d".repeat(40),
+      disposition: "active",
+      retiredCommits: [ledger.patches[0].identityCommit, "c".repeat(40)],
+      lastResolution: {
+        fromTag: "v1.1.0",
+        toTag: "v1.2.0",
+        originalCommit: "c".repeat(40),
+        replacementCommit: "d".repeat(40),
+        decision: "adapt",
+      },
+    };
+    expect(() => validateClaudePatchIdentities(ledger)).not.toThrow();
+  });
+
   it("ignores retired patches and audits an adapted replacement on the next sync", () => {
     const { cwd, git, commit } = fixture();
     commit("base", { "src/base.ts": "base\n" });
@@ -110,6 +191,7 @@ describe("auditDownstreamPatches", () => {
     const result = auditDownstreamPatches({
       cwd,
       targetRef: "v1.2.0",
+      enforceKnownIdentities: false,
       ledger: {
         version: 1,
         baseTag: "v1.1.0",
@@ -586,7 +668,7 @@ describe("buildProtectedIntegration", () => {
     ).toThrow(/not contained by target/i);
   });
 
-  it("reuses an unchanged canonical integration head and keeps reviewed edits in ancestry", () => {
+  it("always emits a deterministic integration instead of reusing a same-tree canonical head", () => {
     const { cwd, git, commit } = fixture();
     commit("base", { base: "base\n" });
     git("tag", "v1.0.0");
@@ -606,7 +688,7 @@ describe("buildProtectedIntegration", () => {
       branch: "candidate",
     });
     const candidate = initialCandidate.candidateCommit;
-    const initial = buildProtectedIntegration({
+    buildProtectedIntegration({
       cwd,
       targetRef: "v1.1.0",
       candidateRef: candidate,
@@ -636,11 +718,11 @@ describe("buildProtectedIntegration", () => {
       expectedCanonicalCommit: reviewedEdit,
     });
 
-    expect(rerun.integrationCommit).toBe(reviewedEdit);
-    expect(rerun.reused).toBe(true);
+    expect(rerun.integrationCommit).not.toBe(reviewedEdit);
+    expect(rerun.reused).toBe(false);
     expect(
-      git("merge-base", "--is-ancestor", initial.integrationCommit, rerun.integrationCommit),
-    ).toBe("");
+      git("rev-list", "--parents", "-n", "1", rerun.integrationCommit).split(" ").slice(1),
+    ).toEqual([git("rev-parse", "alas"), rebuiltCandidate.candidateCommit, reviewedEdit]);
   });
 
   it("reuses reviewed edits reachable through a prior integration third parent", () => {
