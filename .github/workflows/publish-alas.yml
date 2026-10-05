@@ -11,6 +11,11 @@ on:
         description: Exact stable upstream tag (vX.Y.Z)
         required: true
         type: string
+      hotfix:
+        description: Republish the prior publication's upstream version with reviewed fork commits, without a new sync
+        required: false
+        default: false
+        type: boolean
 
 permissions: {}
 
@@ -55,6 +60,7 @@ jobs:
         env:
           SOURCE_COMMIT: ${{ inputs.source_commit }}
           UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+          HOTFIX: ${{ inputs.hotfix }}
         run: |
           set -Eeuo pipefail
           [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
@@ -76,13 +82,15 @@ jobs:
           if (!response.ok) throw new Error(`upstream npm registry returned ${response.status}`);
           writeFileSync(`${process.env.REPORT_DIR}/npm-metadata.json`, JSON.stringify(await response.json()));
           NODE
-          node scripts/verify-upstream-release.mjs \
-            --tag "$UPSTREAM_TAG" \
-            --commit "$upstream_commit" \
-            --github-release "$REPORT_DIR/github-release.json" \
-            --npm-metadata "$REPORT_DIR/npm-metadata.json" \
-            --allow-current true \
-            --output "$REPORT_DIR/upstream-release.json"
+          if [ "$HOTFIX" != true ]; then
+            node scripts/verify-upstream-release.mjs \
+              --tag "$UPSTREAM_TAG" \
+              --commit "$upstream_commit" \
+              --github-release "$REPORT_DIR/github-release.json" \
+              --npm-metadata "$REPORT_DIR/npm-metadata.json" \
+              --allow-current true \
+              --output "$REPORT_DIR/upstream-release.json"
+          fi
           node --input-type=module <<'NODE'
           import { writeFileSync } from 'node:fs';
           const response = await fetch('https://registry.npmjs.org/@alas-ide%2Fclaude-agent-acp');
@@ -139,24 +147,38 @@ jobs:
             --upstream-commit "$prior_upstream_commit" \
             --source-commit "$prior_source" \
             > "$REPORT_DIR/prior-github-verification.json"
-          node scripts/verify-alas-source.mjs \
-            --source-commit "$SOURCE_COMMIT" \
-            --upstream-main-ref refs/remotes/alas-upstream/main \
-            --stable-tag-ref refs/alas-upstream-tag \
-            --declared-tag "$UPSTREAM_TAG" \
-            --output "$REPORT_DIR/source-verification.json"
-          node scripts/verify-sync-source-review.mjs \
-            --source-commit "$SOURCE_COMMIT" \
-            --prior-protected-commit "$prior_source" \
-            --upstream-main-ref refs/remotes/alas-upstream/main \
-            --target-ref refs/alas-upstream-tag \
-            --target-tag "$UPSTREAM_TAG" \
-            --review docs/ALAS_SYNC_REVIEW.json \
-            --ledger docs/ALAS_DOWNSTREAM_PATCHES.json \
-            > "$REPORT_DIR/source-review-verification.json"
-          previous_alas="$(node -p "require('$REPORT_DIR/source-review-verification.json').previousAlas")"
-          git show "$previous_alas:docs/ALAS_DOWNSTREAM_PATCHES.json" \
-            > "$REPORT_DIR/review-ledger.json"
+          if [ "$HOTFIX" = true ]; then
+            # The prior publication was verified above against npm, its attestation, tag, and release.
+            # A hotfix only adds fork commits on top of it, so it skips the upstream release and sync
+            # review checks and instead proves it adds no upstream history.
+            node scripts/verify-alas-hotfix.mjs \
+              --source-commit "$SOURCE_COMMIT" \
+              --prior-source-commit "$prior_source" \
+              --prior-upstream-version "$prior_upstream_version" \
+              --prior-upstream-commit "$prior_upstream_commit" \
+              --upstream-main-ref refs/remotes/alas-upstream/main \
+              --stable-tag-ref refs/alas-upstream-tag \
+              --declared-tag "$UPSTREAM_TAG" \
+              --output "$REPORT_DIR/hotfix-verification.json"
+          else
+            node scripts/verify-alas-source.mjs \
+              --source-commit "$SOURCE_COMMIT" \
+              --upstream-main-ref refs/remotes/alas-upstream/main \
+              --stable-tag-ref refs/alas-upstream-tag \
+              --declared-tag "$UPSTREAM_TAG" \
+              --output "$REPORT_DIR/source-verification.json"
+            node scripts/verify-sync-source-review.mjs \
+              --source-commit "$SOURCE_COMMIT" \
+              --prior-protected-commit "$prior_source" \
+              --upstream-main-ref refs/remotes/alas-upstream/main \
+              --target-ref refs/alas-upstream-tag \
+              --target-tag "$UPSTREAM_TAG" \
+              --review docs/ALAS_SYNC_REVIEW.json \
+              --ledger docs/ALAS_DOWNSTREAM_PATCHES.json \
+              > "$REPORT_DIR/source-review-verification.json"
+            previous_alas="$(node -p "require('$REPORT_DIR/source-review-verification.json').previousAlas")"
+            git show "$previous_alas:docs/ALAS_DOWNSTREAM_PATCHES.json" \
+              > "$REPORT_DIR/review-ledger.json"
           node --input-type=module <<'NODE'
           import { readFileSync, writeFileSync } from 'node:fs';
           const review = JSON.parse(readFileSync('docs/ALAS_SYNC_REVIEW.json', 'utf8'));
@@ -165,25 +187,30 @@ jobs:
             `${JSON.stringify(review.preservedCommits.map(({ commit, subject, constituentCommits }) => ({ commit, subject, constituentCommits })), null, 2)}\n`,
           );
           NODE
-          node scripts/audit-downstream-patches.mjs \
-            --target-ref refs/alas-upstream-tag \
-            --target-tag "$UPSTREAM_TAG" \
-            --ledger "$REPORT_DIR/review-ledger.json" \
-            --json "$REPORT_DIR/audit.json" \
-            --markdown "$REPORT_DIR/audit.md" || test "$?" -eq 2
-          node scripts/sync-review.mjs \
-            --mode verify \
-            --audit "$REPORT_DIR/audit.json" \
-            --review docs/ALAS_SYNC_REVIEW.json \
-            --preserved "$REPORT_DIR/preserved.json" \
-            --advanced-ledger docs/ALAS_DOWNSTREAM_PATCHES.json \
-            --previous-ledger "$REPORT_DIR/review-ledger.json" \
-            > "$REPORT_DIR/review-verification.json"
+            node scripts/audit-downstream-patches.mjs \
+              --target-ref refs/alas-upstream-tag \
+              --target-tag "$UPSTREAM_TAG" \
+              --ledger "$REPORT_DIR/review-ledger.json" \
+              --json "$REPORT_DIR/audit.json" \
+              --markdown "$REPORT_DIR/audit.md" || test "$?" -eq 2
+            node scripts/sync-review.mjs \
+              --mode verify \
+              --audit "$REPORT_DIR/audit.json" \
+              --review docs/ALAS_SYNC_REVIEW.json \
+              --preserved "$REPORT_DIR/preserved.json" \
+              --advanced-ledger docs/ALAS_DOWNSTREAM_PATCHES.json \
+              --previous-ledger "$REPORT_DIR/review-ledger.json" \
+              > "$REPORT_DIR/review-verification.json"
+          fi
           test "$(node -p "require('./docs/ALAS_DOWNSTREAM_PATCHES.json').baseTag")" = "$UPSTREAM_TAG"
           {
             echo "## Publication preflight passed"
             echo
-            echo "Source \`$SOURCE_COMMIT\`, upstream release \`$UPSTREAM_TAG\`, npm metadata, exact merge-base, and \`docs/ALAS_SYNC_REVIEW.json\` agree."
+            if [ "$HOTFIX" = true ]; then
+              echo "Hotfix source \`$SOURCE_COMMIT\` descends from verified \`$prior_version\` on \`$UPSTREAM_TAG\` and adds no upstream history."
+            else
+              echo "Source \`$SOURCE_COMMIT\`, upstream release \`$UPSTREAM_TAG\`, npm metadata, exact merge-base, and \`docs/ALAS_SYNC_REVIEW.json\` agree."
+            fi
           } >> "$REPORT_DIR/summary.md"
           echo "ALAS_UPSTREAM_VERSION=$upstream_version" >> "$GITHUB_ENV"
           echo "ALAS_UPSTREAM_COMMIT=$upstream_commit" >> "$GITHUB_ENV"
