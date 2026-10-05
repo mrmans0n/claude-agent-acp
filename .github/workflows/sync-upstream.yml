@@ -101,10 +101,12 @@ jobs:
         env:
           TAG: ${{ steps.select.outputs.tag }}
         run: |
+          base_tag="$(node -p "require('./docs/ALAS_DOWNSTREAM_PATCHES.json').baseTag")"
           set +e
           node scripts/audit-downstream-patches.mjs \
             --target-ref "refs/alas-upstream-tags/$TAG" \
             --target-tag "$TAG" \
+            --base-ref "refs/alas-upstream-tags/$base_tag" \
             --ledger docs/ALAS_DOWNSTREAM_PATCHES.json \
             --json "$REPORT_DIR/audit.json" \
             --markdown "$REPORT_DIR/audit.md"
@@ -163,7 +165,7 @@ jobs:
             import { readFileSync, writeFileSync } from 'node:fs';
             const result = JSON.parse(readFileSync(`${process.env.REPORT_DIR}/candidate.json`, 'utf8'));
             writeFileSync(`${process.env.REPORT_DIR}/preserved.json`, JSON.stringify(result.preservedCommits, null, 2));
-            NODE
+          NODE
             node scripts/sync-review.mjs \
               --mode generate \
               --audit "$REPORT_DIR/audit.json" \
