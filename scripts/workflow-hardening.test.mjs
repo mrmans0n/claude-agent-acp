@@ -113,6 +113,10 @@ describe("publish workflow hardening", () => {
     expect(publish).toContain("--mode npm");
     expect(publish).toContain("--mode github");
     expect(publish).toContain("dist.attestations");
+    expect(publish).toContain("npm audit signatures");
+    expect(publish).toContain("--include-attestations");
+    expect(publish).toContain("attestation-readback.json");
+    expect(publish).toContain("expected-workflow-ref");
     expect(publish).toContain("npm pack --json");
     expect(publish).toContain("git/ref/tags/$tag");
     expect(publish).toContain("releases/tags/$tag");

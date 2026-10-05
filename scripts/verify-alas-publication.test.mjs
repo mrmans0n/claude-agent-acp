@@ -1,10 +1,63 @@
 import { describe, expect, it } from "vitest";
-import { verifyGithubPublication, verifyNpmPublication } from "./verify-alas-publication.mjs";
+import {
+  verifyGithubPublication,
+  verifyInstalledPublication,
+  verifyNpmPublication,
+} from "./verify-alas-publication.mjs";
 
 const sourceCommit = "a".repeat(40);
 const upstreamCommit = "b".repeat(40);
 const version = "1.2.3-alas.4";
-const integrity = "sha512-exact-integrity";
+const integrityBytes = Buffer.from("exact-package-integrity");
+const integrity = `sha512-${integrityBytes.toString("base64")}`;
+const expectedRepository = "https://github.com/mrmans0n/claude-agent-acp";
+const expectedWorkflowPath = ".github/workflows/publish-alas.yml";
+const expectedWorkflowRef = "refs/heads/alas";
+
+function attestation(source = sourceCommit) {
+  const statement = {
+    _type: "https://in-toto.io/Statement/v1",
+    subject: [
+      {
+        name: `pkg:npm/%40alas-ide/claude-agent-acp@${version}`,
+        digest: { sha512: integrityBytes.toString("hex") },
+      },
+    ],
+    predicateType: "https://slsa.dev/provenance/v1",
+    predicate: {
+      buildDefinition: {
+        buildType: "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1",
+        externalParameters: {
+          workflow: {
+            repository: expectedRepository,
+            path: expectedWorkflowPath,
+            ref: expectedWorkflowRef,
+          },
+        },
+        resolvedDependencies: [
+          {
+            uri: `git+${expectedRepository}@${expectedWorkflowRef}`,
+            digest: { gitCommit: source },
+          },
+        ],
+      },
+    },
+  };
+  return {
+    attestations: [
+      {
+        predicateType: "https://slsa.dev/provenance/v1",
+        bundle: {
+          mediaType: "application/vnd.dev.sigstore.bundle.v0.3+json",
+          dsseEnvelope: {
+            payloadType: "application/vnd.in-toto+json",
+            payload: Buffer.from(JSON.stringify(statement)).toString("base64"),
+          },
+        },
+      },
+    ],
+  };
+}
 
 function npmMetadata() {
   return {
@@ -21,7 +74,7 @@ function npmMetadata() {
         dist: {
           integrity,
           attestations: {
-            url: "https://registry.npmjs.org/-/npm/v1/attestations/example",
+            url: `https://registry.npmjs.org/-/npm/v1/attestations/@alas-ide%2fclaude-agent-acp@${version}`,
             provenance: { predicateType: "https://slsa.dev/provenance/v1" },
           },
         },
@@ -41,8 +94,30 @@ describe("verifyNpmPublication", () => {
         upstreamVersion: "1.2.3",
         upstreamCommit,
         sourceCommit,
+        attestation: attestation(),
+        expectedRepository,
+        expectedWorkflowPath,
+        expectedWorkflowRef,
       }),
     ).toEqual(expect.objectContaining({ version, integrity, sourceCommit }));
+  });
+
+  it("rejects provenance whose signed source commit does not match the protected source", () => {
+    expect(() =>
+      verifyNpmPublication({
+        npmMetadata: npmMetadata(),
+        packageName: "@alas-ide/claude-agent-acp",
+        version,
+        integrity,
+        upstreamVersion: "1.2.3",
+        upstreamCommit,
+        sourceCommit,
+        attestation: attestation("c".repeat(40)),
+        expectedRepository,
+        expectedWorkflowPath,
+        expectedWorkflowRef,
+      }),
+    ).toThrow(/provenance.*source|source.*provenance/i);
   });
 
   it.each([
@@ -69,6 +144,51 @@ describe("verifyNpmPublication", () => {
         sourceCommit,
       }),
     ).toThrow();
+  });
+});
+
+describe("verifyInstalledPublication", () => {
+  it("requires npm audit to verify the exact installed attestation bundle", () => {
+    const packageName = "@alas-ide/claude-agent-acp";
+    const attestationUrl = npmMetadata().versions[version].dist.attestations.url;
+    const bundle = attestation();
+    const lock = {
+      packages: {
+        "": { dependencies: { [packageName]: version } },
+        [`node_modules/${packageName}`]: { version, integrity },
+      },
+    };
+    const verified = {
+      name: packageName,
+      version,
+      attestations: {
+        url: attestationUrl,
+        provenance: { predicateType: "https://slsa.dev/provenance/v1" },
+      },
+      attestationBundles: bundle.attestations,
+    };
+    expect(
+      verifyInstalledPublication({
+        packageName,
+        version,
+        integrity,
+        attestationUrl,
+        attestation: bundle,
+        lock,
+        audit: { invalid: [], missing: [], verified: [verified] },
+      }),
+    ).toEqual({ version, integrity });
+    expect(() =>
+      verifyInstalledPublication({
+        packageName,
+        version,
+        integrity,
+        attestationUrl,
+        attestation: bundle,
+        lock,
+        audit: { invalid: [], missing: [], verified: [] },
+      }),
+    ).toThrow(/verified.*attestation|attestation.*verified/i);
   });
 });
 
