@@ -22,7 +22,10 @@ function validateLedger(ledger) {
       !Array.isArray(patch.files) ||
       patch.files.length === 0 ||
       !Array.isArray(patch.tests) ||
-      patch.tests.length === 0
+      patch.tests.length === 0 ||
+      ![undefined, "active", "dropped"].includes(patch.disposition) ||
+      !Array.isArray(patch.retiredCommits ?? []) ||
+      !(patch.retiredCommits ?? []).every((commit) => /^[0-9a-f]{40}$/.test(commit))
     ) {
       throw new Error(`Invalid downstream patch ledger entry: ${patch?.name ?? "unnamed"}`);
     }
@@ -36,22 +39,29 @@ function isEquivalent(cwd, targetRef, commit) {
   return line.startsWith("-");
 }
 
-export function auditDownstreamPatches({ cwd, ledger, targetRef }) {
+export function auditDownstreamPatches({ cwd, ledger, targetRef, targetTag = targetRef }) {
   validateLedger(ledger);
-  git(cwd, "rev-parse", "--verify", `${targetRef}^{commit}`);
+  const targetCommit = git(cwd, "rev-parse", "--verify", `${targetRef}^{commit}`);
   git(cwd, "rev-parse", "--verify", `${ledger.baseTag}^{commit}`);
   const changedFiles = new Set(
     git(cwd, "diff", "--name-only", `${ledger.baseTag}..${targetRef}`).split("\n").filter(Boolean),
   );
-  const patches = ledger.patches.map((patch) => {
-    const equivalent = isEquivalent(cwd, targetRef, patch.commit);
-    const overlappingFiles = patch.files.filter((path) => changedFiles.has(path));
-    const status = equivalent ? "absorbed" : overlappingFiles.length > 0 ? "overlap" : "unaffected";
-    return { ...patch, status, equivalent, overlappingFiles };
-  });
+  const patches = ledger.patches
+    .filter((patch) => patch.disposition !== "dropped")
+    .map((patch) => {
+      const equivalent = isEquivalent(cwd, targetRef, patch.commit);
+      const overlappingFiles = patch.files.filter((path) => changedFiles.has(path));
+      const status = equivalent
+        ? "absorbed"
+        : overlappingFiles.length > 0
+          ? "overlap"
+          : "unaffected";
+      return { ...patch, status, equivalent, overlappingFiles };
+    });
   return {
     baseTag: ledger.baseTag,
-    targetRef,
+    targetRef: targetTag,
+    targetCommit,
     manualReview: patches.some((patch) => patch.status !== "unaffected"),
     changedFiles: [...changedFiles].sort(),
     patches,
@@ -95,7 +105,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const cwd = resolve(args.cwd ?? ".");
   const ledgerPath = resolve(cwd, args.ledger ?? "docs/ALAS_DOWNSTREAM_PATCHES.json");
   const ledger = JSON.parse(readFileSync(ledgerPath, "utf8"));
-  const result = auditDownstreamPatches({ cwd, ledger, targetRef: args["target-ref"] });
+  const result = auditDownstreamPatches({
+    cwd,
+    ledger,
+    targetRef: args["target-ref"],
+    targetTag: args["target-tag"] ?? args["target-ref"],
+  });
   const json = `${JSON.stringify(result, null, 2)}\n`;
   const markdown = renderPatchAuditMarkdown(result);
   if (args.json) writeFileSync(resolve(args.json), json);
