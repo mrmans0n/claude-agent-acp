@@ -229,7 +229,7 @@ describe("sync review artifact", () => {
         review: coordinatedOmissionReview,
         previousLedger: ledger,
       }),
-    ).toThrow(/previous ledger|active patch/i);
+    ).toThrow(/exactly match|active patch/i);
     const missingRetirement = structuredClone(result.ledger);
     missingRetirement.patches.find((patch) => patch.name === "overlap").retiredCommits = [];
     expect(() => verifyLedgerReviewTransition({ ledger: missingRetirement, review })).toThrow(

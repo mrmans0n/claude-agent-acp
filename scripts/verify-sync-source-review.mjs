@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSyncCandidate, discoverCanonicalPreservedCommits } from "./build-sync-candidate.mjs";
+import { verifyLedgerReviewTransition } from "./sync-review.mjs";
+
+const LEDGER_PATH = "docs/ALAS_DOWNSTREAM_PATCHES.json";
 
 function git(cwd, ...args) {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
@@ -11,7 +14,7 @@ function git(cwd, ...args) {
 
 function findIntegrationCommit(cwd, sourceCommit, targetTag, targetCommit, upstreamMainRef) {
   const expected = `chore: integrate upstream ${targetTag}`;
-  const commits = git(cwd, "rev-list", sourceCommit).split("\n").filter(Boolean);
+  const commits = git(cwd, "rev-list", "--first-parent", sourceCommit).split("\n").filter(Boolean);
   for (const commit of commits) {
     const subject = git(cwd, "show", "-s", "--format=%s", commit);
     const parents = git(cwd, "rev-list", "--parents", "-n", "1", commit).split(" ").slice(1);
@@ -45,7 +48,29 @@ function verifyPreservedReferences(cwd, sourceCommit, review) {
   }
 }
 
-function verifyCanonicalPreservedProvenance({
+function readPreviousLedger(cwd, previousAlas) {
+  let contents;
+  try {
+    contents = git(cwd, "show", `${previousAlas}:${LEDGER_PATH}`);
+  } catch {
+    throw new Error(`Cannot read the previous patch ledger from ${previousAlas}:${LEDGER_PATH}`);
+  }
+  try {
+    return JSON.parse(contents);
+  } catch {
+    throw new Error(`Previous patch ledger at ${previousAlas}:${LEDGER_PATH} is not valid JSON`);
+  }
+}
+
+function preservedIdentity(entry) {
+  return {
+    commit: entry.commit,
+    subject: entry.subject,
+    constituentCommits: [...(entry.constituentCommits ?? [])],
+  };
+}
+
+function verifyCompleteCanonicalPreservedCommits({
   cwd,
   sourceCommit,
   previousAlas,
@@ -54,24 +79,22 @@ function verifyCanonicalPreservedProvenance({
   targetTag,
   review,
 }) {
-  const allowed = new Set(
-    discoverCanonicalPreservedCommits({
-      cwd,
-      canonicalSyncRef: sourceCommit,
-      alasRef: previousAlas,
-      upstreamMainRef,
-      targetCommit,
-      targetTag,
-    }).map((entry) => entry.commit),
-  );
-  const unproven = (review.preservedCommits ?? [])
-    .map((entry) => entry.commit)
-    .filter((commit) => !allowed.has(commit));
-  if (unproven.length > 0) {
+  const canonical = discoverCanonicalPreservedCommits({
+    cwd,
+    canonicalSyncRef: sourceCommit,
+    alasRef: previousAlas,
+    upstreamMainRef,
+    targetCommit,
+    targetTag,
+  });
+  const expected = canonical.map(preservedIdentity);
+  const actual = (review.preservedCommits ?? []).map(preservedIdentity);
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new Error(
-      `Sync review contains commits that are not canonical preserved sync edits: ${unproven.join(", ")}`,
+      `Sync review canonical preserved sync edits do not exactly match source history: expected ${expected.map((entry) => entry.commit).join(", ") || "none"}; received ${actual.map((entry) => entry.commit).join(", ") || "none"}`,
     );
   }
+  return canonical;
 }
 
 function sourceTreeMatchesCandidate(cwd, sourceCommit, candidateCommit) {
@@ -118,7 +141,8 @@ export function verifySyncSourceReview({
     upstreamMainRef,
   );
   const previousAlas = git(cwd, "rev-parse", `${integrationCommit}^1`);
-  verifyCanonicalPreservedProvenance({
+  const previousLedger = readPreviousLedger(cwd, previousAlas);
+  const canonicalPreservedCommits = verifyCompleteCanonicalPreservedCommits({
     cwd,
     sourceCommit: source,
     previousAlas,
@@ -128,6 +152,7 @@ export function verifySyncSourceReview({
     review,
   });
   verifyPreservedReferences(cwd, source, review);
+  verifyLedgerReviewTransition({ ledger, review, previousLedger });
   const root = mkdtempSync(join(tmpdir(), "verify-sync-source-"));
   const worktree = join(root, "worktree");
   const branch = `verify-sync-source-${process.pid}-${basename(root)}`;
@@ -157,7 +182,7 @@ export function verifySyncSourceReview({
     integrationCommit,
     previousAlas,
     candidateCommit,
-    preservedCommits: (review.preservedCommits ?? []).map((entry) => entry.commit),
+    preservedCommits: canonicalPreservedCommits.map((entry) => entry.commit),
   };
 }
 

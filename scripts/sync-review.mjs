@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 
 const COMMIT = /^[0-9a-f]{40}$/;
@@ -148,49 +149,21 @@ function expectedPreservedTransition(review, entry) {
 
 export function verifyLedgerReviewTransition({ ledger, review, previousLedger }) {
   if (!review?.resolved) throw new Error("Cannot verify an unresolved sync review transition");
+  if (previousLedger) {
+    const expected = advanceLedgerBaseTag({ ledger: previousLedger, review }).ledger;
+    if (!isDeepStrictEqual(ledger, expected)) {
+      throw new Error(
+        "Committed patch ledger does not exactly match the ledger transition derived from source history",
+      );
+    }
+    return true;
+  }
   if (ledger?.baseTag !== review.toTag) {
     throw new Error(
       `Patch ledger baseTag ${ledger?.baseTag} does not match review toTag ${review.toTag}`,
     );
   }
-  if (previousLedger) {
-    if (previousLedger.baseTag !== review.fromTag) {
-      throw new Error("Previous ledger baseTag does not match the sync review");
-    }
-    const previousActive = previousLedger.patches.filter(
-      (patch) => patch.disposition !== "dropped",
-    );
-    if (previousActive.length !== review.patches.length) {
-      throw new Error("Previous ledger active patch set does not match the sync review");
-    }
-    for (const previous of previousActive) {
-      const patch = review.patches.find((candidate) => candidate.name === previous.name);
-      if (!patch || patch.commit !== previous.commit) {
-        throw new Error(`Previous ledger patch ${previous.name} is missing from the sync review`);
-      }
-      for (const key of ["upstreamPr", "files", "tests"]) {
-        if (JSON.stringify(previous[key]) !== JSON.stringify(patch[key])) {
-          throw new Error(
-            `Previous ledger metadata for ${previous.name} does not match the review`,
-          );
-        }
-      }
-    }
-    for (const commit of previousLedger.retiredCommits ?? []) {
-      if (!(ledger.retiredCommits ?? []).includes(commit)) {
-        throw new Error(`Previous ledger retirement ${commit} was removed`);
-      }
-    }
-    for (const transition of previousLedger.preservedTransitions ?? []) {
-      if (
-        !(ledger.preservedTransitions ?? []).some(
-          (entry) => JSON.stringify(entry) === JSON.stringify(transition),
-        )
-      ) {
-        throw new Error("Previous ledger preserved transition was removed");
-      }
-    }
-  }
+
   const reviewed = new Map(review.patches.map((patch) => [patch.name, patch]));
   for (const patch of review.patches) {
     const entry = ledger.patches.find((candidate) => candidate.name === patch.name);
