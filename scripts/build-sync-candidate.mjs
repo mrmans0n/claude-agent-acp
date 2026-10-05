@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { formatSyncJson } from "./sync-review.mjs";
 
 function git(cwd, ...args) {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
@@ -37,7 +38,7 @@ function patchId(cwd, commit) {
 }
 
 function cherryPickDeterministically(cwd, commit) {
-  const args = ["cherry-pick"];
+  const args = ["-c", "commit.gpgSign=false", "cherry-pick"];
   if (isMerge(cwd, commit)) args.push("-m", "1");
   args.push(commit);
   const result = spawnSync("git", args, {
@@ -45,6 +46,8 @@ function cherryPickDeterministically(cwd, commit) {
     encoding: "utf8",
     env: {
       ...process.env,
+      GIT_COMMITTER_NAME: "github-actions[bot]",
+      GIT_COMMITTER_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com",
       GIT_COMMITTER_DATE: git(cwd, "show", "-s", "--format=%cI", commit),
     },
   });
@@ -139,11 +142,8 @@ export function discoverCanonicalPreservedCommits(options) {
 
 export function recordSyncReviewState({ cwd, targetRef, targetTag, review, ledger }) {
   mkdirSync(resolve(cwd, "docs"), { recursive: true });
-  writeFileSync(resolve(cwd, "docs/ALAS_SYNC_REVIEW.json"), `${JSON.stringify(review, null, 2)}\n`);
-  writeFileSync(
-    resolve(cwd, "docs/ALAS_DOWNSTREAM_PATCHES.json"),
-    `${JSON.stringify(ledger, null, 2)}\n`,
-  );
+  writeFileSync(resolve(cwd, "docs/ALAS_SYNC_REVIEW.json"), formatSyncJson(review));
+  writeFileSync(resolve(cwd, "docs/ALAS_DOWNSTREAM_PATCHES.json"), formatSyncJson(ledger));
   git(cwd, "add", "docs/ALAS_SYNC_REVIEW.json", "docs/ALAS_DOWNSTREAM_PATCHES.json");
   if (spawnSync("git", ["diff", "--cached", "--quiet"], { cwd }).status === 0) {
     return { commit: git(cwd, "rev-parse", "HEAD"), changed: false };

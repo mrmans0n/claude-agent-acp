@@ -1,8 +1,8 @@
 {
   "version": 1,
   "fromTag": "v0.85.1",
-  "toTag": "v0.85.1",
-  "toCommit": "686c0c99b3b89217b74d1f5de8272e7c9ef1aab4",
+  "toTag": "v0.86.0",
+  "toCommit": "7b5c61a4ed55c03028ac60e1768bc57d92df24a4",
   "patches": [
     {
       "name": "goal-capability-opt-in",
@@ -10,14 +10,17 @@
       "upstreamPr": 1245,
       "files": ["docs/air-extensions.md", "src/acp-agent.ts", "src/goal-extension.ts"],
       "tests": ["src/tests/acp-agent.test.ts"],
-      "classification": "unaffected",
+      "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": [],
+      "overlappingFiles": ["docs/air-extensions.md", "src/acp-agent.ts"],
       "resolution": {
         "decision": "retain",
-        "rationale": "No equivalent upstream patch or overlapping path was detected.",
-        "tests": ["src/tests/acp-agent.test.ts"],
-        "automatic": true
+        "rationale": "The original patch applies cleanly to v0.86.0 with the same stable patch-id; upstream changes touch separate hunks and do not provide the provider-neutral non-AIR goal opt-in.",
+        "tests": [
+          "npm run test:run -- src/tests/acp-agent.test.ts -t \"advertises and publishes goals for an opted-in non-AIR client|publishes active_goal as provider-neutral session state without changing turn settlement\"",
+          "npm run build"
+        ],
+        "automatic": false
       }
     },
     {
@@ -26,17 +29,65 @@
       "upstreamPr": null,
       "files": ["src/acp-agent.ts", "src/async-tasks.ts"],
       "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
-      "classification": "unaffected",
+      "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": [],
+      "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
         "decision": "retain",
-        "rationale": "No equivalent upstream patch or overlapping path was detected.",
-        "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
-        "automatic": true
+        "rationale": "Upstream v0.86.0 overlaps src/acp-agent.ts but does not provide provider-neutral async-task negotiation or advertisement; the exact replay retains the original stable patch-id. The later upstream routing commit 0e83a06c4a8825ba654bddf1ab909d1a773942e2 is outside v0.86.0 and remains AIR-only.",
+        "tests": [
+          "npm run test:run -- src/tests/async-tasks.test.ts src/tests/acp-agent.test.ts",
+          "npm run build"
+        ],
+        "automatic": false
       }
     }
   ],
-  "preservedCommits": [],
+  "preservedCommits": [
+    {
+      "commit": "d6a1741b41bd60c422dbbf7ed6315abd7dce2806",
+      "subject": "[verified] fix: keep sync candidates deterministic",
+      "constituentCommits": [],
+      "classification": "preserved-sync-edit",
+      "resolution": {
+        "decision": "retain",
+        "rationale": "Retain the sync-only hardening: generated review and ledger JSON now match the repository formatter, fixing the observed CI failure, and deterministic cherry-picks no longer depend on the local Git committer identity.",
+        "tests": [
+          "npm exec -- vitest run scripts/alas-maintenance.test.mjs scripts/sync-review.test.mjs scripts/workflow-hardening.test.mjs",
+          "npm run format:check"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "commit": "42e57384f1b05ce7d70116ebec1dcf7819afc11b",
+      "subject": "[verified] test: allow the sync ledger base to advance",
+      "constituentCommits": [],
+      "classification": "preserved-sync-edit",
+      "resolution": {
+        "decision": "retain",
+        "rationale": "Retain the test correction: the patch ledger base is designed to advance after a resolved stable sync, so the hardening test must validate a stable tag and the review/ledger relationship instead of pinning the historical v0.85.1 baseline.",
+        "tests": ["npm exec -- vitest run scripts/workflow-hardening.test.mjs"],
+        "automatic": false
+      }
+    },
+    {
+      "commit": "f4c9bfb1e756a6a7157509de01f765f6c86b231b",
+      "subject": "[verified] fix: isolate sync reconstruction from Git signing",
+      "constituentCommits": [],
+      "classification": "preserved-sync-edit",
+      "resolution": {
+        "decision": "retain",
+        "rationale": "Retain the sync-only hardening: deterministic cherry-picks now explicitly disable local commit signing, preventing user or runner Git configuration from rejecting reconstruction or changing candidate commit identity. The formatter regression oracle now checks the actual Prettier fixed-point contract, including compact valid resolutions.",
+        "tests": [
+          "npm exec -- vitest run scripts/alas-maintenance.test.mjs scripts/sync-review.test.mjs",
+          "npm run check",
+          "npm run build",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    }
+  ],
   "resolved": true
 }
