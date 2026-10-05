@@ -122,6 +122,12 @@ describe("publish workflow hardening", () => {
     expect(publish).toContain("releases/tags/$tag");
     expect(publish).toContain("alreadyPublished != 'true'");
   });
+
+  it("supports idempotent reruns after npm has published the requested source", () => {
+    expect(publish).toContain("selectPublicationAnchor");
+    expect(publish).toContain("const maxAttempts = 60");
+    expect(publish).toContain("attempt === maxAttempts - 1");
+  });
 });
 
 describe("protected branch documentation", () => {
