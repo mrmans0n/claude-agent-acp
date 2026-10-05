@@ -5,8 +5,14 @@
 and stable version. Publication changes only the runner's manifest to
 `X.Y.Z-alas.N` and records `alasDownstream.upstreamVersion`, `upstreamCommit`,
 and `sourceCommit`. The upstream commit is the canonical `vX.Y.Z` tag's commit;
-it must be an ancestor of the selected source. The initial upstream base is
-`v0.85.1`.
+it must be the **exact** merge-base between the selected source and freshly
+fetched `upstream/main`. Merely being an ancestor is not sufficient. The initial
+upstream base is `v0.85.1`.
+
+`docs/ALAS_DOWNSTREAM_PATCHES.json` is the versioned source of truth for the two
+functional downstream patches. Each entry records its original commit, upstream
+PR (or explicit `null` when none exists), affected files, and tests. The ledger's
+`baseTag` is the last stable tag against which every patch was reviewed.
 
 ## First publication
 
@@ -27,9 +33,10 @@ it must be an ancestor of the selected source. The initial upstream base is
    npm ci && npm run format:check && npm run lint && npm run build && npm run test:run
    upstream_version="$(node -p "require('./package.json').version")"
    git fetch https://github.com/agentclientprotocol/claude-agent-acp.git \
+     "+refs/heads/main:refs/remotes/alas-upstream/main" \
      "refs/tags/v$upstream_version:refs/alas-upstream"
    upstream_commit="$(git rev-list -n 1 refs/alas-upstream)"
-   git merge-base --is-ancestor "$upstream_commit" HEAD
+   test "$(git merge-base HEAD refs/remotes/alas-upstream/main)" = "$upstream_commit"
    ALAS_UPSTREAM_VERSION="$upstream_version" \
    ALAS_UPSTREAM_COMMIT="$upstream_commit" \
    ALAS_SOURCE_COMMIT="$(git rev-parse HEAD)" \
@@ -65,12 +72,16 @@ to the full 40-character SHA of the current protected branch head:
 
 ```sh
 gh workflow run publish-alas.yml --repo mrmans0n/claude-agent-acp --ref alas \
-  -f source_commit="$(git rev-parse HEAD)"
+  -f source_commit="$(git rev-parse HEAD)" \
+  -f upstream_tag="v$(node -p "require('./package.json').version")"
 ```
 
 Use this only from a checkout at the intended `alas` head. The workflow rejects
 other branches and a source SHA that differs from freshly fetched `origin/alas`.
-It runs Node 24, checks the committed lockfile before rewriting the manifest,
+It also rejects a non-stable declared tag, a tag that disagrees with the package
+version, or any source whose merge-base with freshly fetched `upstream/main` is
+not exactly the declared tag commit. This rejects preview or post-release
+upstream contamination. It runs Node 24, checks the committed lockfile before rewriting the manifest,
 and requires `dist/index.js`, `dist/lib.js`, and `dist/lib.d.ts` in the tarball.
 Every packed path must belong to the manifest's `files` allowlist, with
 `dist/tests/` excluded. Workflow runs serialize so version allocation and npm
@@ -85,50 +96,76 @@ upstream tag, upstream commit, and source commit.
 
 ## Upstream synchronization and manual fallback
 
-The daily sync merges into an existing canonical sync branch's remote head. When
-replacing an older-tag PR, it starts from that PR's remote head and merges the
-current `alas` branch and newest stable upstream tag. Maintainer compatibility
-edits carry forward. Pushes are fast-forward only, so a concurrent update stops
-the push. Older PRs close after their replacement exists and CI is dispatched;
-their branches are retained to preserve edits pushed during synchronization.
+The daily workflow never merges a stable tag into the existing `alas` history.
+That history may contain upstream preview commits after its declared stable base.
+Instead, `scripts/build-sync-candidate.mjs` starts a replacement candidate at the
+exact stable tag and cherry-picks only commits reachable from `alas` that are not
+reachable from freshly fetched `upstream/main`. This retains downstream work but
+excludes upstream preview and post-stable commits that happened to be ancestors
+of the old branch.
 
-`GITHUB_TOKEN` cannot push changes to `.github/workflows`. If a clean merge
-changes those files, automation stops before pushing or replacing a PR and opens
-or updates `Upstream synchronization required: vX.Y.Z`. Merge conflicts use the
-same tracked issue. The issue names the tag, affected files, and refs to merge.
-No stored PAT, App credential, or other workflow write credential is needed.
+Before rebuilding, `scripts/audit-downstream-patches.mjs` compares every ledger
+entry with the new stable tag by Git patch-id equivalence and compares the
+ledger's paths with upstream paths changed since `baseTag`:
 
-For a manual sync, use your maintainer login with permission to update workflows:
+- `unaffected`: no equivalent upstream patch and no changed ledger path;
+- `absorbed`: an equivalent patch-id is already in the stable tag;
+- `overlap`: no equivalent patch, but upstream changed at least one ledger path.
+
+Only an all-`unaffected` result can produce an automated candidate. `absorbed`
+and `overlap` stop the job with a failed status and a complete job summary. If a
+canonical sync PR already exists, it is retained as a draft and its body is
+updated with the audit. Reviewers must decide whether to remove, rewrite, or
+retest the patch and update the ledger before rerunning. Publication is never
+triggered by synchronization.
+
+Sync-only maintainer commits from the canonical and older sync branches are
+reapplied after downstream commits. Every fetched sync head is recorded by exact
+SHA. An existing candidate is replaced only with
+`--force-with-lease=<recorded SHA>`; a concurrent push makes the update fail
+closed. Older sync PRs and branches are not automatically closed or deleted.
+
+The workflow has no GitHub Issues permission and never calls `gh issue`. Patch
+review, cherry-pick conflicts, and workflow-file changes are reported in the job
+summary and fail the job. A successfully built candidate is kept in a persistent
+draft PR. The `GITHUB_TOKEN` does not push a candidate when the resulting tree
+changes `.github/workflows`.
+
+### Reviewing and installing a candidate
+
+The draft PR is a review surface, not a normal merge vehicle. A normal merge,
+squash, or rebase into `alas` would retain the old contaminated ancestry and make
+the publication merge-base gate fail. After CI and human review succeed, a
+maintainer must replace `alas` with the exact candidate head using a lease:
 
 ```sh
-tag=vX.Y.Z                         # Use the tag named in the issue.
+tag=vX.Y.Z
 branch="sync/upstream-${tag#v}"
-git fetch origin
+git fetch origin "$branch" alas
+candidate="$(git rev-parse "origin/$branch")"
+expected_alas="$(git rev-parse origin/alas)"
 git fetch --no-tags https://github.com/agentclientprotocol/claude-agent-acp.git \
+  "+refs/heads/main:refs/remotes/alas-upstream/main" \
   "+refs/tags/$tag:refs/alas-upstream-tags/$tag"
+test "$(git merge-base "$candidate" refs/remotes/alas-upstream/main)" = \
+  "$(git rev-parse "refs/alas-upstream-tags/$tag^{commit}")"
+git push origin "$candidate:refs/heads/alas" \
+  "--force-with-lease=refs/heads/alas:$expected_alas"
 ```
 
-Start from `origin/$branch` if it exists. Otherwise start from the remote head of
-the older sync PR named in the issue, or `origin/alas` if no sync PR exists:
+Branch protection may need a temporary, explicitly reviewed maintainer bypass
+for that single lease-protected replacement. Restore the protection immediately,
+verify `origin/alas` equals the reviewed candidate, then close the draft PR. Do
+not merge the PR through GitHub's merge button.
 
-```sh
-seed=origin/alas                  # Set this to the existing sync PR's remote ref.
-git switch -C "$branch" "$seed"
-git merge --no-edit origin/alas
-# Merge any other older sync PR refs listed in the issue before the upstream tag.
-git merge --no-edit "refs/alas-upstream-tags/$tag"
-```
+For conflicts or workflow changes, reproduce the candidate locally with the refs
+and SHAs shown in the job summary. Preserve every sync-only commit, resolve the
+conflict, run `npm ci`, `npm run format:check`, `npm run lint`, `npm run build`,
+`npm run test:run`, and the script/workflow tests, then push with an exact
+force-with-lease. Never replace a branch whose fetched head has moved.
 
-Resolve any conflicts and run `npm ci`, `npm run format:check`, `npm run lint`,
-`npm run build`, and `npm run test:run`. Inspect workflow changes and keep inherited upstream
-release automation disabled. Push with `git push origin "HEAD:refs/heads/$branch"`,
-open or update its PR into `alas`, and dispatch `ci.yml` on the branch. Close older
-sync PRs after the replacement succeeds; retain their branches until their latest
-commits are accounted for. Never force-push over maintainer edits.
-
-The next sync run closes tracked manual or conflict issues for tags that are
-ancestors of freshly fetched `origin/alas`, including when no new sync is needed.
-It also closes the older generic conflict issue when its recorded tag is merged.
+The already published `0.85.1-alas.1` remains immutable historical output. Do
+not attempt to repair or republish it; the stricter gates apply to later versions.
 
 ## Recovery and rollback
 

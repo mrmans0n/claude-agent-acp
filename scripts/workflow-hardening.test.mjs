@@ -1,8 +1,14 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const sync = readFileSync(new URL("../.github/workflows/sync-upstream.yml", import.meta.url), "utf8");
-const publish = readFileSync(new URL("../.github/workflows/publish-alas.yml", import.meta.url), "utf8");
+const sync = readFileSync(
+  new URL("../.github/workflows/sync-upstream.yml", import.meta.url),
+  "utf8",
+);
+const publish = readFileSync(
+  new URL("../.github/workflows/publish-alas.yml", import.meta.url),
+  "utf8",
+);
 const ledger = JSON.parse(
   readFileSync(new URL("../docs/ALAS_DOWNSTREAM_PATCHES.json", import.meta.url), "utf8"),
 );
@@ -40,6 +46,8 @@ describe("sync workflow hardening", () => {
     expect(sync).toContain("--draft");
     expect(sync).toContain("$GITHUB_STEP_SUMMARY");
     expect(sync).toContain("--force-with-lease=refs/heads/$BRANCH:$EXPECTED_BRANCH_HEAD");
+    expect(sync).toContain("/tmp/alas-sync-expected-heads.tsv");
+    expect(sync).toContain("Concurrent sync-branch update detected");
   });
 });
 

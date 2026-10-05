@@ -7,6 +7,10 @@ on:
         description: Full commit at the head of the protected alas branch
         required: true
         type: string
+      upstream_tag:
+        description: Exact stable upstream tag (vX.Y.Z)
+        required: true
+        type: string
 
 permissions: {}
 
@@ -29,7 +33,7 @@ jobs:
       upstream_version: ${{ steps.source.outputs.upstream_version }}
       upstream_commit: ${{ steps.source.outputs.upstream_commit }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: alas
           fetch-depth: 0
@@ -38,24 +42,33 @@ jobs:
         id: source
         env:
           SOURCE_COMMIT: ${{ inputs.source_commit }}
+          UPSTREAM_TAG: ${{ inputs.upstream_tag }}
         run: |
           [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$UPSTREAM_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           git fetch origin refs/heads/alas:refs/remotes/origin/alas
           test "$SOURCE_COMMIT" = "$(git rev-parse origin/alas)"
           git checkout --detach "$SOURCE_COMMIT"
           upstream_version="$(node -p "require('./package.json').version")"
           [[ "$upstream_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
-          git fetch https://github.com/agentclientprotocol/claude-agent-acp.git \
-            "refs/tags/v$upstream_version:refs/alas-upstream"
-          upstream_commit="$(git rev-list -n 1 refs/alas-upstream)"
-          git merge-base --is-ancestor "$upstream_commit" "$SOURCE_COMMIT"
+          test "$UPSTREAM_TAG" = "v$upstream_version"
+          git fetch --no-tags https://github.com/agentclientprotocol/claude-agent-acp.git \
+            '+refs/heads/main:refs/remotes/alas-upstream/main' \
+            "refs/tags/$UPSTREAM_TAG:refs/alas-upstream-tag"
+          node scripts/verify-alas-source.mjs \
+            --source-commit "$SOURCE_COMMIT" \
+            --upstream-main-ref refs/remotes/alas-upstream/main \
+            --stable-tag-ref refs/alas-upstream-tag \
+            --declared-tag "$UPSTREAM_TAG" \
+            --output /tmp/alas-source-verification.json
+          upstream_commit="$(node -p "JSON.parse(require('node:fs').readFileSync('/tmp/alas-source-verification.json')).stableCommit")"
           echo "ALAS_UPSTREAM_VERSION=$upstream_version" >> "$GITHUB_ENV"
           echo "ALAS_UPSTREAM_COMMIT=$upstream_commit" >> "$GITHUB_ENV"
           echo "ALAS_SOURCE_COMMIT=$SOURCE_COMMIT" >> "$GITHUB_ENV"
           echo "commit=$SOURCE_COMMIT" >> "$GITHUB_OUTPUT"
           echo "upstream_version=$upstream_version" >> "$GITHUB_OUTPUT"
           echo "upstream_commit=$upstream_commit" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "24"
           registry-url: https://registry.npmjs.org
@@ -112,7 +125,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ needs.publish.outputs.source_commit }}
           fetch-depth: 0
