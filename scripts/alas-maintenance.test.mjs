@@ -262,7 +262,7 @@ describe("auditDownstreamPatches", () => {
 });
 
 describe("buildSyncCandidate", () => {
-  it("reconstructs the same candidate under different local Git identities", () => {
+  it("reconstructs the same candidate under different local Git and signing settings", () => {
     const { cwd, git, commit } = fixture();
     commit("base", { base: "base\n" });
     git("tag", "v1.0.0");
@@ -286,6 +286,8 @@ describe("buildSyncCandidate", () => {
 
     git("config", "user.name", "Second Maintainer");
     git("config", "user.email", "second@example.test");
+    git("config", "commit.gpgSign", "true");
+    git("config", "user.signingKey", "does-not-exist");
     const second = buildSyncCandidate({
       cwd,
       targetRef: "v1.1.0",
