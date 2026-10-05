@@ -6,6 +6,44 @@ import { fileURLToPath } from "node:url";
 const COMMIT = /^[0-9a-f]{40}$/;
 const TAG = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const DECISIONS = new Set(["retain", "adapt", "drop"]);
+const JSON_PRINT_WIDTH = 100;
+
+function formatJsonValue(value, indent, prefixWidth = indent) {
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "[]";
+    const primitiveEntries = value.every((entry) => entry === null || typeof entry !== "object");
+    const inline = primitiveEntries
+      ? `[${value.map((entry) => JSON.stringify(entry)).join(", ")}]`
+      : JSON.stringify(value);
+    if (primitiveEntries && prefixWidth + inline.length <= JSON_PRINT_WIDTH) return inline;
+    const childIndent = indent + 2;
+    const body = value
+      .map((entry) => `${" ".repeat(childIndent)}${formatJsonValue(entry, childIndent)}`)
+      .join(",\n");
+    return `[\n${body}\n${" ".repeat(indent)}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value);
+    if (entries.length === 0) return "{}";
+    const propertyIndent = indent + 2;
+    const body = entries
+      .map(([key, entry]) => {
+        const prefix = `${JSON.stringify(key)}: `;
+        return `${" ".repeat(propertyIndent)}${prefix}${formatJsonValue(
+          entry,
+          propertyIndent,
+          propertyIndent + prefix.length,
+        )}`;
+      })
+      .join(",\n");
+    return `{\n${body}\n${" ".repeat(indent)}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function formatSyncJson(value) {
+  return `${formatJsonValue(value, 0)}\n`;
+}
 
 function manualResolutionValid(resolution) {
   return (
@@ -313,7 +351,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (args.mode === "generate") {
     const existingReview = existsSync(reviewPath) ? readJson(reviewPath) : undefined;
     const review = createSyncReview({ audit, existingReview, preservedCommits });
-    writeFileSync(reviewPath, `${JSON.stringify(review, null, 2)}\n`);
+    writeFileSync(reviewPath, formatSyncJson(review));
     process.stdout.write(`${JSON.stringify(review, null, 2)}\n`);
   } else if (args.mode === "verify") {
     const review = readJson(reviewPath);
@@ -328,7 +366,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (args.ledger) {
       const ledgerPath = resolve(args.ledger);
       const result = advanceLedgerBaseTag({ ledger: readJson(ledgerPath), review });
-      if (result.changed) writeFileSync(ledgerPath, `${JSON.stringify(result.ledger, null, 2)}\n`);
+      if (result.changed) writeFileSync(ledgerPath, formatSyncJson(result.ledger));
       process.stdout.write(
         `${JSON.stringify({ resolved: true, ledgerChanged: result.changed })}\n`,
       );
