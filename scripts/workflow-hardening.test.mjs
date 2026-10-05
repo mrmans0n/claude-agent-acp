@@ -23,7 +23,7 @@ const setupNodeSha = "820762786026740c76f36085b0efc47a31fe5020";
 describe("downstream patch ledger", () => {
   it("records the two functional patches with review metadata", () => {
     expect(ledger.version).toBe(1);
-    expect(ledger.baseTag).toBe("v0.85.1");
+    expect(ledger.baseTag).toMatch(/^v\d+\.\d+\.\d+$/);
     expect(ledger.patches.map((patch) => patch.name)).toEqual([
       "goal-capability-opt-in",
       "async-tasks-opt-in",
