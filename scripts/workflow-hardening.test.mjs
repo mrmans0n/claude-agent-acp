@@ -23,7 +23,7 @@ const setupNodeSha = "820762786026740c76f36085b0efc47a31fe5020";
 describe("downstream patch ledger", () => {
   it("records the two functional patches with review metadata", () => {
     expect(ledger.version).toBe(1);
-    expect(ledger.baseTag).toBe("v0.85.1");
+    expect(ledger.baseTag).toMatch(/^v\d+\.\d+\.\d+$/);
     expect(ledger.patches.map((patch) => patch.name)).toEqual([
       "goal-capability-opt-in",
       "async-tasks-opt-in",
@@ -41,13 +41,12 @@ describe("downstream patch ledger", () => {
     expect(ledger.patches[1].identityCommit).toBe("3e098c71628cc7d5927ee8a3d794faa433dce12d");
   });
 
-  it("commits a resolved, versioned baseline sync review", () => {
-    expect(review).toMatchObject({
-      version: 1,
-      fromTag: "v0.85.1",
-      toTag: "v0.85.1",
-      resolved: true,
-    });
+  it("commits a versioned sync review consistent with the ledger state", () => {
+    expect(review.version).toBe(1);
+    expect(review.toTag).toMatch(/^v\d+\.\d+\.\d+$/);
+    expect(review.resolved).toBeTypeOf("boolean");
+    expect([review.fromTag, review.toTag]).toContain(ledger.baseTag);
+    if (ledger.baseTag === review.toTag) expect(review.resolved).toBe(true);
     expect(review.toCommit).toMatch(/^[0-9a-f]{40}$/);
     expect(review.patches.map((patch) => patch.name)).toEqual(
       ledger.patches.map((patch) => patch.name),

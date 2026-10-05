@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "baseTag": "v0.85.1",
+  "baseTag": "v0.86.0",
   "patches": [
     {
       "name": "goal-capability-opt-in",
@@ -8,7 +8,14 @@
       "commit": "60749d07ff50308ef96c5251152a8d4986fe680f",
       "upstreamPr": 1245,
       "files": ["docs/air-extensions.md", "src/acp-agent.ts", "src/goal-extension.ts"],
-      "tests": ["src/tests/acp-agent.test.ts"]
+      "tests": ["src/tests/acp-agent.test.ts"],
+      "disposition": "active",
+      "lastResolution": {
+        "fromTag": "v0.85.1",
+        "toTag": "v0.86.0",
+        "originalCommit": "60749d07ff50308ef96c5251152a8d4986fe680f",
+        "decision": "retain"
+      }
     },
     {
       "name": "async-tasks-opt-in",
@@ -16,7 +23,31 @@
       "commit": "3e098c71628cc7d5927ee8a3d794faa433dce12d",
       "upstreamPr": null,
       "files": ["src/acp-agent.ts", "src/async-tasks.ts"],
-      "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"]
+      "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
+      "disposition": "active",
+      "lastResolution": {
+        "fromTag": "v0.85.1",
+        "toTag": "v0.86.0",
+        "originalCommit": "3e098c71628cc7d5927ee8a3d794faa433dce12d",
+        "decision": "retain"
+      }
+    }
+  ],
+  "retiredCommits": [],
+  "preservedTransitions": [
+    {
+      "fromTag": "v0.85.1",
+      "toTag": "v0.86.0",
+      "commit": "d6a1741b41bd60c422dbbf7ed6315abd7dce2806",
+      "constituentCommits": [],
+      "decision": "retain"
+    },
+    {
+      "fromTag": "v0.85.1",
+      "toTag": "v0.86.0",
+      "commit": "42e57384f1b05ce7d70116ebec1dcf7819afc11b",
+      "constituentCommits": [],
+      "decision": "retain"
     }
   ]
 }
