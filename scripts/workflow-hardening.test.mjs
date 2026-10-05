@@ -34,7 +34,11 @@ describe("downstream patch ledger", () => {
       expect(patch.files.length).toBeGreaterThan(0);
       expect(patch.tests.length).toBeGreaterThan(0);
     }
-    expect(ledger.patches[0].upstreamPr).toBe(1245);
+    expect(ledger.patches[0]).toMatchObject({
+      upstreamPr: 1245,
+      identityCommit: "60749d07ff50308ef96c5251152a8d4986fe680f",
+    });
+    expect(ledger.patches[1].identityCommit).toBe("3e098c71628cc7d5927ee8a3d794faa433dce12d");
   });
 
   it("commits a resolved, versioned baseline sync review", () => {
@@ -72,6 +76,8 @@ describe("sync workflow hardening", () => {
     expect(sync).toContain("git diff --cached --quiet");
     expect(sync).toContain("GIT_COMMITTER_DATE");
     expect(sync).toContain("existing-review.json");
+    expect(sync).toContain("provenance_args");
+    expect(sync).toContain("preserved.at(-1)?.commit");
     expect(sync).toMatch(/if:\s*\$\{\{ always\(\) \}\}/);
     expect(sync).toContain("Update existing draft PR after failure");
     expect(sync).not.toContain("--force-with-lease=refs/heads/alas");
@@ -94,11 +100,23 @@ describe("publish workflow hardening", () => {
     expect(publish).toContain("--advanced-ledger docs/ALAS_DOWNSTREAM_PATCHES.json");
     expect(publish).toContain('--previous-ledger "$REPORT_DIR/review-ledger.json"');
     expect(publish).toContain("scripts/verify-sync-source-review.mjs");
+    expect(publish).toContain("--prior-protected-commit");
     expect(publish).toContain("--ledger docs/ALAS_DOWNSTREAM_PATCHES.json");
     expect(publish).toContain("--target-ref refs/alas-upstream-tag");
     expect(publish).toContain("docs/ALAS_SYNC_REVIEW.json");
     expect(publish).toContain("refs/remotes/alas-upstream/main");
     expect(publish).toMatch(/if:\s*\$\{\{ always\(\) \}\}/);
+  });
+
+  it("reads npm, tag, and release state back and verifies exact publication provenance", () => {
+    expect(publish).toContain("scripts/verify-alas-publication.mjs");
+    expect(publish).toContain("--mode npm");
+    expect(publish).toContain("--mode github");
+    expect(publish).toContain("dist.attestations");
+    expect(publish).toContain("npm pack --json");
+    expect(publish).toContain("git/ref/tags/$tag");
+    expect(publish).toContain("releases/tags/$tag");
+    expect(publish).toContain("alreadyPublished != 'true'");
   });
 });
 

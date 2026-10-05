@@ -83,6 +83,51 @@ jobs:
             --npm-metadata "$REPORT_DIR/npm-metadata.json" \
             --allow-current true \
             --output "$REPORT_DIR/upstream-release.json"
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+          const response = await fetch('https://registry.npmjs.org/@alas-ide%2Fclaude-agent-acp');
+          if (!response.ok) throw new Error(`downstream npm registry returned ${response.status}`);
+          const metadata = await response.json();
+          const version = metadata['dist-tags']?.latest;
+          const manifest = metadata.versions?.[version];
+          if (!version || !manifest?.alasDownstream?.sourceCommit || !manifest?.dist?.integrity) {
+            throw new Error('latest downstream publication cannot anchor protected history');
+          }
+          writeFileSync(`${process.env.REPORT_DIR}/published.json`, JSON.stringify(metadata));
+          writeFileSync(`${process.env.REPORT_DIR}/prior-publication.json`, JSON.stringify({
+            version,
+            integrity: manifest.dist.integrity,
+            ...manifest.alasDownstream,
+          }));
+          NODE
+          prior_version="$(node -p "require('$REPORT_DIR/prior-publication.json').version")"
+          prior_integrity="$(node -p "require('$REPORT_DIR/prior-publication.json').integrity")"
+          prior_source="$(node -p "require('$REPORT_DIR/prior-publication.json').sourceCommit")"
+          prior_upstream_version="$(node -p "require('$REPORT_DIR/prior-publication.json').upstreamVersion")"
+          prior_upstream_commit="$(node -p "require('$REPORT_DIR/prior-publication.json').upstreamCommit")"
+          prior_tag="alas-v$prior_version"
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$prior_tag" > "$REPORT_DIR/prior-tag.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$prior_tag" > "$REPORT_DIR/prior-release.json"
+          node scripts/verify-alas-publication.mjs \
+            --mode npm \
+            --metadata "$REPORT_DIR/published.json" \
+            --package @alas-ide/claude-agent-acp \
+            --version "$prior_version" \
+            --integrity "$prior_integrity" \
+            --upstream-version "$prior_upstream_version" \
+            --upstream-commit "$prior_upstream_commit" \
+            --source-commit "$prior_source" \
+            > "$REPORT_DIR/prior-npm-verification.json"
+          node scripts/verify-alas-publication.mjs \
+            --mode github \
+            --tag "$prior_tag" \
+            --tag-ref "$REPORT_DIR/prior-tag.json" \
+            --release "$REPORT_DIR/prior-release.json" \
+            --version "$prior_version" \
+            --upstream-version "$prior_upstream_version" \
+            --upstream-commit "$prior_upstream_commit" \
+            --source-commit "$prior_source" \
+            > "$REPORT_DIR/prior-github-verification.json"
           node scripts/verify-alas-source.mjs \
             --source-commit "$SOURCE_COMMIT" \
             --upstream-main-ref refs/remotes/alas-upstream/main \
@@ -91,6 +136,7 @@ jobs:
             --output "$REPORT_DIR/source-verification.json"
           node scripts/verify-sync-source-review.mjs \
             --source-commit "$SOURCE_COMMIT" \
+            --prior-protected-commit "$prior_source" \
             --upstream-main-ref refs/remotes/alas-upstream/main \
             --target-ref refs/alas-upstream-tag \
             --target-tag "$UPSTREAM_TAG" \
@@ -161,12 +207,13 @@ jobs:
           console.log(`alreadyPublished=${alreadyPublished}`);
           NODE
       - name: Check package contents
+        id: pack
         run: |
-          npm pack --dry-run --json > "$REPORT_DIR/pack.json"
-          node --input-type=module <<'NODE'
+          npm pack --json > "$REPORT_DIR/pack.json"
+          node --input-type=module <<'NODE' >> "$GITHUB_OUTPUT"
           import { readFileSync } from 'node:fs';
           const manifest = JSON.parse(readFileSync('package.json', 'utf8'));
-          const [{ files }] = JSON.parse(readFileSync(`${process.env.REPORT_DIR}/pack.json`, 'utf8'));
+          const [{ files, filename, integrity }] = JSON.parse(readFileSync(`${process.env.REPORT_DIR}/pack.json`, 'utf8'));
           const paths = files.map(file => file.path);
           const required = ['dist/index.js', 'dist/lib.js', 'dist/lib.d.ts'];
           const allowed = path => manifest.files.includes(path) || (
@@ -175,10 +222,46 @@ jobs:
           if (required.some(path => !paths.includes(path)) || paths.some(path => !allowed(path))) {
             throw new Error(`Unexpected package contents: ${paths.join(', ')}`);
           }
+          if (!filename || !integrity?.startsWith('sha512-')) {
+            throw new Error('npm pack did not report an exact tarball and integrity');
+          }
+          console.log(`filename=${filename}`);
+          console.log(`integrity=${integrity}`);
           NODE
       - name: Publish
         if: ${{ steps.prepare.outputs.alreadyPublished != 'true' }}
-        run: npm publish --access public --provenance --tag latest
+        run: npm publish "${{ steps.pack.outputs.filename }}" --access public --provenance --tag latest
+      - name: Verify npm publication readback
+        env:
+          VERSION: ${{ steps.prepare.outputs.version }}
+          INTEGRITY: ${{ steps.pack.outputs.integrity }}
+        run: |
+          set -Eeuo pipefail
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+          const version = process.env.VERSION;
+          let metadata;
+          for (let attempt = 0; attempt < 12; attempt += 1) {
+            const response = await fetch('https://registry.npmjs.org/@alas-ide%2Fclaude-agent-acp', { cache: 'no-store' });
+            if (!response.ok) throw new Error(`npm registry returned ${response.status}`);
+            metadata = await response.json();
+            if (metadata['dist-tags']?.latest === version && metadata.versions?.[version]) break;
+            if (attempt === 11) throw new Error(`npm readback did not expose ${version} as latest`);
+            await new Promise(resolve => setTimeout(resolve, 5000));
+          }
+          writeFileSync(`${process.env.REPORT_DIR}/published-readback.json`, JSON.stringify(metadata));
+          NODE
+          node scripts/verify-alas-publication.mjs \
+            --mode npm \
+            --metadata "$REPORT_DIR/published-readback.json" \
+            --package @alas-ide/claude-agent-acp \
+            --version "$VERSION" \
+            --integrity "$INTEGRITY" \
+            --upstream-version "$ALAS_UPSTREAM_VERSION" \
+            --upstream-commit "$ALAS_UPSTREAM_COMMIT" \
+            --source-commit "$ALAS_SOURCE_COMMIT" \
+            > "$REPORT_DIR/npm-publication-verification.json"
+          echo "Verified exact npm version, latest, integrity, alasDownstream metadata, dist.attestations, and provenance." >> "$REPORT_DIR/summary.md"
       - name: Write durable publication summary
         if: ${{ always() }}
         run: |
@@ -232,6 +315,17 @@ jobs:
               --target "$SOURCE_COMMIT" --title "$tag" \
               --notes "npm: @alas-ide/claude-agent-acp@$VERSION. Upstream tag: v$UPSTREAM_VERSION. Upstream commit: $UPSTREAM_COMMIT. Source commit: $SOURCE_COMMIT."
           fi
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" > "$RUNNER_TEMP/alas-tag.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$RUNNER_TEMP/alas-release.json"
+          node scripts/verify-alas-publication.mjs \
+            --mode github \
+            --tag "$tag" \
+            --tag-ref "$RUNNER_TEMP/alas-tag.json" \
+            --release "$RUNNER_TEMP/alas-release.json" \
+            --version "$VERSION" \
+            --upstream-version "$UPSTREAM_VERSION" \
+            --upstream-commit "$UPSTREAM_COMMIT" \
+            --source-commit "$SOURCE_COMMIT"
       - name: Write durable release summary
         if: ${{ always() }}
         run: |
