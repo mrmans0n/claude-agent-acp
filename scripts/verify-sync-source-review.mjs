@@ -3,7 +3,13 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildSyncCandidate, discoverCanonicalPreservedCommits } from "./build-sync-candidate.mjs";
+import { validateClaudePatchIdentities } from "./audit-downstream-patches.mjs";
+import {
+  buildSyncCandidate,
+  createProtectedIntegrationCommit,
+  discoverCanonicalPreservedCommits,
+  recordSyncReviewState,
+} from "./build-sync-candidate.mjs";
 import { verifyLedgerReviewTransition } from "./sync-review.mjs";
 
 const LEDGER_PATH = "docs/ALAS_DOWNSTREAM_PATCHES.json";
@@ -12,24 +18,50 @@ function git(cwd, ...args) {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
 }
 
-function findIntegrationCommit(cwd, sourceCommit, targetTag, targetCommit, upstreamMainRef) {
+function integrationShapeValid(cwd, commit, targetTag, targetCommit, upstreamMainRef) {
   const expected = `chore: integrate upstream ${targetTag}`;
-  const commits = git(cwd, "rev-list", "--first-parent", sourceCommit).split("\n").filter(Boolean);
-  for (const commit of commits) {
-    const subject = git(cwd, "show", "-s", "--format=%s", commit);
-    const parents = git(cwd, "rev-list", "--parents", "-n", "1", commit).split(" ").slice(1);
-    const botEmail = "41898282+github-actions[bot]@users.noreply.github.com";
-    if (
-      subject === expected &&
-      parents.length >= 2 &&
-      git(cwd, "show", "-s", "--format=%ae%n%ce", commit) === `${botEmail}\n${botEmail}` &&
-      git(cwd, "rev-parse", `${commit}^{tree}`) === git(cwd, "rev-parse", `${parents[1]}^{tree}`) &&
-      git(cwd, "merge-base", commit, upstreamMainRef) === targetCommit
-    ) {
-      return commit;
-    }
+  const subject = git(cwd, "show", "-s", "--format=%s", commit);
+  const parents = git(cwd, "rev-list", "--parents", "-n", "1", commit).split(" ").slice(1);
+  const botEmail = "41898282+github-actions[bot]@users.noreply.github.com";
+  return (
+    subject === expected &&
+    parents.length >= 2 &&
+    git(cwd, "show", "-s", "--format=%ae%n%ce", commit) === `${botEmail}\n${botEmail}` &&
+    git(cwd, "rev-parse", `${commit}^{tree}`) === git(cwd, "rev-parse", `${parents[1]}^{tree}`) &&
+    git(cwd, "merge-base", commit, upstreamMainRef) === targetCommit
+  );
+}
+
+function isFirstParentAncestor(cwd, ancestor, descendant) {
+  return git(cwd, "rev-list", "--first-parent", descendant).split("\n").includes(ancestor);
+}
+
+function findIntegrationCommit(
+  cwd,
+  sourceCommit,
+  priorProtectedCommit,
+  targetTag,
+  targetCommit,
+  upstreamMainRef,
+) {
+  if (integrationShapeValid(cwd, sourceCommit, targetTag, targetCommit, upstreamMainRef)) {
+    return sourceCommit;
   }
-  throw new Error(`Cannot find the ${targetTag} integration commit in source history`);
+  const parents = git(cwd, "rev-list", "--parents", "-n", "1", sourceCommit).split(" ").slice(1);
+  if (
+    priorProtectedCommit &&
+    parents.length === 2 &&
+    isFirstParentAncestor(cwd, priorProtectedCommit, parents[0]) &&
+    integrationShapeValid(cwd, parents[1], targetTag, targetCommit, upstreamMainRef) &&
+    git(cwd, "rev-parse", `${parents[1]}^1`) === parents[0] &&
+    git(cwd, "rev-parse", `${sourceCommit}^{tree}`) ===
+      git(cwd, "rev-parse", `${parents[1]}^{tree}`)
+  ) {
+    return parents[1];
+  }
+  throw new Error(
+    `Publication source is neither the exact reviewed ${targetTag} integration nor a tree-identical protected-branch merge wrapper`,
+  );
 }
 
 function verifyPreservedReferences(cwd, sourceCommit, review) {
@@ -122,13 +154,18 @@ function sourceTreeMatchesCandidate(cwd, sourceCommit, candidateCommit) {
 export function verifySyncSourceReview({
   cwd,
   sourceCommit,
+  priorProtectedCommit,
   upstreamMainRef,
   targetTag,
   targetRef = targetTag,
   review,
   ledger,
+  enforceKnownIdentities = false,
 }) {
   const source = git(cwd, "rev-parse", `${sourceCommit}^{commit}`);
+  const priorProtected = priorProtectedCommit
+    ? git(cwd, "rev-parse", `${priorProtectedCommit}^{commit}`)
+    : undefined;
   const targetCommit = git(cwd, "rev-parse", `${targetRef}^{commit}`);
   if (review?.toTag !== targetTag || review?.toCommit !== targetCommit) {
     throw new Error("Sync review target does not match the publication target");
@@ -136,15 +173,31 @@ export function verifySyncSourceReview({
   const integrationCommit = findIntegrationCommit(
     cwd,
     source,
+    priorProtected,
     targetTag,
     targetCommit,
     upstreamMainRef,
   );
   const previousAlas = git(cwd, "rev-parse", `${integrationCommit}^1`);
+  const wrapped = source !== integrationCommit;
+  if (priorProtected && !wrapped && previousAlas !== priorProtected) {
+    throw new Error(
+      `Exact integration first parent ${previousAlas} does not match independently verified prior protected commit ${priorProtected}`,
+    );
+  }
+  if (priorProtected && wrapped && !isFirstParentAncestor(cwd, priorProtected, previousAlas)) {
+    throw new Error(
+      `Protected merge wrapper first parent ${previousAlas} does not descend from independently verified prior protected commit ${priorProtected}`,
+    );
+  }
   const previousLedger = readPreviousLedger(cwd, previousAlas);
+  if (enforceKnownIdentities) {
+    validateClaudePatchIdentities(previousLedger);
+    validateClaudePatchIdentities(ledger);
+  }
   const canonicalPreservedCommits = verifyCompleteCanonicalPreservedCommits({
     cwd,
-    sourceCommit: source,
+    sourceCommit: integrationCommit,
     previousAlas,
     upstreamMainRef,
     targetCommit,
@@ -167,11 +220,48 @@ export function verifySyncSourceReview({
       upstreamMainRef,
       branch,
       review,
-      ledger,
+      ledger: previousLedger,
       allowReviewedPreserved: true,
     });
-    candidateCommit = candidate.candidateCommit;
-    sourceTreeMatchesCandidate(cwd, source, candidateCommit);
+    const recorded = recordSyncReviewState({
+      cwd: worktree,
+      targetRef: targetCommit,
+      targetTag,
+      review,
+      ledger,
+    });
+    candidateCommit = recorded.commit;
+    const integrationCandidate = git(cwd, "rev-parse", `${integrationCommit}^2`);
+    if (integrationCandidate !== candidateCommit) {
+      throw new Error(
+        `Integration candidate ${integrationCandidate} does not equal exact reviewed candidate ${candidateCommit}`,
+      );
+    }
+    const expectedParents = [previousAlas, candidateCommit];
+    if (canonicalPreservedCommits.length > 0) {
+      expectedParents.push(canonicalPreservedCommits.at(-1).commit);
+    }
+    const actualParents = git(cwd, "rev-list", "--parents", "-n", "1", integrationCommit)
+      .split(" ")
+      .slice(1);
+    if (JSON.stringify(actualParents) !== JSON.stringify(expectedParents)) {
+      throw new Error(
+        `Integration parents do not exactly match reviewed provenance: expected ${expectedParents.join(", ")}; received ${actualParents.join(", ")}`,
+      );
+    }
+    const expectedIntegration = createProtectedIntegrationCommit({
+      cwd,
+      tree: git(cwd, "rev-parse", `${candidateCommit}^{tree}`),
+      parentCommits: expectedParents,
+      targetCommit,
+      targetTag,
+    });
+    if (integrationCommit !== expectedIntegration) {
+      throw new Error(
+        `Publication integration ${integrationCommit} is not the exact deterministic reviewed integration ${expectedIntegration}`,
+      );
+    }
+    sourceTreeMatchesCandidate(cwd, source, candidate.candidateCommit);
   } finally {
     spawnSync("git", ["worktree", "remove", "--force", worktree], { cwd, encoding: "utf8" });
     spawnSync("git", ["branch", "-D", branch], { cwd, encoding: "utf8" });
@@ -202,11 +292,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const result = verifySyncSourceReview({
     cwd: resolve(args.cwd ?? "."),
     sourceCommit: args["source-commit"],
+    priorProtectedCommit: args["prior-protected-commit"],
     upstreamMainRef: args["upstream-main-ref"],
     targetRef: args["target-ref"] ?? args["target-tag"],
     targetTag: args["target-tag"],
     review: JSON.parse(readFileSync(resolve(args.review), "utf8")),
     ledger: JSON.parse(readFileSync(resolve(args.ledger), "utf8")),
+    enforceKnownIdentities: true,
   });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
