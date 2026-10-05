@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { format } from "prettier";
 import {
   advanceLedgerBaseTag,
   createSyncReview,
+  formatSyncJson,
   verifyLedgerReviewTransition,
   verifySyncReview,
 } from "./sync-review.mjs";
@@ -30,6 +32,44 @@ const audit = {
 };
 
 describe("sync review artifact", () => {
+  it.each([
+    {
+      version: 1,
+      baseTag: "v1.0.0",
+      patches: [
+        {
+          name: "feature-opt-in",
+          commit: "1".repeat(40),
+          files: ["docs/extensions.md", "src/agent.ts", "src/feature-extension.ts"],
+          tests: ["src/tests/agent.test.ts", "src/tests/feature.test.ts"],
+          lastResolution: {
+            fromTag: "v0.9.0",
+            toTag: "v1.0.0",
+            originalCommit: "2".repeat(40),
+            decision: "retain",
+          },
+        },
+      ],
+      retiredCommits: [],
+      preservedTransitions: [],
+    },
+    {
+      resolution: {
+        decision: "retain",
+        rationale: "x",
+        tests: ["x"],
+        automatic: false,
+      },
+    },
+  ])("serializes generated sync JSON as a repository-formatter fixed point", async (artifact) => {
+    const formatted = formatSyncJson(artifact);
+
+    expect(JSON.parse(formatted)).toEqual(artifact);
+    expect(formatted).toBe(
+      await format(formatted, { parser: "json", printWidth: 100, tabWidth: 2 }),
+    );
+  });
+
   it("auto-resolves only unaffected patches and leaves absorbed and overlap unresolved", () => {
     const review = createSyncReview({ audit, preservedCommits: [] });
 

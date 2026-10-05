@@ -262,6 +262,46 @@ describe("auditDownstreamPatches", () => {
 });
 
 describe("buildSyncCandidate", () => {
+  it("reconstructs the same candidate under different local Git and signing settings", () => {
+    const { cwd, git, commit } = fixture();
+    commit("base", { base: "base\n" });
+    git("tag", "v1.0.0");
+    git("branch", "alas");
+    git("switch", "alas");
+    commit("downstream patch", { "src/downstream.ts": "downstream\n" });
+    git("switch", "main");
+    commit("stable", { stable: "stable\n" });
+    git("tag", "v1.1.0");
+    git("branch", "upstream-main");
+
+    git("config", "user.name", "First Maintainer");
+    git("config", "user.email", "first@example.test");
+    const first = buildSyncCandidate({
+      cwd,
+      targetRef: "v1.1.0",
+      alasRef: "alas",
+      upstreamMainRef: "upstream-main",
+      branch: "candidate-first",
+    });
+
+    git("config", "user.name", "Second Maintainer");
+    git("config", "user.email", "second@example.test");
+    git("config", "commit.gpgSign", "true");
+    git("config", "user.signingKey", "does-not-exist");
+    const second = buildSyncCandidate({
+      cwd,
+      targetRef: "v1.1.0",
+      alasRef: "alas",
+      upstreamMainRef: "upstream-main",
+      branch: "candidate-second",
+    });
+
+    expect(second.candidateCommit).toBe(first.candidateCommit);
+    expect(git("show", "-s", "--format=%cn%n%ce", second.candidateCommit)).toBe(
+      "github-actions[bot]\n41898282+github-actions[bot]@users.noreply.github.com",
+    );
+  });
+
   it("starts at the exact tag and preserves only canonical same-version edits for manual review", () => {
     const { cwd, git, commit } = fixture();
     commit("base", { "src/base.ts": "base\n" });
