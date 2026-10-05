@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -135,6 +135,36 @@ export function discoverCanonicalPreservedCommits(options) {
   return discoverCanonicalCandidates(options)
     .filter((commit) => !isReviewOnlyCommit(options.cwd, commit))
     .map((commit) => commitSummary(options.cwd, commit));
+}
+
+export function recordSyncReviewState({ cwd, targetRef, targetTag, review, ledger }) {
+  mkdirSync(resolve(cwd, "docs"), { recursive: true });
+  writeFileSync(resolve(cwd, "docs/ALAS_SYNC_REVIEW.json"), `${JSON.stringify(review, null, 2)}\n`);
+  writeFileSync(
+    resolve(cwd, "docs/ALAS_DOWNSTREAM_PATCHES.json"),
+    `${JSON.stringify(ledger, null, 2)}\n`,
+  );
+  git(cwd, "add", "docs/ALAS_SYNC_REVIEW.json", "docs/ALAS_DOWNSTREAM_PATCHES.json");
+  if (spawnSync("git", ["diff", "--cached", "--quiet"], { cwd }).status === 0) {
+    return { commit: git(cwd, "rev-parse", "HEAD"), changed: false };
+  }
+  const date = git(cwd, "show", "-s", "--format=%cI", `${targetRef}^{commit}`);
+  const message = `chore: record upstream ${targetTag} sync review`;
+  execFileSync("git", ["commit", "-m", message], {
+    cwd,
+    encoding: "utf8",
+    stdio: "pipe",
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: "github-actions[bot]",
+      GIT_AUTHOR_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com",
+      GIT_AUTHOR_DATE: date,
+      GIT_COMMITTER_NAME: "github-actions[bot]",
+      GIT_COMMITTER_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com",
+      GIT_COMMITTER_DATE: date,
+    },
+  });
+  return { commit: git(cwd, "rev-parse", "HEAD"), changed: true };
 }
 
 export function buildSyncCandidate({
@@ -308,6 +338,35 @@ export function buildSyncCandidate({
   };
 }
 
+export function createProtectedIntegrationCommit({
+  cwd,
+  tree,
+  parentCommits,
+  targetCommit,
+  targetTag,
+}) {
+  const date = git(cwd, "show", "-s", "--format=%cI", targetCommit);
+  const message = `chore: integrate upstream ${targetTag}`;
+  return execFileSync(
+    "git",
+    ["commit-tree", tree, ...parentCommits.flatMap((parent) => ["-p", parent]), "-m", message],
+    {
+      cwd,
+      encoding: "utf8",
+      stdio: "pipe",
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "github-actions[bot]",
+        GIT_AUTHOR_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com",
+        GIT_AUTHOR_DATE: date,
+        GIT_COMMITTER_NAME: "github-actions[bot]",
+        GIT_COMMITTER_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com",
+        GIT_COMMITTER_DATE: date,
+      },
+    },
+  ).trim();
+}
+
 export function buildProtectedIntegration({
   cwd,
   targetRef,
@@ -356,52 +415,29 @@ export function buildProtectedIntegration({
         `Canonical sync ref ${canonicalSyncRef} moved from ${expectedCanonicalCommit} to ${canonicalCommit}; refusing to overwrite it`,
       );
     }
-    const canonicalTree = git(cwd, "rev-parse", `${canonicalCommit}^{tree}`);
     const alasIsAncestor = spawnSync(
       "git",
       ["merge-base", "--is-ancestor", alasCommit, canonicalCommit],
       { cwd },
     );
     const canonicalMergeBase = git(cwd, "merge-base", canonicalCommit, upstreamMainRef);
-    if (
-      canonicalTree === tree &&
-      alasIsAncestor.status === 0 &&
-      canonicalMergeBase === targetCommit
-    ) {
-      git(cwd, "update-ref", `refs/heads/${branch}`, canonicalCommit);
-      git(cwd, "checkout", branch);
-      return {
-        branch,
-        targetCommit,
-        candidateCommit,
-        alasCommit,
-        previousUpstreamBase,
-        integrationCommit: canonicalCommit,
-        mergeBase: canonicalMergeBase,
-        reused: true,
-      };
+    if (alasIsAncestor.status !== 0 || canonicalMergeBase !== targetCommit) {
+      throw new Error(
+        "Canonical provenance commit is not rooted in the protected Alas history and target tag",
+      );
     }
   }
-  const date = git(cwd, "show", "-s", "--format=%cI", targetCommit);
-  const message = `chore: integrate upstream ${targetTag}`;
-  const parents = ["-p", alasCommit, "-p", candidateCommit];
+  const parents = [alasCommit, candidateCommit];
   if (canonicalCommit && canonicalCommit !== alasCommit && canonicalCommit !== candidateCommit) {
-    parents.push("-p", canonicalCommit);
+    parents.push(canonicalCommit);
   }
-  const integrationCommit = execFileSync("git", ["commit-tree", tree, ...parents, "-m", message], {
+  const integrationCommit = createProtectedIntegrationCommit({
     cwd,
-    encoding: "utf8",
-    stdio: "pipe",
-    env: {
-      ...process.env,
-      GIT_AUTHOR_NAME: "github-actions[bot]",
-      GIT_AUTHOR_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com",
-      GIT_AUTHOR_DATE: date,
-      GIT_COMMITTER_NAME: "github-actions[bot]",
-      GIT_COMMITTER_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com",
-      GIT_COMMITTER_DATE: date,
-    },
-  }).trim();
+    tree,
+    parentCommits: parents,
+    targetCommit,
+    targetTag,
+  });
   git(cwd, "update-ref", `refs/heads/${branch}`, integrationCommit);
   git(cwd, "checkout", branch);
 
