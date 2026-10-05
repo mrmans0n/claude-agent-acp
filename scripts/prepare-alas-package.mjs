@@ -29,7 +29,7 @@ function publishedManifests(published) {
   throw new Error("published data must be an array or npm packument object");
 }
 
-export function selectAlasVersion({ upstreamVersion, sourceCommit, published }) {
+export function selectAlasVersion({ upstreamVersion, upstreamCommit, sourceCommit, published }) {
   const base = stableVersion(upstreamVersion);
   if (!FULL_COMMIT.test(String(sourceCommit ?? ""))) {
     throw new Error("sourceCommit must be a full 40-character git commit");
@@ -39,7 +39,19 @@ export function selectAlasVersion({ upstreamVersion, sourceCommit, published }) 
   const existing = manifests.find(
     (manifest) => manifest?.alasDownstream?.sourceCommit === sourceCommit,
   );
-  if (existing) return { version: existing.version, alreadyPublished: true };
+  if (existing) {
+    const expectedVersion = new RegExp(`^${base.replaceAll(".", "\\.")}-alas\\.(0|[1-9]\\d*)$`);
+    if (
+      !expectedVersion.test(existing.version ?? "") ||
+      existing.alasDownstream?.upstreamVersion !== base ||
+      existing.alasDownstream?.upstreamCommit !== upstreamCommit
+    ) {
+      throw new Error(
+        `Historical publication ${existing.version} has source metadata for another upstream release`,
+      );
+    }
+    return { version: existing.version, alreadyPublished: true };
+  }
 
   const versionPattern = new RegExp(`^${base.replaceAll(".", "\\.")}-alas\\.(0|[1-9]\\d*)$`);
   let highestRevision = 0;
@@ -65,6 +77,7 @@ export function prepareAlasPackage(packageJson, metadata) {
   const upstreamVersion = stableVersion(metadata?.upstreamVersion);
   const { version } = selectAlasVersion({
     upstreamVersion,
+    upstreamCommit: metadata.upstreamCommit,
     sourceCommit: metadata.sourceCommit,
     published: metadata.published,
   });
@@ -109,6 +122,7 @@ function main() {
   writeFileSync(packagePath, `${JSON.stringify(prepared, null, 2)}\n`);
   const { alreadyPublished } = selectAlasVersion({
     upstreamVersion: process.env.ALAS_UPSTREAM_VERSION,
+    upstreamCommit: process.env.ALAS_UPSTREAM_COMMIT,
     sourceCommit: process.env.ALAS_SOURCE_COMMIT,
     published,
   });

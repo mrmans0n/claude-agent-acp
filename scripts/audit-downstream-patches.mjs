@@ -7,7 +7,50 @@ function git(cwd, ...args) {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
 }
 
-function validateLedger(ledger) {
+const CLAUDE_PATCH_IDENTITIES = [
+  {
+    name: "goal-capability-opt-in",
+    identityCommit: "60749d07ff50308ef96c5251152a8d4986fe680f",
+    upstreamPr: 1245,
+    files: ["docs/air-extensions.md", "src/acp-agent.ts", "src/goal-extension.ts"],
+    tests: ["src/tests/acp-agent.test.ts"],
+  },
+  {
+    name: "async-tasks-opt-in",
+    identityCommit: "3e098c71628cc7d5927ee8a3d794faa433dce12d",
+    upstreamPr: null,
+    files: ["src/acp-agent.ts", "src/async-tasks.ts"],
+    tests: ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
+  },
+];
+
+function sameJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+export function validateClaudePatchIdentities(ledger) {
+  const patches = ledger?.patches;
+  const valid =
+    Array.isArray(patches) &&
+    patches.length === CLAUDE_PATCH_IDENTITIES.length &&
+    CLAUDE_PATCH_IDENTITIES.every((identity, index) => {
+      const patch = patches[index];
+      return (
+        patch?.name === identity.name &&
+        patch.identityCommit === identity.identityCommit &&
+        patch.upstreamPr === identity.upstreamPr &&
+        sameJson(patch.files, identity.files) &&
+        sameJson(patch.tests, identity.tests)
+      );
+    });
+  if (!valid) {
+    throw new Error(
+      "Downstream patch ledger must contain exactly the two known Claude functional patch identities",
+    );
+  }
+}
+
+function validateLedger(ledger, { enforceKnownIdentities = true } = {}) {
   if (ledger?.version !== 1 || !/^v\d+\.\d+\.\d+$/.test(ledger.baseTag ?? "")) {
     throw new Error("Downstream patch ledger must have version 1 and a stable baseTag");
   }
@@ -30,6 +73,7 @@ function validateLedger(ledger) {
       throw new Error(`Invalid downstream patch ledger entry: ${patch?.name ?? "unnamed"}`);
     }
   }
+  if (enforceKnownIdentities) validateClaudePatchIdentities(ledger);
 }
 
 function isEquivalent(cwd, targetRef, commit) {
@@ -39,8 +83,14 @@ function isEquivalent(cwd, targetRef, commit) {
   return line.startsWith("-");
 }
 
-export function auditDownstreamPatches({ cwd, ledger, targetRef, targetTag = targetRef }) {
-  validateLedger(ledger);
+export function auditDownstreamPatches({
+  cwd,
+  ledger,
+  targetRef,
+  targetTag = targetRef,
+  enforceKnownIdentities = true,
+}) {
+  validateLedger(ledger, { enforceKnownIdentities });
   const targetCommit = git(cwd, "rev-parse", "--verify", `${targetRef}^{commit}`);
   git(cwd, "rev-parse", "--verify", `${ledger.baseTag}^{commit}`);
   const changedFiles = new Set(
