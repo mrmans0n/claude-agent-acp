@@ -94,20 +94,16 @@ jobs:
           fi
           node --input-type=module <<'NODE'
           import { writeFileSync } from 'node:fs';
+          import { selectPublicationAnchor } from './scripts/prepare-alas-package.mjs';
           const response = await fetch('https://registry.npmjs.org/@alas-ide%2Fclaude-agent-acp');
           if (!response.ok) throw new Error(`downstream npm registry returned ${response.status}`);
           const metadata = await response.json();
-          const version = metadata['dist-tags']?.latest;
-          const manifest = metadata.versions?.[version];
-          if (!version || !manifest?.alasDownstream?.sourceCommit || !manifest?.dist?.integrity) {
-            throw new Error('latest downstream publication cannot anchor protected history');
-          }
+          const anchor = selectPublicationAnchor({
+            published: metadata,
+            sourceCommit: process.env.SOURCE_COMMIT,
+          });
           writeFileSync(`${process.env.REPORT_DIR}/published.json`, JSON.stringify(metadata));
-          writeFileSync(`${process.env.REPORT_DIR}/prior-publication.json`, JSON.stringify({
-            version,
-            integrity: manifest.dist.integrity,
-            ...manifest.alasDownstream,
-          }));
+          writeFileSync(`${process.env.REPORT_DIR}/prior-publication.json`, JSON.stringify(anchor));
           NODE
           prior_version="$(node -p "require('$REPORT_DIR/prior-publication.json').version")"
           prior_integrity="$(node -p "require('$REPORT_DIR/prior-publication.json').integrity")"
@@ -281,13 +277,14 @@ jobs:
           node --input-type=module <<'NODE'
           import { writeFileSync } from 'node:fs';
           const version = process.env.VERSION;
+          const maxAttempts = 60;
           let metadata;
-          for (let attempt = 0; attempt < 12; attempt += 1) {
+          for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
             const response = await fetch('https://registry.npmjs.org/@alas-ide%2Fclaude-agent-acp', { cache: 'no-store' });
             if (!response.ok) throw new Error(`npm registry returned ${response.status}`);
             metadata = await response.json();
             if (metadata['dist-tags']?.latest === version && metadata.versions?.[version]) break;
-            if (attempt === 11) throw new Error(`npm readback did not expose ${version} as latest`);
+            if (attempt === maxAttempts - 1) throw new Error(`npm readback did not expose ${version} as latest`);
             await new Promise(resolve => setTimeout(resolve, 5000));
           }
           const attestationUrl = metadata.versions[version].dist?.attestations?.url;
