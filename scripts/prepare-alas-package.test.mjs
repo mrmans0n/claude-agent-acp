@@ -1,8 +1,124 @@
 import { describe, expect, it } from "vitest";
-import { prepareAlasPackage, selectAlasVersion } from "./prepare-alas-package.mjs";
+import * as packagePreparation from "./prepare-alas-package.mjs";
+
+const { prepareAlasPackage, selectAlasVersion } = packagePreparation;
 
 const sourceCommit = "a".repeat(40);
 const upstreamCommit = "b".repeat(40);
+
+describe("selectPublicationAnchor", () => {
+  it("exports the publication anchor selector", () => {
+    expect(packagePreparation.selectPublicationAnchor).toBeTypeOf("function");
+  });
+
+  it("uses npm latest when it belongs to an earlier protected source", () => {
+    const previousSource = "c".repeat(40);
+    const published = {
+      "dist-tags": { latest: "0.85.1-alas.2" },
+      versions: {
+        "0.85.1-alas.2": {
+          dist: {
+            integrity: "sha512-previous",
+            attestations: { url: "https://registry.example/previous" },
+          },
+          alasDownstream: {
+            sourceCommit: previousSource,
+            upstreamCommit,
+            upstreamVersion: "0.85.1",
+          },
+        },
+      },
+    };
+
+    expect(packagePreparation.selectPublicationAnchor({ published, sourceCommit })).toEqual({
+      version: "0.85.1-alas.2",
+      integrity: "sha512-previous",
+      sourceCommit: previousSource,
+      upstreamCommit,
+      upstreamVersion: "0.85.1",
+    });
+  });
+
+  it("uses the most recent earlier source when npm latest is the publication being rerun", () => {
+    const previousSource = "c".repeat(40);
+    const olderSource = "d".repeat(40);
+    const published = {
+      "dist-tags": { latest: "0.86.0-alas.1" },
+      time: {
+        "0.85.1-alas.1": "2026-10-05T01:00:00.000Z",
+        "0.85.1-alas.2": "2026-10-05T02:00:00.000Z",
+        "0.86.0-alas.1": "2026-10-05T03:00:00.000Z",
+      },
+      versions: {
+        "0.85.1-alas.1": {
+          dist: {
+            integrity: "sha512-older",
+            attestations: { url: "https://registry.example/older" },
+          },
+          alasDownstream: {
+            sourceCommit: olderSource,
+            upstreamCommit,
+            upstreamVersion: "0.85.1",
+          },
+        },
+        "0.85.1-alas.2": {
+          dist: {
+            integrity: "sha512-previous",
+            attestations: { url: "https://registry.example/previous" },
+          },
+          alasDownstream: {
+            sourceCommit: previousSource,
+            upstreamCommit,
+            upstreamVersion: "0.85.1",
+          },
+        },
+        "0.86.0-alas.1": {
+          dist: {
+            integrity: "sha512-current",
+            attestations: { url: "https://registry.example/current" },
+          },
+          alasDownstream: {
+            sourceCommit,
+            upstreamCommit: "e".repeat(40),
+            upstreamVersion: "0.86.0",
+          },
+        },
+      },
+    };
+
+    expect(packagePreparation.selectPublicationAnchor({ published, sourceCommit })).toEqual({
+      version: "0.85.1-alas.2",
+      integrity: "sha512-previous",
+      sourceCommit: previousSource,
+      upstreamCommit,
+      upstreamVersion: "0.85.1",
+    });
+  });
+
+  it("fails closed when a rerun has no earlier attested publication anchor", () => {
+    const published = {
+      "dist-tags": { latest: "0.86.0-alas.1" },
+      time: { "0.86.0-alas.1": "2026-10-05T03:00:00.000Z" },
+      versions: {
+        "0.86.0-alas.1": {
+          dist: {
+            integrity: "sha512-current",
+            attestations: { url: "https://registry.example/current" },
+          },
+          alasDownstream: {
+            sourceCommit,
+            upstreamCommit,
+            upstreamVersion: "0.86.0",
+          },
+        },
+      },
+    };
+
+    expect(() => packagePreparation.selectPublicationAnchor({ published, sourceCommit })).toThrow(
+      /no earlier protected publication anchor/i,
+    );
+  });
+});
 
 describe("selectAlasVersion", () => {
   it("starts the first downstream revision at one", () => {
