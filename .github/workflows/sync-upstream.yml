@@ -195,6 +195,14 @@ jobs:
               exit 20
             fi
             candidate="$(git rev-parse HEAD)"
+            provenance_commit="$(node --input-type=module -e "import { readFileSync } from 'node:fs'; const preserved = JSON.parse(readFileSync('$REPORT_DIR/preserved.json', 'utf8')); process.stdout.write(preserved.at(-1)?.commit ?? '');")"
+            provenance_args=()
+            if [ -n "$provenance_commit" ]; then
+              provenance_args=(
+                --canonical-sync-ref "$provenance_commit"
+                --expected-canonical-commit "$provenance_commit"
+              )
+            fi
             node scripts/build-sync-candidate.mjs \
               --mode integration \
               --target-ref "refs/alas-upstream-tags/$TAG" \
@@ -204,7 +212,7 @@ jobs:
               --upstream-main-ref refs/remotes/alas-upstream/main \
               --branch "$BRANCH" \
               --output "$REPORT_DIR/integration.json" \
-              "${canonical_args[@]}"
+              "${provenance_args[@]}"
             printf '%s' "$resolved" > "$REPORT_DIR/review-resolved"
           ) > "$REPORT_DIR/build.log" 2>&1
           status=$?
