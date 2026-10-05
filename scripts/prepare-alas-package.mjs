@@ -29,6 +29,53 @@ function publishedManifests(published) {
   throw new Error("published data must be an array or npm packument object");
 }
 
+function publicationSummary(published, version) {
+  const manifest = published?.versions?.[version];
+  if (
+    !version ||
+    !manifest?.alasDownstream?.sourceCommit ||
+    !manifest?.alasDownstream?.upstreamCommit ||
+    !manifest?.alasDownstream?.upstreamVersion ||
+    !manifest?.dist?.integrity ||
+    !manifest?.dist?.attestations?.url
+  ) {
+    return undefined;
+  }
+  return {
+    version,
+    integrity: manifest.dist.integrity,
+    ...manifest.alasDownstream,
+  };
+}
+
+export function selectPublicationAnchor({ published, sourceCommit }) {
+  if (!FULL_COMMIT.test(String(sourceCommit ?? ""))) {
+    throw new Error("sourceCommit must be a full 40-character git commit");
+  }
+  const latestVersion = published?.["dist-tags"]?.latest;
+  const latest = publicationSummary(published, latestVersion);
+  if (!latest) {
+    throw new Error("latest downstream publication cannot anchor protected history");
+  }
+  if (latest.sourceCommit !== sourceCommit) return latest;
+
+  const previous = Object.keys(published.versions)
+    .filter((version) => version !== latestVersion)
+    .map((version) => ({
+      publishedAt: Date.parse(published?.time?.[version] ?? ""),
+      summary: publicationSummary(published, version),
+    }))
+    .filter(
+      ({ publishedAt, summary }) =>
+        Number.isFinite(publishedAt) && summary && summary.sourceCommit !== sourceCommit,
+    )
+    .sort((left, right) => right.publishedAt - left.publishedAt)[0]?.summary;
+  if (!previous) {
+    throw new Error("published source has no earlier protected publication anchor");
+  }
+  return previous;
+}
+
 export function selectAlasVersion({ upstreamVersion, upstreamCommit, sourceCommit, published }) {
   const base = stableVersion(upstreamVersion);
   if (!FULL_COMMIT.test(String(sourceCommit ?? ""))) {
