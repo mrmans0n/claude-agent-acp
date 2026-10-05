@@ -16,7 +16,8 @@ version.
 Keep `alas` protected with reviewed pull requests, the strict Build check, one
 approval, approval after the last push, deletion disabled, and history rewrites
 disabled. Admins remain subject to the same rules. The `npm` environment accepts
-deployments only from `alas` and requires maintainer approval.
+deployments only from protected branches and has no required reviewers, so
+dispatching the publication workflow is the publication decision.
 
 Disable inherited upstream publication workflows in the fork. Alas publication
 runs only through `.github/workflows/publish-alas.yml`, with OIDC provenance and
