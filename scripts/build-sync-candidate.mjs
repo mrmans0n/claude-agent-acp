@@ -38,7 +38,7 @@ function patchId(cwd, commit) {
 }
 
 function cherryPickDeterministically(cwd, commit) {
-  const args = ["cherry-pick"];
+  const args = ["-c", "commit.gpgSign=false", "cherry-pick"];
   if (isMerge(cwd, commit)) args.push("-m", "1");
   args.push(commit);
   const result = spawnSync("git", args, {
