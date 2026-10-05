@@ -72,6 +72,7 @@ jobs:
           test "$UPSTREAM_TAG" = "v$upstream_version"
           git fetch --no-tags https://github.com/agentclientprotocol/claude-agent-acp.git \
             '+refs/heads/main:refs/remotes/alas-upstream/main' \
+            '+refs/tags/*:refs/alas-upstream-tags/*' \
             "refs/tags/$UPSTREAM_TAG:refs/alas-upstream-tag"
           upstream_commit="$(git rev-parse 'refs/alas-upstream-tag^{commit}')"
           gh api "repos/agentclientprotocol/claude-agent-acp/releases/tags/$UPSTREAM_TAG" \
@@ -187,9 +188,11 @@ jobs:
             `${JSON.stringify(review.preservedCommits.map(({ commit, subject, constituentCommits }) => ({ commit, subject, constituentCommits })), null, 2)}\n`,
           );
           NODE
+            review_base_tag="$(node -p "require('$REPORT_DIR/review-ledger.json').baseTag")"
             node scripts/audit-downstream-patches.mjs \
               --target-ref refs/alas-upstream-tag \
               --target-tag "$UPSTREAM_TAG" \
+              --base-ref "refs/alas-upstream-tags/$review_base_tag" \
               --ledger "$REPORT_DIR/review-ledger.json" \
               --json "$REPORT_DIR/audit.json" \
               --markdown "$REPORT_DIR/audit.md" || test "$?" -eq 2
