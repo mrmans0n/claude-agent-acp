@@ -1,19 +1,16 @@
+import { compareVersions } from "./verify-upstream-release.mjs";
+
 const STABLE_TAG = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
-export function selectUpstreamSync({ tags, openHeads }) {
+export function selectUpstreamSync({ tags, packageVersion, openHeads }) {
   const stable = tags
-    .map((tag) => (typeof tag === "string" ? { name: tag, merged: false } : tag))
-    .filter((tag) => STABLE_TAG.test(tag.name))
-    .sort((a, b) => {
-      const left = STABLE_TAG.exec(a.name).slice(1).map(BigInt);
-      const right = STABLE_TAG.exec(b.name).slice(1).map(BigInt);
-      for (let i = 0; i < 3; i++) {
-        if (left[i] !== right[i]) return left[i] > right[i] ? -1 : 1;
-      }
-      return 0;
-    });
+    .map((tag) => (typeof tag === "string" ? { name: tag } : tag))
+    .filter(
+      (tag) => STABLE_TAG.test(tag.name) && compareVersions(tag.name.slice(1), packageVersion) > 0,
+    )
+    .sort((a, b) => compareVersions(b.name.slice(1), a.name.slice(1)));
   const newest = stable[0];
-  if (!newest || newest.merged) return null;
+  if (!newest) return null;
   const branch = `sync/upstream-${newest.name.slice(1)}`;
   return {
     tag: newest.name,
