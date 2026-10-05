@@ -147,6 +147,32 @@ The dependent release job creates `alas-v<version>` at the exact source commit.
 Existing tags are accepted only when they already point to that commit. Published
 versions and tags never move.
 
+### Hotfix publication
+
+A reviewed fork fix that cannot wait for the next stable upstream sync can be
+republished on the upstream version of the latest publication. Dispatch with
+`hotfix=true` and that publication's upstream tag:
+
+```sh
+gh workflow run publish-alas.yml --repo mrmans0n/claude-agent-acp --ref alas \
+  -f source_commit="$(git rev-parse origin/alas)" \
+  -f upstream_tag=vX.Y.Z -f hotfix=true
+```
+
+The prior publication is still verified against npm, its attestation, tag, and
+release. Instead of the upstream release agreement, merge-base, and sync review
+checks, `scripts/verify-alas-hotfix.mjs` then requires that:
+
+- the declared tag matches `package.json` and the prior publication's upstream
+  version and commit;
+- the source descends from the prior publication's source; and
+- `git merge-base SOURCE_COMMIT upstream/main` equals the prior source's
+  merge-base, so the hotfix adds no upstream history.
+
+Everything after the source gate is unchanged, and the next revision number is
+allocated as usual. A hotfix inherits the upstream content of the publication it
+builds on, including any upstream commits past the tag; it never adds more.
+
 ## Recovery
 
 If npm publication succeeds but tag or release creation fails, rerun the failed
