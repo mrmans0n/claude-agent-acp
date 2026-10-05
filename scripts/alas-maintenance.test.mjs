@@ -116,6 +116,43 @@ describe("auditDownstreamPatches", () => {
     expect(result.manualReview).toBe(manualReview);
   });
 
+  it("resolves the ledger base tag through the fetched upstream tag ref", () => {
+    const { cwd, git, commit } = fixture();
+    commit("base", { "src/base.ts": "base\n" });
+    git("update-ref", "refs/alas-upstream-tags/v1.0.0", "HEAD");
+    const patchCommit = commit("downstream patch", { "src/feature.ts": "downstream\n" });
+    git("reset", "-q", "--hard", "HEAD~1");
+    commit("upstream overlap", { "src/feature.ts": "upstream different\n" });
+    git("update-ref", "refs/alas-upstream-tags/v1.1.0", "HEAD");
+
+    const result = auditDownstreamPatches({
+      cwd,
+      targetRef: "refs/alas-upstream-tags/v1.1.0",
+      targetTag: "v1.1.0",
+      baseRef: "refs/alas-upstream-tags/v1.0.0",
+      enforceKnownIdentities: false,
+      ledger: {
+        version: 1,
+        baseTag: "v1.0.0",
+        patches: [
+          {
+            name: "feature-opt-in",
+            commit: patchCommit,
+            upstreamPr: null,
+            files: ["src/feature.ts"],
+            tests: ["src/tests/feature.test.ts"],
+          },
+        ],
+      },
+    });
+
+    expect(result.baseTag).toBe("v1.0.0");
+    expect(result.changedFiles).toEqual(["src/feature.ts"]);
+    expect(result.patches).toEqual([
+      expect.objectContaining({ name: "feature-opt-in", status: "overlap" }),
+    ]);
+  });
+
   it.each([
     ["missing", (patches) => patches.slice(0, 1)],
     ["duplicate", (patches) => [patches[0], patches[0]]],
