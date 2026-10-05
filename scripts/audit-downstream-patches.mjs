@@ -88,13 +88,15 @@ export function auditDownstreamPatches({
   ledger,
   targetRef,
   targetTag = targetRef,
+  baseRef = ledger?.baseTag,
   enforceKnownIdentities = true,
 }) {
   validateLedger(ledger, { enforceKnownIdentities });
   const targetCommit = git(cwd, "rev-parse", "--verify", `${targetRef}^{commit}`);
-  git(cwd, "rev-parse", "--verify", `${ledger.baseTag}^{commit}`);
+  // The fork does not mirror upstream tags, so callers pass the fetched ref for the ledger's base tag.
+  git(cwd, "rev-parse", "--verify", `${baseRef}^{commit}`);
   const changedFiles = new Set(
-    git(cwd, "diff", "--name-only", `${ledger.baseTag}..${targetRef}`).split("\n").filter(Boolean),
+    git(cwd, "diff", "--name-only", `${baseRef}..${targetRef}`).split("\n").filter(Boolean),
   );
   const patches = ledger.patches
     .filter((patch) => patch.disposition !== "dropped")
@@ -160,6 +162,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     ledger,
     targetRef: args["target-ref"],
     targetTag: args["target-tag"] ?? args["target-ref"],
+    baseRef: args["base-ref"] ?? ledger.baseTag,
   });
   const json = `${JSON.stringify(result, null, 2)}\n`;
   const markdown = renderPatchAuditMarkdown(result);
