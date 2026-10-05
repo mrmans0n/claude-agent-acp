@@ -37,17 +37,35 @@ describe("selectAlasVersion", () => {
     ).toBe("0.85.1-alas.1");
   });
 
-  it("reuses a published version for the source commit before filtering by upstream base", () => {
+  it("reuses only an exact prior publication for the same source and upstream identity", () => {
+    const published = [
+      {
+        version: "0.85.1-alas.7",
+        alasDownstream: { sourceCommit, upstreamCommit, upstreamVersion: "0.85.1" },
+      },
+    ];
+    expect(
+      selectAlasVersion({ upstreamVersion: "0.85.1", upstreamCommit, sourceCommit, published }),
+    ).toEqual({
+      version: "0.85.1-alas.7",
+      alreadyPublished: true,
+    });
+  });
+
+  it("rejects a historical publication whose source metadata belongs to another upstream", () => {
     const published = [
       {
         version: "0.85.0-alas.7",
-        alasDownstream: { sourceCommit, upstreamCommit: "c".repeat(40) },
+        alasDownstream: {
+          sourceCommit,
+          upstreamCommit: "c".repeat(40),
+          upstreamVersion: "0.85.0",
+        },
       },
     ];
-    expect(selectAlasVersion({ upstreamVersion: "0.85.1", sourceCommit, published })).toEqual({
-      version: "0.85.0-alas.7",
-      alreadyPublished: true,
-    });
+    expect(() =>
+      selectAlasVersion({ upstreamVersion: "0.85.1", upstreamCommit, sourceCommit, published }),
+    ).toThrow(/historical|metadata|upstream/i);
   });
 
   it("requires a full source commit hash", () => {
