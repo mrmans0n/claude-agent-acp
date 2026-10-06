@@ -118,6 +118,56 @@ describe("selectPublicationAnchor", () => {
       /no earlier protected publication anchor/i,
     );
   });
+
+  it("skips a verified incomplete latest publication when selecting the protected anchor", () => {
+    const previousSource = "c".repeat(40);
+    const partialSource = "d".repeat(40);
+    const published = {
+      "dist-tags": { latest: "0.86.0-alas.2" },
+      time: {
+        "0.86.0-alas.1": "2026-10-05T22:00:00.000Z",
+        "0.86.0-alas.2": "2026-10-06T16:00:00.000Z",
+      },
+      versions: {
+        "0.86.0-alas.1": {
+          dist: {
+            integrity: "sha512-previous",
+            attestations: { url: "https://registry.example/previous" },
+          },
+          alasDownstream: {
+            sourceCommit: previousSource,
+            upstreamCommit,
+            upstreamVersion: "0.86.0",
+          },
+        },
+        "0.86.0-alas.2": {
+          dist: {
+            integrity: "sha512-partial",
+            attestations: { url: "https://registry.example/partial" },
+          },
+          alasDownstream: {
+            sourceCommit: partialSource,
+            upstreamCommit,
+            upstreamVersion: "0.86.0",
+          },
+        },
+      },
+    };
+
+    expect(
+      packagePreparation.selectPublicationAnchor({
+        published,
+        sourceCommit,
+        excludedVersions: ["0.86.0-alas.2"],
+      }),
+    ).toEqual({
+      version: "0.86.0-alas.1",
+      integrity: "sha512-previous",
+      sourceCommit: previousSource,
+      upstreamCommit,
+      upstreamVersion: "0.86.0",
+    });
+  });
 });
 
 describe("selectAlasVersion", () => {
