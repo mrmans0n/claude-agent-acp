@@ -48,19 +48,31 @@ function publicationSummary(published, version) {
   };
 }
 
-export function selectPublicationAnchor({ published, sourceCommit }) {
+export function selectPublicationAnchor({ published, sourceCommit, excludedVersions = [] }) {
   if (!FULL_COMMIT.test(String(sourceCommit ?? ""))) {
     throw new Error("sourceCommit must be a full 40-character git commit");
   }
+  if (
+    !Array.isArray(excludedVersions) ||
+    excludedVersions.some((version) => typeof version !== "string")
+  ) {
+    throw new Error("excludedVersions must be an array of versions");
+  }
   const latestVersion = published?.["dist-tags"]?.latest;
-  const latest = publicationSummary(published, latestVersion);
-  if (!latest) {
+  const excluded = new Set(excludedVersions);
+  if (excluded.size > 1 || [...excluded].some((version) => version !== latestVersion)) {
+    throw new Error("only the verified incomplete latest publication may be excluded");
+  }
+  const latest = excluded.has(latestVersion)
+    ? undefined
+    : publicationSummary(published, latestVersion);
+  if (!excluded.has(latestVersion) && !latest) {
     throw new Error("latest downstream publication cannot anchor protected history");
   }
-  if (latest.sourceCommit !== sourceCommit) return latest;
+  if (latest && latest.sourceCommit !== sourceCommit) return latest;
 
   const previous = Object.keys(published.versions)
-    .filter((version) => version !== latestVersion)
+    .filter((version) => version !== latestVersion && !excluded.has(version))
     .map((version) => ({
       publishedAt: Date.parse(published?.time?.[version] ?? ""),
       summary: publicationSummary(published, version),
