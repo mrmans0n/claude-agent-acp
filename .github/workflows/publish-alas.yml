@@ -94,15 +94,83 @@ jobs:
           fi
           node --input-type=module <<'NODE'
           import { writeFileSync } from 'node:fs';
-          import { selectPublicationAnchor } from './scripts/prepare-alas-package.mjs';
           const response = await fetch('https://registry.npmjs.org/@alas-ide%2Fclaude-agent-acp');
           if (!response.ok) throw new Error(`downstream npm registry returned ${response.status}`);
           const metadata = await response.json();
+          writeFileSync(`${process.env.REPORT_DIR}/published.json`, JSON.stringify(metadata));
+          NODE
+          latest_version="$(node -p "require('$REPORT_DIR/published.json')['dist-tags'].latest")"
+          latest_source="$(node -p "require('$REPORT_DIR/published.json').versions['$latest_version'].alasDownstream.sourceCommit")"
+          [[ "$latest_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-alas\.(0|[1-9][0-9]*)$ ]]
+          [[ "$latest_source" =~ ^[0-9a-f]{40}$ ]]
+          latest_tag="alas-v$latest_version"
+          gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$latest_tag" \
+            > "$REPORT_DIR/latest-tag-matches.json"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            > "$REPORT_DIR/releases.json"
+          LATEST_TAG="$latest_tag" node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const tags = JSON.parse(readFileSync(`${process.env.REPORT_DIR}/latest-tag-matches.json`, 'utf8'))
+            .filter(({ ref }) => ref === `refs/tags/${process.env.LATEST_TAG}`);
+          const releases = JSON.parse(readFileSync(`${process.env.REPORT_DIR}/releases.json`, 'utf8'))
+            .flat()
+            .filter(({ tag_name: tag }) => tag === process.env.LATEST_TAG);
+          if (tags.length > 1 || releases.length > 1 || Boolean(tags.length) !== Boolean(releases.length)) {
+            throw new Error(`latest publication ${process.env.LATEST_TAG} has inconsistent GitHub state`);
+          }
+          writeFileSync(
+            `${process.env.REPORT_DIR}/latest-github-state.json`,
+            JSON.stringify({ complete: tags.length === 1 }),
+          );
+          NODE
+          partial_version=""
+          if [ "$(node -p "require('$REPORT_DIR/latest-github-state.json').complete")" != true ] && \
+             [ "$latest_source" != "$SOURCE_COMMIT" ]; then
+            test "$HOTFIX" = true || {
+              echo "::error::Latest npm publication $latest_version has no complete tag/release; a reviewed hotfix is required to supersede it."
+              exit 1
+            }
+            partial_version="$latest_version"
+            partial_source="$latest_source"
+            partial_integrity="$(node -p "require('$REPORT_DIR/published.json').versions['$partial_version'].dist.integrity")"
+            partial_upstream_version="$(node -p "require('$REPORT_DIR/published.json').versions['$partial_version'].alasDownstream.upstreamVersion")"
+            partial_upstream_commit="$(node -p "require('$REPORT_DIR/published.json').versions['$partial_version'].alasDownstream.upstreamCommit")"
+            partial_attestation_url="$(node -p "require('$REPORT_DIR/published.json').versions['$partial_version'].dist.attestations.url")"
+            test "$partial_upstream_version" = "$upstream_version"
+            test "$partial_upstream_commit" = "$upstream_commit"
+            git merge-base --is-ancestor "$partial_source" "$SOURCE_COMMIT"
+            PARTIAL_ATTESTATION_URL="$partial_attestation_url" node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+          const response = await fetch(process.env.PARTIAL_ATTESTATION_URL, { cache: 'no-store' });
+          if (!response.ok) throw new Error(`partial npm attestation endpoint returned ${response.status}`);
+          writeFileSync(`${process.env.REPORT_DIR}/partial-attestation.json`, JSON.stringify(await response.json()));
+          NODE
+            node scripts/verify-alas-publication.mjs \
+              --mode npm \
+              --metadata "$REPORT_DIR/published.json" \
+              --package @alas-ide/claude-agent-acp \
+              --version "$partial_version" \
+              --integrity "$partial_integrity" \
+              --upstream-version "$partial_upstream_version" \
+              --upstream-commit "$partial_upstream_commit" \
+              --source-commit "$partial_source" \
+              --attestation "$REPORT_DIR/partial-attestation.json" \
+              --expected-repository "https://github.com/$GITHUB_REPOSITORY" \
+              --expected-workflow-path .github/workflows/publish-alas.yml \
+              --expected-workflow-ref refs/heads/alas \
+              > "$REPORT_DIR/partial-npm-verification.json"
+            echo "Verified incomplete npm publication \`$partial_version\` from ancestor \`$partial_source\`; this hotfix will supersede it without reusing or moving the version." >> "$REPORT_DIR/summary.md"
+          fi
+          PARTIAL_VERSION="$partial_version" node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { selectPublicationAnchor } from './scripts/prepare-alas-package.mjs';
+          const metadata = JSON.parse(readFileSync(`${process.env.REPORT_DIR}/published.json`, 'utf8'));
+          const excludedVersions = process.env.PARTIAL_VERSION ? [process.env.PARTIAL_VERSION] : [];
           const anchor = selectPublicationAnchor({
             published: metadata,
             sourceCommit: process.env.SOURCE_COMMIT,
+            excludedVersions,
           });
-          writeFileSync(`${process.env.REPORT_DIR}/published.json`, JSON.stringify(metadata));
           writeFileSync(`${process.env.REPORT_DIR}/prior-publication.json`, JSON.stringify(anchor));
           NODE
           prior_version="$(node -p "require('$REPORT_DIR/prior-publication.json').version")"
@@ -110,6 +178,10 @@ jobs:
           prior_source="$(node -p "require('$REPORT_DIR/prior-publication.json').sourceCommit")"
           prior_upstream_version="$(node -p "require('$REPORT_DIR/prior-publication.json').upstreamVersion")"
           prior_upstream_commit="$(node -p "require('$REPORT_DIR/prior-publication.json').upstreamCommit")"
+          prior_requires_latest="false"
+          if [ "$prior_version" = "$(node -p "require('$REPORT_DIR/published.json')['dist-tags'].latest")" ]; then
+            prior_requires_latest="true"
+          fi
           prior_attestation_url="$(node -p "require('$REPORT_DIR/published.json').versions['$prior_version'].dist.attestations.url")"
           PRIOR_ATTESTATION_URL="$prior_attestation_url" node --input-type=module <<'NODE'
           import { writeFileSync } from 'node:fs';
@@ -133,6 +205,7 @@ jobs:
             --expected-repository "https://github.com/$GITHUB_REPOSITORY" \
             --expected-workflow-path .github/workflows/publish-alas.yml \
             --expected-workflow-ref refs/heads/alas \
+            --require-latest "$prior_requires_latest" \
             > "$REPORT_DIR/prior-npm-verification.json"
           node scripts/verify-alas-publication.mjs \
             --mode github \
@@ -289,12 +362,21 @@ jobs:
           }
           const attestationUrl = metadata.versions[version].dist?.attestations?.url;
           if (typeof attestationUrl !== 'string') throw new Error(`npm readback did not expose provenance for ${version}`);
-          const attestationResponse = await fetch(attestationUrl, { cache: 'no-store' });
-          if (!attestationResponse.ok) {
-            throw new Error(`npm attestation endpoint returned ${attestationResponse.status}`);
+          const attestationMaxAttempts = 60;
+          let attestation;
+          for (let attestationAttempt = 0; attestationAttempt < attestationMaxAttempts; attestationAttempt += 1) {
+            const attestationResponse = await fetch(attestationUrl, { cache: 'no-store' });
+            if (attestationResponse.ok) {
+              attestation = await attestationResponse.json();
+              break;
+            }
+            if (attestationAttempt === attestationMaxAttempts - 1) {
+              throw new Error(`npm attestation endpoint returned ${attestationResponse.status}`);
+            }
+            await new Promise(resolve => setTimeout(resolve, 5000));
           }
           writeFileSync(`${process.env.REPORT_DIR}/published-readback.json`, JSON.stringify(metadata));
-          writeFileSync(`${process.env.REPORT_DIR}/attestation-readback.json`, JSON.stringify(await attestationResponse.json()));
+          writeFileSync(`${process.env.REPORT_DIR}/attestation-readback.json`, JSON.stringify(attestation));
           NODE
           node scripts/verify-alas-publication.mjs \
             --mode npm \
