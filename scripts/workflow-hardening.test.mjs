@@ -124,8 +124,15 @@ describe("publish workflow hardening", () => {
 
   it("supports idempotent reruns after npm has published the requested source", () => {
     expect(publish).toContain("selectPublicationAnchor");
+    expect(publish).toContain("excludedVersions");
+    expect(publish).toContain("partial_version");
+    expect(publish).toContain('git merge-base --is-ancestor "$partial_source" "$SOURCE_COMMIT"');
+    expect(publish).toContain('prior_requires_latest="false"');
+    expect(publish).toContain('--require-latest "$prior_requires_latest"');
     expect(publish).toContain("const maxAttempts = 60");
     expect(publish).toContain("attempt === maxAttempts - 1");
+    expect(publish).toContain("const attestationMaxAttempts = 60");
+    expect(publish).toContain("attestationAttempt === attestationMaxAttempts - 1");
   });
 });
 
