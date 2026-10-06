@@ -120,6 +120,28 @@ describe("verifyNpmPublication", () => {
     ).toThrow(/provenance.*source|source.*provenance/i);
   });
 
+  it("verifies a historical protected anchor when a newer publication is latest", () => {
+    const metadata = npmMetadata();
+    metadata["dist-tags"].latest = "1.2.3-alas.5";
+
+    expect(
+      verifyNpmPublication({
+        npmMetadata: metadata,
+        packageName: "@alas-ide/claude-agent-acp",
+        version,
+        integrity,
+        upstreamVersion: "1.2.3",
+        upstreamCommit,
+        sourceCommit,
+        attestation: attestation(),
+        expectedRepository,
+        expectedWorkflowPath,
+        expectedWorkflowRef,
+        requireLatest: false,
+      }),
+    ).toEqual(expect.objectContaining({ version, integrity, sourceCommit }));
+  });
+
   it.each([
     ["latest", (metadata) => (metadata["dist-tags"].latest = "1.2.3-alas.3")],
     ["version", (metadata) => delete metadata.versions[version]],
