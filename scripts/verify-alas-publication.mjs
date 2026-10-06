@@ -107,12 +107,15 @@ export function verifyNpmPublication({
   expectedRepository,
   expectedWorkflowPath,
   expectedWorkflowRef,
+  requireLatest = true,
 }) {
   validateExpected({ version, sourceCommit, upstreamVersion, upstreamCommit });
   if (typeof integrity !== "string" || !integrity.startsWith("sha512-")) {
     throw new Error("Expected npm integrity is invalid");
   }
-  requireEqual(npmMetadata?.["dist-tags"]?.latest, version, "npm latest");
+  if (requireLatest) {
+    requireEqual(npmMetadata?.["dist-tags"]?.latest, version, "npm latest");
+  }
   const manifest = npmMetadata?.versions?.[version];
   if (!manifest) throw new Error(`npm version metadata for ${version} is missing`);
   requireEqual(manifest.name, packageName, "npm package name");
@@ -243,6 +246,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   };
   let result;
   if (args.mode === "npm") {
+    const requireLatest = args["require-latest"] ?? "true";
+    if (!/^(true|false)$/.test(requireLatest)) {
+      throw new Error("--require-latest must be true or false");
+    }
     result = verifyNpmPublication({
       ...common,
       packageName: args.package,
@@ -252,6 +259,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       expectedRepository: args["expected-repository"],
       expectedWorkflowPath: args["expected-workflow-path"],
       expectedWorkflowRef: args["expected-workflow-ref"],
+      requireLatest: requireLatest === "true",
     });
   } else if (args.mode === "installed") {
     result = verifyInstalledPublication({
