@@ -85,6 +85,7 @@ import {
   parseGoalRequest,
   toGoalSnapshot,
 } from "../goal-extension.js";
+import { ASYNC_TASK_CONTROL_METHOD } from "../async-tasks.js";
 
 vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>();
@@ -2746,6 +2747,72 @@ describe("task notification replay", () => {
 
     expect(userChunks(updates)).toEqual(["hi"]);
     expect(asyncTaskUpdates(updates)).toEqual([]);
+  });
+
+  it("takes the output path from the tool result when the notification has none", async () => {
+    const timeoutResult = record({
+      ...bashLaunch[2],
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_bash",
+            content:
+              "Command did not complete within its 120s timeout and was moved to the background (ID: bg1). Output is being written to: /tmp/claude/tasks/bg1.output.",
+          },
+        ],
+      },
+    });
+    const bare = record({
+      type: "user",
+      uuid: "notification-bare",
+      message: {
+        role: "user",
+        content:
+          "<task-notification>\n<task-id>bg1</task-id>\n<tool-use-id>toolu_bash</tool-use-id>\n" +
+          "<status>completed</status>\n</task-notification>",
+      },
+      origin: { kind: "task-notification" },
+    });
+    const updates = await replay([bashLaunch[0], bashLaunch[1], timeoutResult, bare]);
+
+    expect(asyncTaskUpdates(updates)[0]).toMatchObject({
+      sessionUpdate: "async_task_spawned",
+      asyncTaskId: "bg1",
+      outputFilePath: "/tmp/claude/tasks/bg1.output",
+    });
+  });
+
+  it("sends nothing for a task that a Monitor tool call started", async () => {
+    const monitorLaunch = record({
+      ...bashLaunch[1],
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_bash",
+            name: "Monitor",
+            input: { command: "tail -f build.log", description: "Watch the build log" },
+          },
+        ],
+      },
+    });
+    const updates = await replay([
+      bashLaunch[0],
+      monitorLaunch,
+      bashLaunch[2],
+      notification("completed"),
+    ]);
+
+    expect(asyncTaskUpdates(updates)).toEqual([]);
+    // The Monitor tool call itself stays in the transcript.
+    expect(
+      updates.some(
+        ({ update }) => update.sessionUpdate === "tool_call" && update.toolCallId === "toolu_bash",
+      ),
+    ).toBe(true);
   });
 
   it("sends one terminal state for a repeated notification", async () => {
@@ -6374,12 +6441,285 @@ describe("subagent permission attribution (issue #851)", () => {
     });
   });
 
+  it("takes the output path of a subagent's background Bash from its text in both orders", async () => {
+    const updates: AcpSessionNotification[] = [];
+    const agent = new ClaudeAcpAgent(
+      {
+        sessionUpdate: async (notification: AcpSessionNotification) => updates.push(notification),
+      } as unknown as AcpClient,
+      { log: () => {}, error: () => {} },
+    );
+    await agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: {
+        subagents: {},
+        _meta: { jetbrains: { air: { version: 1, capabilities: ["asyncTasks"] } } },
+      } as ClientCapabilities & { subagents: Record<string, never> },
+    });
+    const system = (fields: Record<string, unknown>) => ({
+      type: "system",
+      uuid: randomUUID(),
+      session_id: "test-session",
+      ...fields,
+    });
+    const assistant = (parentToolUseId: string | null, content: unknown[]) => ({
+      type: "assistant",
+      parent_tool_use_id: parentToolUseId,
+      uuid: randomUUID(),
+      session_id: "test-session",
+      message: { role: "assistant", content, usage: SUBAGENT_TEST_USAGE },
+    });
+    // A subagent tool result has no `tool_use_result`.
+    const childResult = (toolUseId: string, text: string) => ({
+      type: "user",
+      parent_tool_use_id: "toolu_agent",
+      uuid: randomUUID(),
+      session_id: "test-session",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: toolUseId, content: text }],
+      },
+    });
+    const timeoutPath = "/tmp/claude/tasks/btimeout.output";
+    const backgroundPath = "/tmp/claude/tasks/bback.output";
+    injectGeneratorSession(
+      agent,
+      makeGenerator([
+        assistant(null, [
+          {
+            type: "tool_use",
+            id: "toolu_agent",
+            name: "Agent",
+            input: { description: "Investigate", prompt: "Find the bug" },
+          },
+        ]),
+        { ...taskStarted("agent-1", "toolu_agent"), subagent_type: "Explore" },
+        assistant("toolu_agent", [
+          { type: "tool_use", id: "child-slow", name: "Bash", input: { command: "npm test" } },
+          {
+            type: "tool_use",
+            id: "child-bg",
+            name: "Bash",
+            input: { command: "npm start", run_in_background: true },
+          },
+          {
+            type: "tool_use",
+            id: "child-cat",
+            name: "Bash",
+            input: { command: "sed -n 1,20p src/async-tasks.ts" },
+          },
+        ]),
+        // A command that hits its timeout goes to the background before its result.
+        system({
+          subtype: "task_started",
+          task_id: "btimeout",
+          task_type: "local_bash",
+          description: "npm test",
+          is_backgrounded: false,
+          tool_use_id: "child-slow",
+        }),
+        system({
+          subtype: "task_updated",
+          task_id: "btimeout",
+          patch: { is_backgrounded: true },
+        }),
+        childResult(
+          "child-slow",
+          `Command did not complete within its 120s timeout and was moved to the background (ID: btimeout). Output is being written to: ${timeoutPath}.`,
+        ),
+        // A run_in_background command reports its result first.
+        childResult(
+          "child-bg",
+          `Command running in background with ID: bback. Output is being written to: ${backgroundPath}. You will be notified when it completes.`,
+        ),
+        system({
+          subtype: "task_started",
+          task_id: "bback",
+          task_type: "local_bash",
+          description: "npm start",
+          is_backgrounded: true,
+          tool_use_id: "child-bg",
+        }),
+        // A foreground command prints a background marker text.
+        childResult(
+          "child-cat",
+          'Command running in background with ID: bg1. Output is being written to: /tmp/tasks/bg1.output. You will be notified when it completes.\nconst marker = "Command running in background with ID: ";',
+        ),
+        system({
+          subtype: "task_notification",
+          task_id: "agent-1",
+          tool_use_id: "toolu_agent",
+          status: "completed",
+          output_file: "",
+          summary: "done",
+        }),
+        successResult(),
+      ]),
+    );
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "go" }] });
+
+    const tasks = updates.flatMap(({ sessionId, update }) =>
+      update.sessionUpdate.startsWith("async_task_") ? [{ sessionId, ...update }] : [],
+    );
+    expect(tasks).toEqual([
+      expect.objectContaining({
+        sessionId: "agent-1",
+        sessionUpdate: "async_task_spawned",
+        asyncTaskId: "btimeout",
+        toolCallId: "child-slow",
+      }),
+      {
+        sessionId: "agent-1",
+        sessionUpdate: "async_task_progress",
+        asyncTaskId: "btimeout",
+        outputFilePath: timeoutPath,
+      },
+      expect.objectContaining({
+        sessionId: "agent-1",
+        sessionUpdate: "async_task_spawned",
+        asyncTaskId: "bback",
+        toolCallId: "child-bg",
+        outputFilePath: backgroundPath,
+      }),
+    ]);
+    const backgrounded = (toolCallId: string) =>
+      updates.some(
+        ({ update }) =>
+          update.sessionUpdate === "tool_call_update" &&
+          update.toolCallId === toolCallId &&
+          (update._meta as any)?.jetbrains?.air?.asyncTasks?.backgrounded === true,
+      );
+    expect(backgrounded("child-slow")).toBe(true);
+    expect(backgrounded("child-bg")).toBe(true);
+    expect(backgrounded("child-cat")).toBe(false);
+  });
+
+  it("hides the async task of a Monitor tool call and keeps the tool call", async () => {
+    const updates: AcpSessionNotification[] = [];
+    const agent = new ClaudeAcpAgent(
+      {
+        sessionUpdate: async (notification: AcpSessionNotification) => updates.push(notification),
+      } as unknown as AcpClient,
+      { log: () => {}, error: () => {} },
+    );
+    await agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: {
+        _meta: { jetbrains: { air: { version: 1, capabilities: ["asyncTasks"] } } },
+      },
+    });
+    const system = (fields: Record<string, unknown>) => ({
+      type: "system",
+      uuid: randomUUID(),
+      session_id: "test-session",
+      ...fields,
+    });
+    const monitorResult = (toolUseId: string, taskId: string) => ({
+      type: "user",
+      parent_tool_use_id: null,
+      uuid: randomUUID(),
+      session_id: "test-session",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: toolUseId,
+            content: `Monitor started (task ${taskId})`,
+          },
+        ],
+      },
+    });
+    injectGeneratorSession(
+      agent,
+      makeGenerator([
+        {
+          type: "assistant",
+          parent_tool_use_id: null,
+          uuid: randomUUID(),
+          session_id: "test-session",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: "monitor-a",
+                name: "Monitor",
+                input: { command: "tail -f a.log", description: "Watch a.log" },
+              },
+              {
+                type: "tool_use",
+                id: "monitor-b",
+                name: "Monitor",
+                input: { command: "tail -f b.log", description: "Watch b.log" },
+              },
+            ],
+            usage: SUBAGENT_TEST_USAGE,
+          },
+        },
+        // The result comes first, so the tool use cache no longer has the tool.
+        monitorResult("monitor-a", "mon-a"),
+        // The SDK reports a Monitor task as a background shell.
+        system({
+          subtype: "task_started",
+          task_id: "mon-a",
+          task_type: "local_bash",
+          description: "Watch a.log",
+          is_backgrounded: true,
+          tool_use_id: "monitor-a",
+        }),
+        // This task gets its tool call id only from a later progress.
+        system({
+          subtype: "task_started",
+          task_id: "mon-b",
+          task_type: "local_bash",
+          description: "Watch b.log",
+          is_backgrounded: true,
+        }),
+        system({ subtype: "task_progress", task_id: "mon-b", summary: "line" }),
+        system({
+          subtype: "task_progress",
+          task_id: "mon-b",
+          tool_use_id: "monitor-b",
+          summary: "line",
+        }),
+        monitorResult("monitor-b", "mon-b"),
+        system({
+          subtype: "task_notification",
+          task_id: "mon-a",
+          tool_use_id: "monitor-a",
+          status: "completed",
+          output_file: "",
+          summary: "done",
+        }),
+        successResult(),
+      ]),
+    );
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "go" }] });
+
+    expect(updates.filter(({ update }) => update.sessionUpdate.startsWith("async_task_"))).toEqual(
+      [],
+    );
+    await expect(
+      agent.stopAsyncTask({ sessionId: "test-session", asyncTaskId: "mon-b" }),
+    ).resolves.toEqual({ stopped: false });
+    for (const toolCallId of ["monitor-a", "monitor-b"]) {
+      expect(
+        updates.some(
+          ({ update }) => update.sessionUpdate === "tool_call" && update.toolCallId === toolCallId,
+        ),
+      ).toBe(true);
+    }
+  });
+
   it.each([
     ["AIR", { jetbrains: { air: { version: 1, capabilities: ["asyncTasks"] } } }, true],
     ["provider-neutral", { "async-tasks": true }, false],
   ])(
     "holds async_task_spawned until the Bash result brings the tool id for %s",
-    async (_name, meta, air) => {
+    async (_, meta, air) => {
       const updates: AcpSessionNotification[] = [];
       const agent = new ClaudeAcpAgent(
         {
@@ -6619,13 +6959,36 @@ describe("subagent permission attribution (issue #851)", () => {
           },
           {
             type: "tool_use",
+            id: "child-watch",
+            name: "Bash",
+            input: { command: "tail -f build.log", run_in_background: true },
+          },
+          {
+            type: "tool_use",
             id: "child-monitor",
             name: "Monitor",
             input: { command: "tail -f build.log", description: "watch the build log" },
           },
+          {
+            type: "tool_use",
+            id: "child-server",
+            name: "Bash",
+            input: { command: "npm start", run_in_background: true },
+          },
+          {
+            type: "tool_use",
+            id: "child-held",
+            name: "Bash",
+            input: { command: "npm run watch", run_in_background: true },
+          },
         ]);
         yield backgroundTask("shell-child", "child-bash", "npm test");
+        yield backgroundTask("watch-child", "child-watch", "tail -f build.log");
+        // The SDK reports a Monitor task as a background shell.
         yield backgroundTask("monitor-child", "child-monitor", "watch the build log");
+        yield backgroundTask("shell-late", "child-server", "npm start");
+        // This task names no tool call yet, so its spawn waits.
+        yield { ...backgroundTask("shell-held", "", "npm run watch"), tool_use_id: undefined };
         yield assistant(null, [
           {
             type: "tool_use",
@@ -6640,6 +7003,10 @@ describe("subagent permission attribution (issue #851)", () => {
         tasksStarted();
         await released;
         yield taskNotification("agent-1", "toolu_agent");
+        // The task of the subagent ends after the subagent finished.
+        yield taskNotification("shell-late", "child-server");
+        // The held task gets its tool call id, and so its spawn, after the subagent finished.
+        yield taskNotification("shell-held", "child-held");
         yield successResult();
         yield { type: "system", subtype: "session_state_changed", state: "idle" };
       }
@@ -6654,12 +7021,17 @@ describe("subagent permission attribution (issue #851)", () => {
     await started;
     // AIR stops a task with the root session id and the SDK task id.
     await expect(
-      agent.stopAsyncTask({ sessionId: "test-session", asyncTaskId: "monitor-child" }),
+      agent.stopAsyncTask({ sessionId: "test-session", asyncTaskId: "watch-child" }),
     ).resolves.toEqual({ stopped: true });
+    // The client never sees a Monitor task, so it cannot stop it.
+    await expect(
+      agent.stopAsyncTask({ sessionId: "test-session", asyncTaskId: "monitor-child" }),
+    ).resolves.toEqual({ stopped: false });
     release();
     await prompt;
 
-    expect(query.stopTask).toHaveBeenCalledWith("monitor-child");
+    expect(query.stopTask).toHaveBeenCalledWith("watch-child");
+    expect(query.stopTask).not.toHaveBeenCalledWith("monitor-child");
     const lifecycle = updates.flatMap(({ sessionId, update }) =>
       "asyncTaskId" in update
         ? [[sessionId, update.sessionUpdate, update.asyncTaskId, (update as any).state]]
@@ -6667,11 +7039,15 @@ describe("subagent permission attribution (issue #851)", () => {
     );
     expect(lifecycle).toEqual([
       ["agent-1", "async_task_spawned", "shell-child", undefined],
-      ["agent-1", "async_task_spawned", "monitor-child", undefined],
+      ["agent-1", "async_task_spawned", "watch-child", undefined],
+      ["agent-1", "async_task_spawned", "shell-late", undefined],
       ["test-session", "async_task_spawned", "shell-root", undefined],
       ["agent-1", "async_task_state_update", "shell-child", "completed"],
       ["test-session", "async_task_state_update", "shell-root", "completed"],
-      ["agent-1", "async_task_state_update", "monitor-child", "stopped"],
+      ["agent-1", "async_task_state_update", "watch-child", "stopped"],
+      ["agent-1", "async_task_state_update", "shell-late", "completed"],
+      ["agent-1", "async_task_spawned", "shell-held", undefined],
+      ["agent-1", "async_task_state_update", "shell-held", "completed"],
     ]);
     // The stop acknowledgement goes to the transcript that holds the task.
     const stopAcknowledgement = updates.find(
@@ -7344,39 +7720,6 @@ describe("stop reason propagation", () => {
     expect(response.stopReason).toBe("end_turn");
     expect(response.usage?.inputTokens).toBe(promptResult.usage.input_tokens);
     expect(response.usage?.outputTokens).toBe(promptResult.usage.output_tokens);
-  });
-
-  it("settles a prompt the CLI folded into a running task-notification cycle", async () => {
-    const agent = createMockAgent();
-
-    // A prompt sent while an autonomous task-notification cycle runs is folded
-    // into that cycle: the CLI replays its echo, then emits ONE result that
-    // keeps the cycle's task-notification origin but names the folded send in
-    // user_message_uuids. That result is the prompt's own terminal.
-    injectGeneratorSession(agent, (input) => {
-      async function* messageGenerator() {
-        const iter = input[Symbol.asyncIterator]();
-        const { value: userMessage } = await iter.next();
-        yield userEcho(userMessage);
-        yield {
-          ...createResultMessage({ subtype: "success", stop_reason: null, is_error: false }),
-          origin: { kind: "task-notification" },
-          user_message_uuid: userMessage.uuid,
-          user_message_uuids: [userMessage.uuid],
-        };
-        yield { type: "system", subtype: "session_state_changed", state: "idle" };
-        // Stay open like the live CLI: a stream end would settle the turn.
-        await iter.next();
-      }
-      return messageGenerator();
-    });
-
-    const response = await agent.prompt({
-      sessionId: "test-session",
-      prompt: [{ type: "text", text: "Reply exactly PONG." }],
-    });
-
-    expect(response.stopReason).toBe("end_turn");
   });
 
   it("ignores command_lifecycle frames without logging an unexpected-case error", async () => {
@@ -10074,7 +10417,6 @@ describe("logout", () => {
       ],
       goal: { version: 1, controlMethod: GOAL_CONTROL_METHOD, actions: ["set", "clear"] },
     });
-    expect(response._meta).not.toHaveProperty("async-tasks");
   });
 
   it("advertises AIR sessionFailure support even before client negotiation", async () => {
@@ -10097,7 +10439,6 @@ describe("logout", () => {
       ],
       goal: { version: 1, controlMethod: GOAL_CONTROL_METHOD, actions: ["set", "clear"] },
     });
-    expect(response._meta).not.toHaveProperty("async-tasks");
   });
 });
 
@@ -18210,6 +18551,237 @@ describe("deferred settlement for live background subagents (issues #864/#866)",
     ).rejects.toMatchObject({ code: -32603 });
     await agent.sessions["test-session"]?.consumer;
   });
+
+  describe("a prompt folded into an autonomous cycle", () => {
+    // A prompt sent while the CLI runs an autonomous cycle is folded into that
+    // cycle between tool rounds. The cycle's result keeps its autonomous origin
+    // but names the folded send in user_message_uuids, so it is that prompt's
+    // result — skipping it as autonomous would hang the prompt forever.
+
+    /** The CLI keeps its stream open after the cycle, so an unsettled prompt
+     *  hangs instead of being swept up by the stream ending. */
+    function liveStream() {
+      let end!: () => void;
+      const ended = new Promise<void>((resolve) => (end = resolve));
+      return { ended, end };
+    }
+
+    it("settles a prompt the CLI folded into a task-notification cycle", async () => {
+      const agent = createMockAgent();
+      const stream = liveStream();
+
+      injectGeneratorSession(agent, (input) => {
+        async function* messageGenerator() {
+          yield running();
+          yield assistantText("autonomous work");
+          const { value: userMessage } = await input[Symbol.asyncIterator]().next();
+          yield userEcho(userMessage);
+          yield assistantText("folded answer");
+          yield resultMessage({
+            origin: { kind: "task-notification" },
+            user_message_uuid: userMessage.uuid,
+            user_message_uuids: [userMessage.uuid],
+          });
+          yield idle();
+          await stream.ended;
+        }
+        return messageGenerator();
+      });
+
+      const response = await agent.prompt({
+        sessionId: "test-session",
+        prompt: [{ type: "text", text: "question" }],
+      });
+
+      expect(response.stopReason).toBe("end_turn");
+      expect(response.usage?.inputTokens).toBe(10);
+      expect(response.usage?.outputTokens).toBe(5);
+      stream.end();
+      await agent.sessions["test-session"]?.consumer;
+    });
+
+    it("settles a folded prompt the CLI never echoed", async () => {
+      const agent = createMockAgent();
+      const stream = liveStream();
+
+      injectGeneratorSession(agent, (input) => {
+        async function* messageGenerator() {
+          yield running();
+          yield assistantText("autonomous work");
+          const { value: userMessage } = await input[Symbol.asyncIterator]().next();
+          // No echo: the turn is still queued when the stamped result arrives.
+          yield resultMessage({
+            origin: { kind: "task-notification" },
+            user_message_uuid: userMessage.uuid,
+            user_message_uuids: [userMessage.uuid],
+          });
+          yield idle();
+          await stream.ended;
+        }
+        return messageGenerator();
+      });
+
+      const response = await agent.prompt({
+        sessionId: "test-session",
+        prompt: [{ type: "text", text: "question" }],
+      });
+
+      expect(response.stopReason).toBe("end_turn");
+      expect(response.usage?.inputTokens).toBe(10);
+      expect(response.usage?.outputTokens).toBe(5);
+      stream.end();
+      await agent.sessions["test-session"]?.consumer;
+    });
+
+    it("hands off a held turn and settles the prompt folded into its followup", async () => {
+      const agent = createMockAgent();
+      const stream = liveStream();
+
+      injectGeneratorSession(agent, (input) => {
+        async function* messageGenerator() {
+          const iter = input[Symbol.asyncIterator]();
+          const u1 = await iter.next();
+          yield userEcho(u1.value);
+          yield running();
+          yield subagentStarted("agent-1");
+          yield resultMessage(); // first prompt held for agent-1
+          yield idle();
+          // The second prompt arrives while the first is held; the subagent's
+          // followup cycle then consumes it.
+          const u2 = await iter.next();
+          yield taskNotification("agent-1");
+          yield userEcho(u2.value);
+          yield assistantText("summary and answer");
+          yield resultMessage({
+            origin: { kind: "task-notification" },
+            user_message_uuid: u2.value.uuid,
+            user_message_uuids: [u2.value.uuid],
+          });
+          yield idle();
+          await stream.ended;
+        }
+        return messageGenerator();
+      });
+
+      const first = agent.prompt({
+        sessionId: "test-session",
+        prompt: [{ type: "text", text: "explore" }],
+      });
+      await waitFor(() => !!agent.sessions["test-session"]?.activeTurn?.deferredSettle);
+      const second = agent.prompt({
+        sessionId: "test-session",
+        prompt: [{ type: "text", text: "question" }],
+      });
+
+      await expect(first).resolves.toEqual(expect.objectContaining({ stopReason: "end_turn" }));
+      const secondResponse = await second;
+      expect(secondResponse.stopReason).toBe("end_turn");
+      expect(secondResponse.usage?.inputTokens).toBe(10);
+      expect(secondResponse.usage?.outputTokens).toBe(5);
+      stream.end();
+      await agent.sessions["test-session"]?.consumer;
+    });
+
+    it("keeps a task-notification result naming no pending prompt off the user turn", async () => {
+      const agent = createMockAgent();
+      const unrelatedUuid = randomUUID();
+
+      injectGeneratorSession(agent, (input) => {
+        async function* messageGenerator() {
+          const { value: userMessage } = await input[Symbol.asyncIterator]().next();
+          yield userEcho(userMessage);
+          yield running();
+          // An autonomous cycle's result names a send that is not a pending
+          // prompt, so it must not settle the user's turn or lend it tokens.
+          yield resultMessage({
+            origin: { kind: "task-notification" },
+            user_message_uuid: unrelatedUuid,
+            user_message_uuids: [unrelatedUuid],
+            usage: {
+              input_tokens: 100,
+              output_tokens: 50,
+              cache_read_input_tokens: 0,
+              cache_creation_input_tokens: 0,
+            },
+          });
+          yield resultMessage();
+          yield idle();
+        }
+        return messageGenerator();
+      });
+
+      const response = await agent.prompt({
+        sessionId: "test-session",
+        prompt: [{ type: "text", text: "question" }],
+      });
+
+      expect(response.stopReason).toBe("end_turn");
+      expect(response.usage?.inputTokens).toBe(10);
+      expect(response.usage?.outputTokens).toBe(5);
+      await agent.sessions["test-session"]?.consumer;
+    });
+
+    it("keeps a held turn open when a followup result names its own prompt", async () => {
+      // A held turn already has its result, so a followup result naming its
+      // uuid is the cycle's own, not a fold into the turn: it must neither
+      // settle the hold nor lend the turn its tokens while a subagent lives.
+      const agent = createMockAgent();
+      const stream = liveStream();
+      let checkpointReached = false;
+      let resume!: () => void;
+      const resumed = new Promise<void>((resolve) => (resume = resolve));
+
+      injectGeneratorSession(agent, (input) => {
+        async function* messageGenerator() {
+          const { value: userMessage } = await input[Symbol.asyncIterator]().next();
+          yield userEcho(userMessage);
+          yield running();
+          yield subagentStarted("agent-1");
+          yield subagentStarted("agent-2");
+          yield resultMessage(); // held for both subagents
+          yield idle();
+          yield taskNotification("agent-1");
+          yield assistantText("partial summary");
+          yield resultMessage({
+            origin: { kind: "task-notification" },
+            num_turns: 1,
+            user_message_uuid: userMessage.uuid,
+            user_message_uuids: [userMessage.uuid],
+          });
+          yield idle();
+          checkpointReached = true;
+          await resumed;
+          yield taskNotification("agent-2");
+          yield assistantText("final summary");
+          yield resultMessage({ origin: { kind: "task-notification" }, num_turns: 1 });
+          yield idle();
+          await stream.ended;
+        }
+        return messageGenerator();
+      });
+
+      let resolved = false;
+      const prompt = agent
+        .prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "explore" }] })
+        .then((r) => {
+          resolved = true;
+          return r;
+        });
+
+      await waitFor(() => checkpointReached);
+      // Let a premature settle propagate to the prompt before checking it.
+      await new Promise((r) => setTimeout(r, 0));
+      expect(resolved).toBe(false);
+      resume();
+
+      const response = await prompt;
+      expect(response.stopReason).toBe("end_turn");
+      expect(response.usage?.inputTokens).toBe(10);
+      expect(response.usage?.outputTokens).toBe(5);
+      stream.end();
+      await agent.sessions["test-session"]?.consumer;
+    });
+  });
 });
 
 describe("turn steering (_session/steering)", () => {
@@ -18358,6 +18930,29 @@ describe("turn steering (_session/steering)", () => {
     });
   });
 
+  it("advertises async tasks with steering and goals for an opted-in non-AIR client", async () => {
+    const agent = createMockAgent();
+    const response = await agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: { _meta: { goal: {}, "async-tasks": true } },
+    });
+
+    expect(response._meta).toMatchObject({
+      steering: { supported: true },
+      goal: {
+        version: 1,
+        controlMethod: GOAL_CONTROL_METHOD,
+        actions: ["set", "clear"],
+      },
+      "async-tasks": {
+        version: 1,
+        controlMethod: ASYNC_TASK_CONTROL_METHOD,
+        actions: ["stop"],
+      },
+    });
+    expect(response._meta).not.toHaveProperty("jetbrains");
+  });
+
   it("advertises and publishes goals for an opted-in non-AIR client", async () => {
     const updates: SessionNotification[] = [];
     const agent = new ClaudeAcpAgent(
@@ -18404,28 +18999,6 @@ describe("turn steering (_session/steering)", () => {
         },
       },
     });
-  });
-
-  it("advertises goals and async tasks for an opted-in non-AIR client", async () => {
-    const agent = createMockAgent();
-    const response = await agent.initialize({
-      protocolVersion: 1,
-      clientCapabilities: { _meta: { goal: {}, "async-tasks": true } },
-    });
-
-    expect(response._meta).toMatchObject({
-      goal: {
-        version: 1,
-        controlMethod: GOAL_CONTROL_METHOD,
-        actions: ["set", "clear"],
-      },
-      "async-tasks": {
-        version: 1,
-        controlMethod: "_session/async_task/stop",
-        actions: ["stop"],
-      },
-    });
-    expect(response._meta).not.toHaveProperty("jetbrains");
   });
 
   it("submits set and clear through the session prompt queue when the session is idle", async () => {

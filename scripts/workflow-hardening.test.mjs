@@ -21,13 +21,12 @@ const checkoutSha = "3d3c42e5aac5ba805825da76410c181273ba90b1";
 const setupNodeSha = "820762786026740c76f36085b0efc47a31fe5020";
 
 describe("downstream patch ledger", () => {
-  it("records the functional patches with review metadata", () => {
+  it("records the two functional patches with review metadata", () => {
     expect(ledger.version).toBe(1);
     expect(ledger.baseTag).toMatch(/^v\d+\.\d+\.\d+$/);
     expect(ledger.patches.map((patch) => patch.name)).toEqual([
       "goal-capability-opt-in",
       "async-tasks-opt-in",
-      "advisor-tool-results",
     ]);
     for (const patch of ledger.patches) {
       expect(patch.commit).toMatch(/^[0-9a-f]{40}$/);
@@ -49,9 +48,8 @@ describe("downstream patch ledger", () => {
     expect([review.fromTag, review.toTag]).toContain(ledger.baseTag);
     if (ledger.baseTag === review.toTag) expect(review.resolved).toBe(true);
     expect(review.toCommit).toMatch(/^[0-9a-f]{40}$/);
-    // A hotfix can register a new patch after the last stable sync was reviewed.
-    expect(ledger.patches.map((patch) => patch.name)).toEqual(
-      expect.arrayContaining(review.patches.map((patch) => patch.name)),
+    expect(review.patches.map((patch) => patch.name)).toEqual(
+      ledger.patches.map((patch) => patch.name),
     );
   });
 });

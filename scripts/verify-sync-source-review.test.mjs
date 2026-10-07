@@ -406,7 +406,7 @@ describe("verifySyncSourceReview", () => {
     ).toThrow(/canonical preserved sync edits|exact reviewed|merge wrapper/i);
   });
 
-  it("rejects publication ledgers that are not anchored to the known patch identities", () => {
+  it("rejects publication ledgers that are not anchored to the two known patch identities", () => {
     const { cwd, git, review, ledger, sourceCommit } = sourceFixture();
     const genuinePreviousAlas = git("rev-parse", `${sourceCommit}^1`);
     expect(() =>
@@ -420,7 +420,7 @@ describe("verifySyncSourceReview", () => {
         ledger,
         enforceKnownIdentities: true,
       }),
-    ).toThrow(/known Claude functional patch identities/i);
+    ).toThrow(/two known Claude functional patch identities/i);
   });
 
   it("accepts a tree-identical protected-branch merge wrapper around the exact integration", () => {

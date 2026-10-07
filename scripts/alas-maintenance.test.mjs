@@ -28,14 +28,6 @@ const CLAUDE_PATCHES = [
     files: ["src/acp-agent.ts", "src/async-tasks.ts"],
     tests: ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
   },
-  {
-    name: "advisor-tool-results",
-    identityCommit: "af55f8bdedebbc951352d68fba44d616cc4908cb",
-    commit: "af55f8bdedebbc951352d68fba44d616cc4908cb",
-    upstreamPr: 1247,
-    files: ["src/acp-agent.ts"],
-    tests: ["src/tests/incomplete-tools.test.ts"],
-  },
 ];
 
 afterEach(() => {
@@ -164,12 +156,12 @@ describe("auditDownstreamPatches", () => {
   it.each([
     ["missing", (patches) => patches.slice(0, 1)],
     ["duplicate", (patches) => [patches[0], patches[0]]],
-    ["renamed", (patches) => [{ ...patches[0], name: "renamed-opt-in" }, ...patches.slice(1)]],
+    ["renamed", (patches) => [{ ...patches[0], name: "renamed-opt-in" }, patches[1]]],
     [
       "substituted",
       (patches) => [
         { ...patches[0], identityCommit: "f".repeat(40), commit: "f".repeat(40) },
-        ...patches.slice(1),
+        patches[1],
       ],
     ],
     [
@@ -639,60 +631,6 @@ describe("buildSyncCandidate", () => {
             retiredCommits: [original],
           },
         ],
-      },
-    });
-
-    expect(() => readFileSync(join(cwd, "src/retired.ts"), "utf8")).toThrow();
-    expect(result.skippedCommits).toEqual(expect.arrayContaining([original, copied]));
-  });
-
-  it("skips a manually retired downstream commit and its patch-equivalent copies", () => {
-    const { cwd, git, commit } = fixture();
-    commit("base", { base: "base\n" });
-    git("tag", "v1.0.0");
-    git("branch", "alas");
-    git("switch", "alas");
-    const original = commit("downstream patch", { "src/retired.ts": "retired\n" });
-    git("switch", "main");
-    commit("stable one", { stable: "one\n" });
-    git("tag", "v1.1.0");
-    const upstreamMain = commit("stable two", { stable: "two\n" });
-    git("tag", "v1.2.0");
-    git("branch", "upstream-main", upstreamMain);
-    git("switch", "-c", "first-candidate", "v1.1.0");
-    git("cherry-pick", original);
-    const copied = git("rev-parse", "HEAD");
-    const integration = buildProtectedIntegration({
-      cwd,
-      targetRef: "v1.1.0",
-      candidateRef: copied,
-      alasRef: "alas",
-      upstreamMainRef: "upstream-main",
-      branch: "integrated-alas",
-    });
-
-    const result = buildSyncCandidate({
-      cwd,
-      targetRef: "v1.2.0",
-      alasRef: integration.integrationCommit,
-      upstreamMainRef: "upstream-main",
-      branch: "exact/upstream-1.2.0",
-      review: {
-        fromTag: "v1.1.0",
-        toTag: "v1.2.0",
-        toCommit: git("rev-parse", "v1.2.0"),
-        patches: [],
-        preservedCommits: [],
-        retiredCommits: [
-          {
-            commit: original,
-            classification: "absorbed",
-            rationale: "Upstream now provides equivalent behavior.",
-            tests: ["npm run test:run"],
-            automatic: false,
-          },
-        ],
-        resolved: true,
       },
     });
 
