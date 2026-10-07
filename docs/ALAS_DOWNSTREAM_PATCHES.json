@@ -31,6 +31,15 @@
         "originalCommit": "3e098c71628cc7d5927ee8a3d794faa433dce12d",
         "decision": "retain"
       }
+    },
+    {
+      "name": "advisor-tool-results",
+      "identityCommit": "af55f8bdedebbc951352d68fba44d616cc4908cb",
+      "commit": "f1d8579c03ae1a5c0f7366f678229c0fb3a54116",
+      "upstreamPr": 1247,
+      "files": ["src/acp-agent.ts"],
+      "tests": ["src/tests/incomplete-tools.test.ts"],
+      "disposition": "active"
     }
   ],
   "retiredCommits": [],
