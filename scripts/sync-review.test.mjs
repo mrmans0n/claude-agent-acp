@@ -30,6 +30,14 @@ const audit = {
     patch("overlap", "overlap"),
   ],
 };
+const retiredCommit = "8".repeat(40);
+const retiredEntry = {
+  commit: retiredCommit,
+  classification: "absorbed",
+  rationale: "Upstream now settles prompts folded into the task-notification cycle.",
+  tests: ["src/tests/acp-agent.test.ts"],
+  automatic: false,
+};
 
 describe("sync review artifact", () => {
   it.each([
@@ -156,6 +164,74 @@ describe("sync review artifact", () => {
         classification: "preserved-sync-edit",
         resolution: expect.objectContaining({ decision: "retain", automatic: false }),
       }),
+    );
+  });
+
+  it("preserves valid manual retirements only for the same sync range", () => {
+    const safeAudit = { ...audit, patches: [patch("safe", "unaffected")] };
+    const existing = createSyncReview({ audit: safeAudit, preservedCommits: [] });
+    existing.retiredCommits = [retiredEntry];
+
+    const sameRange = createSyncReview({
+      audit: safeAudit,
+      existingReview: existing,
+      preservedCommits: [],
+    });
+    expect(sameRange.retiredCommits).toEqual([retiredEntry]);
+    expect(sameRange.resolved).toBe(true);
+
+    const nextRange = createSyncReview({
+      audit: {
+        ...safeAudit,
+        baseTag: "v1.1.0",
+        targetRef: "v1.2.0",
+        targetCommit: "b".repeat(40),
+      },
+      existingReview: {
+        ...existing,
+        retiredCommits: [{ ...retiredEntry, rationale: "" }],
+      },
+      preservedCommits: [],
+    });
+    expect(nextRange.retiredCommits).toEqual([]);
+  });
+
+  it.each([
+    ["a short commit", { ...retiredEntry, commit: "8".repeat(39) }],
+    ["an unsupported classification", { ...retiredEntry, classification: "obsolete" }],
+    ["an empty rationale", { ...retiredEntry, rationale: "   " }],
+    ["missing tests", { ...retiredEntry, tests: [] }],
+    ["an automatic decision", { ...retiredEntry, automatic: true }],
+  ])("rejects a resolved review containing %s", (_description, invalidEntry) => {
+    const safeAudit = { ...audit, patches: [patch("safe", "unaffected")] };
+    const review = createSyncReview({ audit: safeAudit, preservedCommits: [] });
+    review.retiredCommits = [invalidEntry];
+    review.resolved = true;
+
+    expect(() =>
+      createSyncReview({ audit: safeAudit, existingReview: review, preservedCommits: [] }),
+    ).toThrow(/retired/i);
+    expect(() => verifySyncReview({ audit: safeAudit, review, preservedCommits: [] })).toThrow(
+      /retired|resolved/i,
+    );
+  });
+
+  it("verifies manual retirements while accepting older reviews that omit the field", () => {
+    const safeAudit = { ...audit, patches: [patch("safe", "unaffected")] };
+    const legacyReview = createSyncReview({ audit: safeAudit, preservedCommits: [] });
+    delete legacyReview.retiredCommits;
+    expect(
+      verifySyncReview({ audit: safeAudit, review: legacyReview, preservedCommits: [] }),
+    ).toEqual(expect.objectContaining({ resolved: true, retiredCommits: [] }));
+
+    const existing = { ...legacyReview, retiredCommits: [retiredEntry] };
+    const review = createSyncReview({
+      audit: safeAudit,
+      existingReview: existing,
+      preservedCommits: [],
+    });
+    expect(verifySyncReview({ audit: safeAudit, review, preservedCommits: [] })).toEqual(
+      expect.objectContaining({ retiredCommits: [retiredEntry], resolved: true }),
     );
   });
 
@@ -336,5 +412,48 @@ describe("sync review artifact", () => {
       }),
     ]);
     expect(verifyLedgerReviewTransition({ ledger: result.ledger, review })).toBe(true);
+  });
+
+  it("durably records manual retirements and verifies their exact ledger transition", () => {
+    const safeAudit = { ...audit, patches: [patch("safe", "unaffected")] };
+    const existing = createSyncReview({ audit: safeAudit, preservedCommits: [] });
+    existing.retiredCommits = [retiredEntry];
+    const review = createSyncReview({
+      audit: safeAudit,
+      existingReview: existing,
+      preservedCommits: [],
+    });
+    const ledger = {
+      version: 1,
+      baseTag: "v1.0.0",
+      patches: [
+        {
+          name: "safe",
+          commit: "1".repeat(40),
+          upstreamPr: null,
+          files: ["src/safe.ts"],
+          tests: ["src/tests/safe.test.ts"],
+        },
+      ],
+      retiredCommits: ["9".repeat(40)],
+    };
+
+    const result = advanceLedgerBaseTag({ ledger, review });
+    expect(result.ledger.retiredCommits).toEqual(["9".repeat(40), retiredCommit]);
+    expect(
+      verifyLedgerReviewTransition({ ledger: result.ledger, review, previousLedger: ledger }),
+    ).toBe(true);
+
+    const omitted = structuredClone(result.ledger);
+    omitted.retiredCommits = omitted.retiredCommits.filter((commit) => commit !== retiredCommit);
+    expect(() =>
+      verifyLedgerReviewTransition({ ledger: omitted, review, previousLedger: ledger }),
+    ).toThrow(/exactly match|retired/i);
+
+    const invented = structuredClone(result.ledger);
+    invented.retiredCommits.push("7".repeat(40));
+    expect(() =>
+      verifyLedgerReviewTransition({ ledger: invented, review, previousLedger: ledger }),
+    ).toThrow(/exactly match|retired/i);
   });
 });
