@@ -47,6 +47,8 @@ type AsyncTask = {
 
 type TaskIdentity = { taskId?: unknown; task_id?: unknown };
 
+const MAX_TOOL_RESULT_PATHS = 500;
+
 export type AsyncTaskStarted = TaskIdentity & {
   taskType?: unknown;
   task_type?: unknown;
@@ -109,23 +111,20 @@ export const ASYNC_TASK_CONTROL_METHOD = "_session/async_task/stop";
 export const ASYNC_TASK_ACTIONS = ["stop"] as const;
 
 export function clientSupportsAsyncTasks(capabilities?: ClientCapabilities | null): boolean {
+  if (isAirClient(capabilities)) {
+    return clientSupportsAirCapability(capabilities, AIR_ASYNC_TASKS_CAPABILITY);
+  }
   const meta = capabilities?._meta as Record<string, unknown> | undefined;
-  return (
-    clientSupportsAirCapability(capabilities, AIR_ASYNC_TASKS_CAPABILITY) ||
-    meta?.["async-tasks"] === true
-  );
+  return meta?.["async-tasks"] === true;
 }
 
 export function asyncTaskCapabilityMeta(
   capabilities: unknown,
   meta?: Record<string, unknown> | null,
 ): Record<string, unknown> | undefined {
-  if (isAirClient(capabilities)) return meta ?? undefined;
-  const clientMeta =
-    capabilities && typeof capabilities === "object" && !Array.isArray(capabilities)
-      ? (capabilities as { _meta?: Record<string, unknown> })._meta
-      : undefined;
-  if (clientMeta?.["async-tasks"] !== true) return meta ?? undefined;
+  if (isAirClient(capabilities) || !clientSupportsAsyncTasks(capabilities as ClientCapabilities)) {
+    return meta ?? undefined;
+  }
   return {
     ...meta,
     "async-tasks": {
@@ -144,6 +143,13 @@ export class AsyncTaskRuntime {
    * a command was backgrounded can arrive after its terminal SDK edge.
    */
   private readonly tasks = new Map<string, AsyncTask>();
+  /**
+   * The task output paths in the text of each tool result, by tool call
+   * id. A task whose id and tool call are known takes its output path from
+   * here. The tool result can come before or after the SDK names the task.
+   * The oldest entries are dropped.
+   */
+  private readonly outputPathsByToolCall = new Map<string, string[]>();
 
   constructor(
     readonly enabled: boolean,
@@ -152,10 +158,13 @@ export class AsyncTaskRuntime {
     /** `notices`: the client can present `notice` updates, so the stop
      *  acknowledgement need not be a transcript line. `routeOf`: the route of
      *  the tasks that a tool call in another session started, for example in
-     *  a native subagent session. */
+     *  a native subagent session. `toolNameOf`: the name of the tool of a tool
+     *  call, or `undefined` when the tool call is unknown. A task that a
+     *  `Monitor` tool call started is ignored. */
     private readonly options: {
       notices?: boolean;
       routeOf?: (toolCallId: string) => Route | undefined;
+      toolNameOf?: (toolCallId: string) => string | undefined;
     } = {},
   ) {}
 
@@ -164,8 +173,8 @@ export class AsyncTaskRuntime {
     const taskId = taskIdOf(message);
     if (!taskId) return;
     const task = this.task(taskId);
-    if (isSubagentTask(message)) {
-      task.ignored = true;
+    if (isSubagentTask(message) || isMonitorTask(message)) {
+      this.ignore(task);
       return;
     }
 
@@ -195,8 +204,8 @@ export class AsyncTaskRuntime {
     const taskId = taskIdOf(message);
     if (!taskId) return;
     const task = this.task(taskId);
-    if (isSubagentTask(message)) {
-      task.ignored = true;
+    if (isSubagentTask(message) || isMonitorTask(message)) {
+      this.ignore(task);
       return;
     }
 
@@ -362,8 +371,9 @@ export class AsyncTaskRuntime {
       live.add(taskId);
       const task = this.task(taskId);
       if (task.ignored || isTerminal(task.state)) continue;
-      if (field(item, "taskType", "task_type") === "local_agent") {
-        task.ignored = true;
+      const levelTaskType = field(item, "taskType", "task_type");
+      if (levelTaskType === "local_agent" || levelTaskType === "local_monitor") {
+        this.ignore(task);
         continue;
       }
       if (!task.startedObserved) {
@@ -455,6 +465,41 @@ export class AsyncTaskRuntime {
     );
   }
 
+  /** Whether a task of the tool call went to the background, so the client gets it. */
+  isBackgroundedToolCall(toolCallId: string): boolean {
+    for (const task of this.tasks.values()) {
+      if (task.toolCallId === toolCallId && !task.ignored && (task.announced || task.held)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Reads the tool results in `content` for the output path of a known task.
+   * Only a path that ends with `tasks/<task id>.output` in the result of
+   * the task's own tool call counts. A tool result never creates a task.
+   */
+  async toolResults(content: unknown): Promise<void> {
+    if (!this.enabled || !Array.isArray(content)) return;
+    for (const result of content.flatMap(toolResultBlock)) {
+      const text = textContent(result.content);
+      const paths = text ? taskOutputPaths(text) : [];
+      if (paths.length === 0) continue;
+      this.outputPathsByToolCall.delete(result.toolUseId);
+      this.outputPathsByToolCall.set(result.toolUseId, paths);
+      if (this.outputPathsByToolCall.size > MAX_TOOL_RESULT_PATHS) {
+        const oldest = this.outputPathsByToolCall.keys().next().value;
+        if (oldest !== undefined) this.outputPathsByToolCall.delete(oldest);
+      }
+      for (const task of this.tasks.values()) {
+        if (task.toolCallId !== result.toolUseId || task.ignored || task.outputFilePath) continue;
+        this.mergeToolResultPath(task);
+        if (task.outputFilePath && task.announced) await this.publishMetadata(task);
+      }
+    }
+  }
+
   /**
    * Sends the spawn of each held task without a tool call id. The prompt
    * result ends the model turn, and the result of the tool call that started a
@@ -469,6 +514,18 @@ export class AsyncTaskRuntime {
 
   clear(): void {
     this.tasks.clear();
+    this.outputPathsByToolCall.clear();
+  }
+
+  /**
+   * Marks a task that the client never sees. Only a task that is not announced
+   * can become ignored, so the client never holds a task without its end.
+   */
+  private ignore(task: AsyncTask): void {
+    if (task.announced) return;
+    task.ignored = true;
+    task.held = false;
+    task.deferred = [];
   }
 
   private task(taskId: string): AsyncTask {
@@ -516,6 +573,7 @@ export class AsyncTaskRuntime {
     this.mergeOutputFilePath(task, message);
     const toolCallId = nonBlankString(field(message, "toolCallId", "tool_use_id"));
     if (toolCallId) task.toolCallId = toolCallId;
+    this.mergeToolResultPath(task);
   }
 
   /** Keeps the first tool call id that a later SDK message brings. */
@@ -524,6 +582,17 @@ export class AsyncTaskRuntime {
     value: { toolCallId?: unknown; tool_use_id?: unknown },
   ): void {
     task.toolCallId ??= nonBlankString(field(value, "toolCallId", "tool_use_id"));
+    this.mergeToolResultPath(task);
+  }
+
+  /**
+   * Takes the output path from the result of the task's tool call when no
+   * structured source gave one. A structured path later replaces it.
+   */
+  private mergeToolResultPath(task: AsyncTask): void {
+    if (task.outputFilePath || !task.toolCallId) return;
+    const paths = this.outputPathsByToolCall.get(task.toolCallId);
+    if (paths) task.outputFilePath = outputFilePathOf(paths, task.id);
   }
 
   /** Sends an update of an announced task. A held task sends it after its spawn. */
@@ -567,12 +636,22 @@ export class AsyncTaskRuntime {
    * backgrounded command. A held task gets its spawn without the id when it
    * ends first, or when the prompt result ends the model turn
    * ({@link releaseHeld}). No guess by the command text binds a task.
+   *
+   * A task that a `Monitor` tool call started is ignored: Monitor streams its
+   * output to the model only, so the task has nothing for the client. The
+   * tool_use streams before the tool runs, so the tool name is known when the
+   * spawn has the tool call id.
    */
   private async announce(
     task: AsyncTask,
     options: { withoutToolCall?: boolean } = {},
   ): Promise<void> {
     if (task.announced || task.ignored) return;
+    const toolName = task.toolCallId ? this.options.toolNameOf?.(task.toolCallId) : undefined;
+    if (toolName !== undefined && HIDDEN_TASK_TOOLS.has(toolName)) {
+      this.ignore(task);
+      return;
+    }
     if (!task.toolCallId && !options.withoutToolCall && !isTerminal(task.state)) {
       task.held = true;
       return;
@@ -724,7 +803,11 @@ function recordPublished(task: AsyncTask, fields: Record<string, unknown>): void
   }
 }
 
-/** Recovers background Bash lifecycle data exposed only on its tool result. */
+/**
+ * Recovers a background Bash task from the structured `backgroundTaskId` of
+ * its tool result. The text of a tool result never gives a task id: a
+ * foreground command can print any text.
+ */
 export function backgroundBashTaskFromToolResult(
   content: unknown,
   toolUseResult: unknown,
@@ -736,12 +819,7 @@ export function backgroundBashTaskFromToolResult(
   if (bashResults.length === 0) return undefined;
 
   const backgroundResults = structuredBackgroundResults(toolUseResult, toolUses);
-  const distinctTaskIds = new Set([
-    ...backgroundResults.map((result) => result.taskId),
-    ...bashResults
-      .map((result) => backgroundTaskIdFromText(result.content))
-      .filter((taskId): taskId is string => taskId !== undefined),
-  ]);
+  const distinctTaskIds = new Set(backgroundResults.map((result) => result.taskId));
   if (distinctTaskIds.size !== 1) return undefined;
   const taskId = [...distinctTaskIds][0];
   if (!taskId) return undefined;
@@ -775,15 +853,36 @@ export function backgroundBashTaskFromToolResult(
   };
 }
 
-function backgroundTaskIdFromText(content: unknown): string | undefined {
-  const text = textContent(content);
-  if (!text) return undefined;
-  const marker = "Command running in background with ID: ";
-  const start = text.indexOf(marker);
-  if (start < 0) return undefined;
-  const valueStart = start + marker.length;
-  const valueEnd = text.indexOf(".", valueStart);
-  return valueEnd < 0 ? undefined : nonBlankString(text.slice(valueStart, valueEnd));
+/**
+ * The Bash tool calls in `content` whose command went to the background. Only
+ * structured data counts: the task from the structured tool result, a task
+ * that the runtime knows for the tool call, or a `run_in_background` input of
+ * a call that did not fail.
+ */
+export function backgroundedBashToolCallIds(
+  content: unknown,
+  toolUses: Record<string, { name: string; input: unknown }>,
+  runtime: AsyncTaskRuntime,
+  structuredTask?: AsyncTaskStarted,
+): Set<string> {
+  const ids = new Set<string>();
+  if (!runtime.enabled || !Array.isArray(content)) return ids;
+  const structuredToolCallId = structuredTask
+    ? nonBlankString(field(structuredTask, "toolCallId", "tool_use_id"))
+    : undefined;
+  for (const result of content.flatMap(toolResultBlock)) {
+    const toolUse = toolUses[result.toolUseId];
+    if (toolUse?.name !== "Bash") continue;
+    const input = isRecord(toolUse.input) ? toolUse.input : undefined;
+    if (
+      result.toolUseId === structuredToolCallId ||
+      runtime.isBackgroundedToolCall(result.toolUseId) ||
+      (input?.run_in_background === true && !result.isError)
+    ) {
+      ids.add(result.toolUseId);
+    }
+  }
+  return ids;
 }
 
 function structuredBackgroundResults(
@@ -815,27 +914,73 @@ function structuredBackgroundResults(
   return results;
 }
 
-function toolResultBlock(value: unknown): { toolUseId: string; content?: unknown }[] {
+function toolResultBlock(
+  value: unknown,
+): { toolUseId: string; content?: unknown; isError: boolean }[] {
   if (!isRecord(value) || value.type !== "tool_result") return [];
   const toolUseId = nonBlankString(field(value, "toolUseId", "tool_use_id"));
-  return toolUseId ? [{ toolUseId, content: value.content }] : [];
+  return toolUseId
+    ? [
+        {
+          toolUseId,
+          content: value.content,
+          isError: field(value, "isError", "is_error") === true,
+        },
+      ]
+    : [];
 }
 
 function asyncTaskOutputFilePath(content: unknown, taskId: string): string | undefined {
   const text = textContent(content);
-  if (!text) return undefined;
-  const marker = "Output is being written to: ";
-  const start = text.indexOf(marker);
-  if (start < 0) return undefined;
-  const valueStart = start + marker.length;
-  const valueEnd = text.indexOf(". You will be notified", valueStart);
-  if (valueEnd < 0) return undefined;
-  const path = text.slice(valueStart, valueEnd).trim();
-  const expectedPosixSuffix = `/tasks/${taskId}.output`;
-  const expectedWindowsSuffix = `\\tasks\\${taskId}.output`;
-  return path.endsWith(expectedPosixSuffix) || path.endsWith(expectedWindowsSuffix)
-    ? path
-    : undefined;
+  return text ? outputFilePathOf(taskOutputPaths(text), taskId) : undefined;
+}
+
+/**
+ * The end of a task output path: `tasks/<id>.output`, followed by a sentence
+ * period, whitespace or the end of the text. Claude Code writes the output of
+ * a background task there.
+ */
+const TASK_OUTPUT_SUFFIX = /[/\\]tasks[/\\][^\s/\\]+?\.output(?=\.(?!\w)|\s|$)/g;
+/** An absolute POSIX, Windows drive or UNC path. */
+const ABSOLUTE_PATH = /^(?:\/|[A-Za-z]:[\\/]|\\\\)/;
+
+/**
+ * The task output paths in a tool result text. Each text of Claude Code puts
+ * the path after "Output is being written to: ", so a path starts after the
+ * nearest `": "` before its end. A drive colon has no space after it, so a
+ * path can hold spaces and a drive. The search for the start stops at a line
+ * break and at the end of the previous path end, so a path never crosses a
+ * line or holds another path. Each character is read at most once, so the
+ * parse is linear in the text length. A path that is not absolute does not
+ * count.
+ */
+function taskOutputPaths(text: string): string[] {
+  const paths: string[] = [];
+  let previousEnd = 0;
+  for (const match of text.matchAll(TASK_OUTPUT_SUFFIX)) {
+    const end = match.index + match[0].length;
+    let start = -1;
+    for (let i = match.index - 1; i >= previousEnd; i--) {
+      const char = text[i];
+      if (char === "\n" || char === "\r") break;
+      if (char === ":" && text[i + 1] === " ") {
+        start = i + 2;
+        break;
+      }
+    }
+    previousEnd = end;
+    if (start < 0) continue;
+    const path = text.slice(start, end);
+    if (ABSOLUTE_PATH.test(path)) paths.push(path);
+  }
+  return paths;
+}
+
+/** The output path of the task `taskId` among the paths, if one names it. */
+function outputFilePathOf(paths: readonly string[], taskId: string): string | undefined {
+  const posix = `/tasks/${taskId}.output`;
+  const windows = `\\tasks\\${taskId}.output`;
+  return paths.find((path) => path.endsWith(posix) || path.endsWith(windows));
 }
 
 function textContent(value: unknown): string | undefined {
@@ -864,6 +1009,13 @@ function isBackgroundTask(isBackgrounded: unknown, taskType: unknown): boolean {
   if (isBackgrounded === true) return true;
   if (isBackgrounded === false) return false;
   return taskType !== "local_bash" && taskType !== "local_agent";
+}
+
+/** The tools whose async tasks the client never sees. */
+const HIDDEN_TASK_TOOLS = new Set(["Monitor"]);
+
+function isMonitorTask(message: AsyncTaskStarted): boolean {
+  return field(message, "taskType", "task_type") === "local_monitor";
 }
 
 function isSubagentTask(message: AsyncTaskStarted): boolean {
