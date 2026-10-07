@@ -28,6 +28,14 @@ const CLAUDE_PATCHES = [
     files: ["src/acp-agent.ts", "src/async-tasks.ts"],
     tests: ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
   },
+  {
+    name: "advisor-tool-results",
+    identityCommit: "af55f8bdedebbc951352d68fba44d616cc4908cb",
+    commit: "af55f8bdedebbc951352d68fba44d616cc4908cb",
+    upstreamPr: 1247,
+    files: ["src/acp-agent.ts"],
+    tests: ["src/tests/incomplete-tools.test.ts"],
+  },
 ];
 
 afterEach(() => {
@@ -156,12 +164,12 @@ describe("auditDownstreamPatches", () => {
   it.each([
     ["missing", (patches) => patches.slice(0, 1)],
     ["duplicate", (patches) => [patches[0], patches[0]]],
-    ["renamed", (patches) => [{ ...patches[0], name: "renamed-opt-in" }, patches[1]]],
+    ["renamed", (patches) => [{ ...patches[0], name: "renamed-opt-in" }, ...patches.slice(1)]],
     [
       "substituted",
       (patches) => [
         { ...patches[0], identityCommit: "f".repeat(40), commit: "f".repeat(40) },
-        patches[1],
+        ...patches.slice(1),
       ],
     ],
     [
