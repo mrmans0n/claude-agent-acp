@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "fromTag": "v0.85.1",
-  "toTag": "v0.86.0",
-  "toCommit": "7b5c61a4ed55c03028ac60e1768bc57d92df24a4",
+  "fromTag": "v0.86.0",
+  "toTag": "v0.87.0",
+  "toCommit": "b2dbc8f5a1b84f48cc1512d06f50a9d85d6e757b",
   "patches": [
     {
       "name": "goal-capability-opt-in",
@@ -15,7 +15,7 @@
       "overlappingFiles": ["docs/air-extensions.md", "src/acp-agent.ts"],
       "resolution": {
         "decision": "retain",
-        "rationale": "The original patch applies cleanly to v0.86.0 with the same stable patch-id; upstream changes touch separate hunks and do not provide the provider-neutral non-AIR goal opt-in.",
+        "rationale": "Upstream v0.87.0 changes the same files for async-task routing and folded-prompt settlement, but retains the AIR-only goal contract and does not provide provider-neutral non-AIR goal negotiation. The original patch applies cleanly and unchanged to v0.87.0.",
         "tests": [
           "npm run test:run -- src/tests/acp-agent.test.ts -t \"advertises and publishes goals for an opted-in non-AIR client|publishes active_goal as provider-neutral session state without changing turn settlement\"",
           "npm run build"
@@ -31,13 +31,35 @@
       "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
       "classification": "overlap",
       "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts", "src/async-tasks.ts"],
+      "resolution": {
+        "decision": "adapt",
+        "commit": "2532463eb13fd01c5e4ab645a1272c73f7359130",
+        "rationale": "Upstream v0.87.0 includes PR #1249's rewritten async-task runtime but remains AIR-only. The replacement keeps the stable runtime intact, adds literal-true provider-neutral negotiation and top-level advertisement for non-AIR clients, and keeps the Bash backgrounded marker gated by AIR's own asyncTasks capability.",
+        "tests": [
+          "npm run test:run -- src/tests/async-tasks.test.ts src/tests/acp-agent.test.ts src/tests/native-subagents.test.ts src/tests/tool-call-contract.test.ts src/tests/folded-prompt-scenario.test.ts src/tests/incomplete-tools.test.ts",
+          "npm run build"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "advisor-tool-results",
+      "commit": "f1d8579c03ae1a5c0f7366f678229c0fb3a54116",
+      "upstreamPr": 1247,
+      "files": ["src/acp-agent.ts"],
+      "tests": ["src/tests/incomplete-tools.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
       "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
-        "decision": "retain",
-        "rationale": "Upstream v0.86.0 overlaps src/acp-agent.ts but does not provide provider-neutral async-task negotiation or advertisement; the exact replay retains the original stable patch-id. The later upstream routing commit 0e83a06c4a8825ba654bddf1ab909d1a773942e2 is outside v0.86.0 and remains AIR-only.",
+        "decision": "adapt",
+        "commit": "df2799775856e2ec77ae1a65d0303b07776df47c",
+        "rationale": "Upstream v0.87.0 still discards advisor_tool_result, while PR #1249 added dispatched-versus-abandoned tool tracking. The replacement preserves advisor result settlement and adapts the fixtures to prove a complete dispatched server tool is cleared without weakening abandoned-tool handling.",
         "tests": [
-          "npm run test:run -- src/tests/async-tasks.test.ts src/tests/acp-agent.test.ts",
-          "npm run build"
+          "npm run test:run -- src/tests/incomplete-tools.test.ts",
+          "npm run build",
+          "npm run test:run"
         ],
         "automatic": false
       }
@@ -45,48 +67,68 @@
   ],
   "preservedCommits": [
     {
-      "commit": "d6a1741b41bd60c422dbbf7ed6315abd7dce2806",
-      "subject": "[verified] fix: keep sync candidates deterministic",
+      "commit": "bd7e7a0411d3667e29456f6428c776ab5a58ffd6",
+      "subject": "fix: preserve the advisor result patch during upstream sync",
       "constituentCommits": [],
       "classification": "preserved-sync-edit",
       "resolution": {
         "decision": "retain",
-        "rationale": "Retain the sync-only hardening: generated review and ledger JSON now match the repository formatter, fixing the observed CI failure, and deterministic cherry-picks no longer depend on the local Git committer identity.",
+        "rationale": "Retain the target-specific canonical sync edit that registers the advisor tool-results patch in the v0.87 audit ledger and keeps all three known downstream patch identities verifiable after retiring the conflicting v0.86 maintenance copy.",
         "tests": [
-          "npm exec -- vitest run scripts/alas-maintenance.test.mjs scripts/sync-review.test.mjs scripts/workflow-hardening.test.mjs",
-          "npm run format:check"
-        ],
-        "automatic": false
-      }
-    },
-    {
-      "commit": "42e57384f1b05ce7d70116ebec1dcf7819afc11b",
-      "subject": "[verified] test: allow the sync ledger base to advance",
-      "constituentCommits": [],
-      "classification": "preserved-sync-edit",
-      "resolution": {
-        "decision": "retain",
-        "rationale": "Retain the test correction: the patch ledger base is designed to advance after a resolved stable sync, so the hardening test must validate a stable tag and the review/ledger relationship instead of pinning the historical v0.85.1 baseline.",
-        "tests": ["npm exec -- vitest run scripts/workflow-hardening.test.mjs"],
-        "automatic": false
-      }
-    },
-    {
-      "commit": "f4c9bfb1e756a6a7157509de01f765f6c86b231b",
-      "subject": "[verified] fix: isolate sync reconstruction from Git signing",
-      "constituentCommits": [],
-      "classification": "preserved-sync-edit",
-      "resolution": {
-        "decision": "retain",
-        "rationale": "Retain the sync-only hardening: deterministic cherry-picks now explicitly disable local commit signing, preventing user or runner Git configuration from rejecting reconstruction or changing candidate commit identity. The formatter regression oracle now checks the actual Prettier fixed-point contract, including compact valid resolutions.",
-        "tests": [
-          "npm exec -- vitest run scripts/alas-maintenance.test.mjs scripts/sync-review.test.mjs",
-          "npm run check",
-          "npm run build",
+          "node --test scripts/alas-maintenance.test.mjs scripts/workflow-hardening.test.mjs",
           "npm run test:run"
         ],
         "automatic": false
       }
+    },
+    {
+      "commit": "e23fec92eb26331d03cf39bad1221258c8d16832",
+      "subject": "ci: adapt retirement audit to v0.87 reconstruction",
+      "constituentCommits": [],
+      "classification": "preserved-sync-edit",
+      "resolution": {
+        "decision": "retain",
+        "rationale": "Retain the canonical conflict-free v0.87 adaptation of the merged retirement-audit hardening. It restores fail-closed manual retirement validation after deterministic sync hardening, while the alternate protected-branch commit is retired because replaying it conflicts.",
+        "tests": [
+          "npm exec -- vitest run scripts/alas-maintenance.test.mjs scripts/sync-review.test.mjs",
+          "npm run format:check",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    }
+  ],
+  "retiredCommits": [
+    {
+      "commit": "e3dba66f9a6e59be956ae14a4a3b2e527dab27e2",
+      "classification": "absorbed",
+      "rationale": "Upstream v0.87.0 includes PR #1233, which supersedes the downstream folded-prompt settlement patch with equivalent behavior plus broader replay coverage. Reapplying the older downstream patch conflicts with the stable implementation and is unnecessary.",
+      "tests": [
+        "npm run test:run -- src/tests/acp-agent.test.ts src/tests/folded-prompt-scenario.test.ts",
+        "npm run test:run"
+      ],
+      "automatic": false
+    },
+    {
+      "commit": "1b234d51245c7dee3fee6c78725e397350e8b667",
+      "classification": "absorbed",
+      "rationale": "The v0.86 maintenance commit embeds the old ledger and conflicts when replayed onto v0.87.0. Its advisor-patch registration, audit identity, documentation, and maintenance-test intent are absorbed by the target-specific conflict resolution commit 58b5df59802fe4c4e0b1f3a77418a67cb3ce0fd1 on the canonical sync branch.",
+      "tests": [
+        "node --test scripts/alas-maintenance.test.mjs scripts/workflow-hardening.test.mjs",
+        "npm run test:run"
+      ],
+      "automatic": false
+    },
+    {
+      "commit": "00b0613ba3cc76c75d5e23d1613db1a766564af2",
+      "classification": "absorbed",
+      "rationale": "The merged retirement-audit hardening is represented in the canonical v0.87 sync by e23fec92eb26331d03cf39bad1221258c8d16832, a conflict-free adaptation with equivalent fail-closed behavior. Replaying the alternate protected-branch commit conflicts, so it is retired without dropping its behavior.",
+      "tests": [
+        "npm exec -- vitest run scripts/alas-maintenance.test.mjs scripts/sync-review.test.mjs scripts/workflow-hardening.test.mjs",
+        "npm run format:check",
+        "npm run test:run"
+      ],
+      "automatic": false
     }
   ],
   "resolved": true
