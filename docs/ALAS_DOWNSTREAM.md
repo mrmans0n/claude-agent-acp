@@ -47,7 +47,14 @@ or package can be promoted.
 
 `docs/ALAS_DOWNSTREAM_PATCHES.json` records the downstream functional patches,
 their original commits, upstream PRs, affected files, tests, and the last reviewed
-stable base.
+stable base. Hotfix patches added after that sync belong in the ledger without
+rewriting the historical sync review. The next sync audits them alongside the
+existing patches.
+
+The advisor-result patch from upstream PR #1247 completes server-side advisor
+calls for plaintext, redacted, and error results. Its contract tests preserve the
+failure for genuinely missing results and ensure encrypted advice is not emitted
+to the client.
 
 For each target release, `scripts/audit-downstream-patches.mjs` classifies every
 patch:
