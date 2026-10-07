@@ -6,7 +6,47 @@ import { fileURLToPath } from "node:url";
 const COMMIT = /^[0-9a-f]{40}$/;
 const TAG = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const DECISIONS = new Set(["retain", "adapt", "drop"]);
+const RETIRED_CLASSIFICATIONS = new Set(["absorbed"]);
 const JSON_PRINT_WIDTH = 100;
+
+export function retiredCommitValid(entry) {
+  return (
+    entry !== null &&
+    typeof entry === "object" &&
+    COMMIT.test(entry.commit ?? "") &&
+    RETIRED_CLASSIFICATIONS.has(entry.classification) &&
+    typeof entry.rationale === "string" &&
+    entry.rationale.trim().length > 0 &&
+    Array.isArray(entry.tests) &&
+    entry.tests.length > 0 &&
+    entry.tests.every((test) => typeof test === "string" && test.trim().length > 0) &&
+    entry.automatic === false
+  );
+}
+
+function normalizedRetiredCommits(entries) {
+  if (!Array.isArray(entries)) return [];
+  const seen = new Set();
+  return entries.filter((entry) => {
+    if (!retiredCommitValid(entry) || seen.has(entry.commit)) return false;
+    seen.add(entry.commit);
+    return true;
+  });
+}
+
+function retiredCommitsValid(entries) {
+  return (
+    entries === undefined ||
+    (Array.isArray(entries) && normalizedRetiredCommits(entries).length === entries.length)
+  );
+}
+
+export function validateRetiredCommits(entries) {
+  if (!retiredCommitsValid(entries)) {
+    throw new Error("Sync review retired commits must be unique valid manual absorbed entries");
+  }
+  return entries ?? [];
+}
 
 function formatJsonValue(value, indent, prefixWidth = indent) {
   if (Array.isArray(value)) {
@@ -80,7 +120,9 @@ function reviewResolved(review) {
       patch.classification === "unaffected"
         ? patch.resolution?.automatic === true
         : manualResolutionValid(patch.resolution),
-    ) && review.preservedCommits.every((entry) => manualResolutionValid(entry.resolution))
+    ) &&
+    review.preservedCommits.every((entry) => manualResolutionValid(entry.resolution)) &&
+    retiredCommitsValid(review.retiredCommits)
   );
 }
 
@@ -125,6 +167,7 @@ export function createSyncReview({ audit, existingReview, preservedCommits = [] 
       "preserved-sync-edit",
     ),
   }));
+  const retiredCommits = sameRange ? validateRetiredCommits(existingReview.retiredCommits) : [];
   const review = {
     version: 1,
     fromTag: audit.baseTag,
@@ -132,6 +175,7 @@ export function createSyncReview({ audit, existingReview, preservedCommits = [] 
     toCommit: audit.targetCommit,
     patches,
     preservedCommits: preserved,
+    retiredCommits,
     resolved: false,
   };
   review.resolved = reviewResolved(review);
@@ -152,6 +196,10 @@ export function verifySyncReview({ audit, review, preservedCommits = [] }) {
   }
   if (JSON.stringify(review.preservedCommits ?? []) !== JSON.stringify(expected.preservedCommits)) {
     throw new Error("Sync review preserved sync edits do not match the candidate");
+  }
+  const actualRetiredCommits = validateRetiredCommits(review.retiredCommits);
+  if (JSON.stringify(actualRetiredCommits) !== JSON.stringify(expected.retiredCommits)) {
+    throw new Error("Sync review retired commits do not match the preserved manual review entries");
   }
   if (review.resolved !== expected.resolved) {
     throw new Error("Sync review resolved flag does not match its resolutions");
@@ -187,6 +235,7 @@ function expectedPreservedTransition(review, entry) {
 
 export function verifyLedgerReviewTransition({ ledger, review, previousLedger }) {
   if (!review?.resolved) throw new Error("Cannot verify an unresolved sync review transition");
+  const reviewedRetiredCommits = validateRetiredCommits(review.retiredCommits);
   if (previousLedger) {
     const expected = advanceLedgerBaseTag({ ledger: previousLedger, review }).ledger;
     if (!isDeepStrictEqual(ledger, expected)) {
@@ -259,12 +308,18 @@ export function verifyLedgerReviewTransition({ ledger, review, previousLedger })
       }
     }
   }
+  for (const entry of reviewedRetiredCommits) {
+    if (!(ledger.retiredCommits ?? []).includes(entry.commit)) {
+      throw new Error(`Manually retired commit ${entry.commit} is not durably retired`);
+    }
+  }
   return true;
 }
 
 export function advanceLedgerBaseTag({ ledger, review }) {
   if (!review?.resolved)
     throw new Error("Cannot advance the patch ledger from an unresolved review");
+  const reviewedRetiredCommits = validateRetiredCommits(review.retiredCommits);
   if (ledger.baseTag === review.toTag) {
     verifyLedgerReviewTransition({ ledger, review });
     return { changed: false, ledger };
@@ -315,6 +370,7 @@ export function advanceLedgerBaseTag({ ledger, review }) {
       ...review.preservedCommits
         .filter((entry) => ["drop", "adapt"].includes(entry.resolution.decision))
         .flatMap((entry) => [entry.commit, ...(entry.constituentCommits ?? [])]),
+      ...reviewedRetiredCommits.map((entry) => entry.commit),
     ]),
   ];
   const advanced = {
