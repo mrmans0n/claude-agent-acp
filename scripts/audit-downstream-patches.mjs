@@ -22,6 +22,13 @@ const CLAUDE_PATCH_IDENTITIES = [
     files: ["src/acp-agent.ts", "src/async-tasks.ts"],
     tests: ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
   },
+  {
+    name: "advisor-tool-results",
+    identityCommit: "af55f8bdedebbc951352d68fba44d616cc4908cb",
+    upstreamPr: 1247,
+    files: ["src/acp-agent.ts"],
+    tests: ["src/tests/incomplete-tools.test.ts"],
+  },
 ];
 
 function sameJson(left, right) {
@@ -45,7 +52,7 @@ export function validateClaudePatchIdentities(ledger) {
     });
   if (!valid) {
     throw new Error(
-      "Downstream patch ledger must contain exactly the two known Claude functional patch identities",
+      "Downstream patch ledger must contain exactly the known Claude functional patch identities",
     );
   }
 }
