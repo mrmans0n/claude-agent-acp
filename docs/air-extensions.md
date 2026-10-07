@@ -46,7 +46,7 @@ Each extension is shaped so that it can become a first-class ACP API later.
 ## Compatibility rule
 
 An AIR client declares `initialize.clientCapabilities._meta.jetbrains.air` (see [Client declaration](#client-declaration)).
-Every extension in this document except [Goal](#goal) applies only to an AIR client.
+Every extension in this document except [Goal](#goal) and the provider-neutral form of [Async tasks](#async-tasks) applies only to an AIR client.
 
 A client that does not declare `_meta.jetbrains.air` is not AIR. Zed is such a client.
 It gets the same information in the same fields as from the upstream adapter:
@@ -56,7 +56,7 @@ It gets the same information in the same fields as from the upstream adapter:
 - the keys of other teams: `steering`, `quota`, `authStatus`, and `gateway`.
 
 It gets no key that exists only for AIR.
-It gets no `_meta.jetbrains.air` key at all. A client that opts into the goal extension receives the provider-neutral top-level `_meta.goal`; other removed upstream copies of AIR keys remain absent (see [Removed keys](#removed-keys)).
+It gets no `_meta.jetbrains.air` key at all. A client that opts into the goal or async task extension receives the provider-neutral top-level `_meta.goal` or `_meta["async-tasks"]`; other removed upstream copies of AIR keys remain absent (see [Removed keys](#removed-keys)).
 
 The adapter leaves out only repeated data for such a client:
 
@@ -110,6 +110,14 @@ A non-AIR client opts into the goal extension with an empty top-level marker:
 { "clientCapabilities": { "_meta": { "goal": {} } } }
 ```
 
+A non-AIR client opts into async tasks only with the literal boolean `true`:
+
+```json
+{ "clientCapabilities": { "_meta": { "async-tasks": true } } }
+```
+
+`false`, a string, an object, an array, `null`, or a missing key does not opt in. If the client declares `_meta.jetbrains.air`, it is an AIR client and only the AIR `asyncTasks` capability controls this extension; adding the top-level neutral flag cannot bypass a missing AIR capability.
+
 ### Agent declaration
 
 The `initialize` response of an AIR client carries the agent side of the extension:
@@ -143,7 +151,19 @@ The `initialize` response of an AIR client carries the agent side of the extensi
 
 The agent list does not depend on the capabilities that AIR declares.
 An extension is active only when the client declared its capability.
-The response to a client that is not AIR has no `_meta.jetbrains` key. An opted-in non-AIR client receives the same `goal` capability at top-level `_meta.goal`.
+The response to a client that is not AIR has no `_meta.jetbrains` key. An opted-in non-AIR client receives the same `goal` capability at top-level `_meta.goal` and the async task capability at top-level `_meta["async-tasks"]`:
+
+```json
+{
+  "_meta": {
+    "async-tasks": {
+      "version": 1,
+      "controlMethod": "_session/async_task/stop",
+      "actions": ["stop"]
+    }
+  }
+}
+```
 
 ### Capabilities
 
@@ -866,8 +886,8 @@ The live test only initializes the SDK. It sends no model prompt.
 ## Async tasks
 
 Claude can run work in the background, for example a backgrounded Bash command or a workflow.
-The adapter publishes that work as async tasks when the client declares `asyncTasks`.
-Without the capability, the adapter sends no async task update.
+The adapter publishes that work as async tasks when AIR declares `asyncTasks`, or when a non-AIR client declares `clientCapabilities._meta["async-tasks"]: true`.
+Without the applicable capability, the adapter sends no async task update. AIR clients use only the AIR capability; a top-level neutral flag does not enable async tasks for AIR.
 A subagent task (`local_agent`) is not an async task. Native subagent sessions report it.
 A task that a `Monitor` tool call started is not an async task either.
 Monitor streams its output to the model only, so the client gets nothing for it.
@@ -884,9 +904,10 @@ Its spawn, progress and state updates go there also after the subagent finished.
   `showInTranscript` is `false` when the SDK asks to skip the transcript.
 - `async_task_progress` carries only the changed fields: `description`, `summary`, `lastToolName`, `usage`, `outputFilePath`, and `toolCallId`.
 - `async_task_state_update` carries `state` (`running`, `paused`, `completed`, `failed`, or `stopped`) and an optional `summary`.
-- The Bash `tool_call_update` of a backgrounded command carries `_meta.jetbrains.air.asyncTasks.backgrounded: true`.
+- For AIR with the `asyncTasks` capability, the Bash `tool_call_update` of a backgrounded command carries `_meta.jetbrains.air.asyncTasks.backgrounded: true`.
   The card then shows backgrounded work instead of finished work.
   Only structured data sets the marker: the `backgroundTaskId` of the tool result, a known background task of the tool call, or a `run_in_background` input.
+  A provider-neutral client receives the task lifecycle but never this AIR-only marker or any `_meta.jetbrains` namespace.
 
 ### Task id and output path
 
