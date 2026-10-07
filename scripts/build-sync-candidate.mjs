@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { formatSyncJson } from "./sync-review.mjs";
+import { formatSyncJson, validateRetiredCommits } from "./sync-review.mjs";
 
 function git(cwd, ...args) {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
@@ -203,7 +203,9 @@ export function buildSyncCandidate({
   }
 
   const reviewMatchesTarget =
-    review?.toTag === targetTag && (!review.toCommit || review.toCommit === baseCommit);
+    review?.toTag === targetTag &&
+    (!review.toCommit || review.toCommit === baseCommit) &&
+    (!ledger?.baseTag || review.fromTag === ledger.baseTag);
   const patchResolutions = new Map(
     reviewMatchesTarget
       ? review.patches.map((patch) => [patch.commit, patch.resolution ?? null])
@@ -226,6 +228,9 @@ export function buildSyncCandidate({
       .filter(([, resolution]) => ["drop", "adapt"].includes(resolution?.decision))
       .map(([commit]) => commit),
   );
+  for (const entry of reviewMatchesTarget ? validateRetiredCommits(review.retiredCommits) : []) {
+    droppedCommits.add(entry.commit);
+  }
   for (const commit of ledger?.retiredCommits ?? []) droppedCommits.add(commit);
   const persistentPreservedCandidates = [];
   for (const transition of ledger?.preservedTransitions ?? []) {
