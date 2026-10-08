@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "fromTag": "v0.85.1",
-  "toTag": "v0.85.1",
-  "toCommit": "686c0c99b3b89217b74d1f5de8272e7c9ef1aab4",
+  "fromTag": "v0.87.0",
+  "toTag": "v0.88.0",
+  "toCommit": "d43fec3fa3118e88ff8a8ed99b85d2a5f444e538",
   "patches": [
     {
       "name": "goal-capability-opt-in",
@@ -10,33 +10,64 @@
       "upstreamPr": 1245,
       "files": ["docs/air-extensions.md", "src/acp-agent.ts", "src/goal-extension.ts"],
       "tests": ["src/tests/acp-agent.test.ts"],
-      "classification": "unaffected",
+      "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": [],
+      "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
         "decision": "retain",
-        "rationale": "No equivalent upstream patch or overlapping path was detected.",
-        "tests": ["src/tests/acp-agent.test.ts"],
-        "automatic": true
+        "rationale": "Upstream v0.88.0 changes src/acp-agent.ts only to drop late task_* frames from earlier task runs (SDK 0.3.292+ run_id) and to refresh comments about task lineage and permission attribution. It does not touch initialize metadata, goal publication, or the goal extension, and upstream PR #1245 remains unmerged, so non-AIR goal negotiation is still absent upstream. The patch replays cleanly and unchanged on v0.88.0.",
+        "tests": [
+          "npm run test:run -- -t \"opted-in non-AIR|provider-neutral|advisor\"",
+          "npm run test:run -- src/tests/acp-agent.test.ts",
+          "npm run build",
+          "npm run test:run"
+        ],
+        "automatic": false
       }
     },
     {
       "name": "async-tasks-opt-in",
-      "commit": "3e098c71628cc7d5927ee8a3d794faa433dce12d",
+      "commit": "2532463eb13fd01c5e4ab645a1272c73f7359130",
       "upstreamPr": null,
       "files": ["src/acp-agent.ts", "src/async-tasks.ts"],
       "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
-      "classification": "unaffected",
+      "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": [],
+      "overlappingFiles": ["src/acp-agent.ts", "src/async-tasks.ts"],
       "resolution": {
         "decision": "retain",
-        "rationale": "No equivalent upstream patch or overlapping path was detected.",
-        "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
-        "automatic": true
+        "rationale": "Upstream v0.88.0 adds isLateTaskRun filtering before the task_progress, task_started, task_notification and task_updated dispatch into AsyncTaskRuntime, and edits only comments in src/async-tasks.ts. The filter runs before the runtime regardless of client type, so provider-neutral opt-in clients receive the same late-run protection as AIR clients. Capability negotiation, top-level async-tasks advertisement, the shared control method and the AIR-only Bash backgrounded marker are untouched upstream. The v0.87 replacement commit replays cleanly and unchanged.",
+        "tests": [
+          "npm run test:run -- src/tests/async-tasks.test.ts src/tests/acp-agent.test.ts src/tests/native-subagents.test.ts src/tests/tool-call-contract.test.ts src/tests/incomplete-tools.test.ts",
+          "npm run test:run -- src/tests/acp-agent.test.ts -t \"late|earlier run|run_id\"",
+          "npm run build",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "advisor-tool-results",
+      "commit": "df2799775856e2ec77ae1a65d0303b07776df47c",
+      "upstreamPr": 1247,
+      "files": ["src/acp-agent.ts"],
+      "tests": ["src/tests/incomplete-tools.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "retain",
+        "rationale": "Upstream v0.88.0 does not change toAcpNotifications or advisor handling: advisor_tool_result is still in the discarded block list and upstream PR #1247 remains unmerged. The bumped @anthropic-ai/sdk 0.132.1 keeps the advisor_result, advisor_redacted_result and advisor_tool_result_error content union used by the patch, and tsc passes. The v0.87 replacement commit replays cleanly and unchanged.",
+        "tests": [
+          "npm run test:run -- src/tests/incomplete-tools.test.ts",
+          "npm run build",
+          "npm run test:run"
+        ],
+        "automatic": false
       }
     }
   ],
   "preservedCommits": [],
+  "retiredCommits": [],
   "resolved": true
 }

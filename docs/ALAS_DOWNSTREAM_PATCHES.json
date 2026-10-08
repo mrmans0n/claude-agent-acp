@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "baseTag": "v0.86.0",
+  "baseTag": "v0.88.0",
   "patches": [
     {
       "name": "goal-capability-opt-in",
@@ -11,8 +11,8 @@
       "tests": ["src/tests/acp-agent.test.ts"],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.85.1",
-        "toTag": "v0.86.0",
+        "fromTag": "v0.87.0",
+        "toTag": "v0.88.0",
         "originalCommit": "60749d07ff50308ef96c5251152a8d4986fe680f",
         "decision": "retain"
       }
@@ -20,29 +20,41 @@
     {
       "name": "async-tasks-opt-in",
       "identityCommit": "3e098c71628cc7d5927ee8a3d794faa433dce12d",
-      "commit": "3e098c71628cc7d5927ee8a3d794faa433dce12d",
+      "commit": "2532463eb13fd01c5e4ab645a1272c73f7359130",
       "upstreamPr": null,
       "files": ["src/acp-agent.ts", "src/async-tasks.ts"],
       "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.85.1",
-        "toTag": "v0.86.0",
-        "originalCommit": "3e098c71628cc7d5927ee8a3d794faa433dce12d",
+        "fromTag": "v0.87.0",
+        "toTag": "v0.88.0",
+        "originalCommit": "2532463eb13fd01c5e4ab645a1272c73f7359130",
         "decision": "retain"
-      }
+      },
+      "retiredCommits": ["3e098c71628cc7d5927ee8a3d794faa433dce12d"]
     },
     {
       "name": "advisor-tool-results",
       "identityCommit": "af55f8bdedebbc951352d68fba44d616cc4908cb",
-      "commit": "f1d8579c03ae1a5c0f7366f678229c0fb3a54116",
+      "commit": "df2799775856e2ec77ae1a65d0303b07776df47c",
       "upstreamPr": 1247,
       "files": ["src/acp-agent.ts"],
       "tests": ["src/tests/incomplete-tools.test.ts"],
-      "disposition": "active"
+      "disposition": "active",
+      "retiredCommits": ["f1d8579c03ae1a5c0f7366f678229c0fb3a54116"],
+      "lastResolution": {
+        "fromTag": "v0.87.0",
+        "toTag": "v0.88.0",
+        "originalCommit": "df2799775856e2ec77ae1a65d0303b07776df47c",
+        "decision": "retain"
+      }
     }
   ],
-  "retiredCommits": [],
+  "retiredCommits": [
+    "e3dba66f9a6e59be956ae14a4a3b2e527dab27e2",
+    "1b234d51245c7dee3fee6c78725e397350e8b667",
+    "00b0613ba3cc76c75d5e23d1613db1a766564af2"
+  ],
   "preservedTransitions": [
     {
       "fromTag": "v0.85.1",
@@ -62,6 +74,20 @@
       "fromTag": "v0.85.1",
       "toTag": "v0.86.0",
       "commit": "f4c9bfb1e756a6a7157509de01f765f6c86b231b",
+      "constituentCommits": [],
+      "decision": "retain"
+    },
+    {
+      "fromTag": "v0.86.0",
+      "toTag": "v0.87.0",
+      "commit": "bd7e7a0411d3667e29456f6428c776ab5a58ffd6",
+      "constituentCommits": [],
+      "decision": "retain"
+    },
+    {
+      "fromTag": "v0.86.0",
+      "toTag": "v0.87.0",
+      "commit": "e23fec92eb26331d03cf39bad1221258c8d16832",
       "constituentCommits": [],
       "decision": "retain"
     }
