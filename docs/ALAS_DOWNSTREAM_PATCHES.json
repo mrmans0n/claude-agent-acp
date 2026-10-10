@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "baseTag": "v0.89.0",
+  "baseTag": "v0.89.1",
   "patches": [
     {
       "name": "goal-capability-opt-in",
@@ -11,11 +11,10 @@
       "tests": ["src/tests/acp-agent.test.ts"],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.87.0",
-        "toTag": "v0.89.0",
-        "originalCommit": "60749d07ff50308ef96c5251152a8d4986fe680f",
-        "decision": "adapt",
-        "replacementCommit": "e7ec32822231129dcc5b1e9ee25ea3f02260d933"
+        "fromTag": "v0.89.0",
+        "toTag": "v0.89.1",
+        "originalCommit": "e7ec32822231129dcc5b1e9ee25ea3f02260d933",
+        "decision": "retain"
       },
       "retiredCommits": ["60749d07ff50308ef96c5251152a8d4986fe680f"]
     },
@@ -28,11 +27,10 @@
       "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.87.0",
-        "toTag": "v0.89.0",
-        "originalCommit": "2532463eb13fd01c5e4ab645a1272c73f7359130",
-        "decision": "adapt",
-        "replacementCommit": "a738efd42a88cd6dc2999d218677718e1d053184"
+        "fromTag": "v0.89.0",
+        "toTag": "v0.89.1",
+        "originalCommit": "a738efd42a88cd6dc2999d218677718e1d053184",
+        "decision": "retain"
       },
       "retiredCommits": [
         "3e098c71628cc7d5927ee8a3d794faa433dce12d",
@@ -49,8 +47,8 @@
       "disposition": "active",
       "retiredCommits": ["f1d8579c03ae1a5c0f7366f678229c0fb3a54116"],
       "lastResolution": {
-        "fromTag": "v0.87.0",
-        "toTag": "v0.89.0",
+        "fromTag": "v0.89.0",
+        "toTag": "v0.89.1",
         "originalCommit": "df2799775856e2ec77ae1a65d0303b07776df47c",
         "decision": "retain"
       }
