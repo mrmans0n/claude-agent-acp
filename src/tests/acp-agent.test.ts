@@ -5529,6 +5529,76 @@ describe("subagent permission attribution (issue #851)", () => {
     };
   }
 
+  it("releases a tool call that ends cancelled on v2, as one that ends failed", async () => {
+    const updates: AcpSessionNotification[] = [];
+    const agent = new ClaudeAcpAgent(
+      {
+        sessionUpdate: async (update: AcpSessionNotification) => {
+          updates.push(update);
+        },
+      } as unknown as AcpClient,
+      { log: () => {}, error: () => {} },
+      { v2: true },
+    );
+    await agent.initialize({ protocolVersion: 1, clientCapabilities: {} });
+    injectGeneratorSession(
+      agent,
+      makeGenerator([
+        {
+          type: "assistant",
+          uuid: randomUUID(),
+          session_id: "test-session",
+          parent_tool_use_id: null,
+          message: {
+            id: "msg-bash",
+            model: "claude-sonnet-4-5",
+            role: "assistant",
+            type: "message",
+            stop_reason: "tool_use",
+            content: [
+              { type: "tool_use", id: "toolu_bash", name: "Bash", input: { command: "make" } },
+            ],
+            usage: { input_tokens: 0, output_tokens: 0 },
+          },
+        },
+        {
+          type: "user",
+          uuid: randomUUID(),
+          session_id: "test-session",
+          parent_tool_use_id: null,
+          // The user interrupted the turn while the command ran.
+          tool_result_meta: [{ id: "toolu_bash", non_execution_kind: "interrupted" }],
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "toolu_bash",
+                content: "[Request interrupted by user for tool use]",
+                is_error: true,
+              },
+            ],
+          },
+        },
+        successResult(),
+      ]),
+    );
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "go" }] });
+
+    expect(
+      updates
+        .map(({ update }) => update)
+        .filter(
+          (update) =>
+            update.sessionUpdate === "tool_call_update" && "status" in update && update.status,
+        )
+        .at(-1),
+    ).toMatchObject({ toolCallId: "toolu_bash", status: "cancelled" });
+    // The agent stops tracking the call once it ends, whichever way.
+    expect(agent.sessions["test-session"]?.dispatchedToolCalls?.has("toolu_bash")).toBe(false);
+  });
+
   it("records task_started's task_id → tool_use_id mapping while consuming the stream", async () => {
     const agent = new ClaudeAcpAgent(
       { sessionUpdate: vi.fn(async () => {}) } as unknown as AcpClient,
@@ -10411,6 +10481,7 @@ describe("logout", () => {
         "agentFileChangeReport",
         "nativeSubagentSessions",
         "asyncTasks",
+        "customInstructions",
         "recommendedValue",
         "diffPatch",
         "planFile",
@@ -10433,6 +10504,7 @@ describe("logout", () => {
         "agentFileChangeReport",
         "nativeSubagentSessions",
         "asyncTasks",
+        "customInstructions",
         "recommendedValue",
         "diffPatch",
         "planFile",
@@ -10723,12 +10795,13 @@ describe("session/close", () => {
     expect(session.abortController.signal.aborted).toBe(true);
   });
 
-  it("should throw when closing a non-existent session", async () => {
+  it("is idempotent for a session that is not loaded here", async () => {
     const agent = createMockAgent();
 
-    await expect(agent.closeSession({ sessionId: "non-existent" })).rejects.toThrow(
-      "Session not found",
-    );
+    await expect(agent.closeSession({ sessionId: "non-existent" })).resolves.toEqual({});
+    injectSession(agent, "session-1");
+    await agent.closeSession({ sessionId: "session-1" });
+    await expect(agent.closeSession({ sessionId: "session-1" })).resolves.toEqual({});
   });
 
   it("should not affect other sessions when closing one", async () => {
@@ -17718,6 +17791,38 @@ describe("deferred settlement for live background subagents (issues #864/#866)",
       release();
       await expect(second).resolves.toMatchObject({ stopReason: "end_turn" });
       await agent.sessions["test-session"]?.consumer;
+    });
+
+    it("ignores a late notification of the earlier run after the resume", async () => {
+      const { agent, updates, release, start } = run(
+        [
+          { ...taskUpdated("running"), run_id: "run-2" },
+          sendMessageResult(),
+          { ...taskNotification("agent-1"), run_id: "run-1" },
+          { ...taskUpdated("completed"), run_id: "run-1" },
+        ],
+        { subagents: true },
+      );
+      const { second } = await start();
+      const session = agent.sessions["test-session"]!;
+      // Let the stream run past the late frames to the gate.
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(session.activeTurn?.deferredSettle).toBeDefined();
+      expect(session.liveBackgroundTasks.get("agent-1")).toEqual({
+        parentToolUseId: "toolu_agent-1",
+        isSubagent: true,
+      });
+      expect(session.nativeSubagentsByTaskId?.get("agent-1")?.terminalState).toBeUndefined();
+      expect(
+        updates.flatMap((n) =>
+          n.update.sessionUpdate === "subagent_state_update" ? [n.update.subagentSessionId] : [],
+        ),
+      ).toEqual(["agent-1"]);
+
+      release();
+      await expect(second).resolves.toMatchObject({ stopReason: "end_turn" });
+      await session.consumer;
     });
 
     it("ends the hold of the SendMessage turn at cancel()", async () => {
