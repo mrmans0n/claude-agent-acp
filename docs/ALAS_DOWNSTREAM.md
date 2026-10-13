@@ -56,12 +56,6 @@ calls for plaintext, redacted, and error results. Its contract tests preserve th
 failure for genuinely missing results and ensure encrypted advice is not emitted
 to the client.
 
-The context-usage patch adds the `_alas/context_usage` request, which returns
-`getContextUsage` unchanged so Alas can draw what fills the context window. It
-is advertised as `_meta.contextUsage` only to clients that send
-`clientCapabilities._meta.contextUsage: true`, so other clients see no change.
-Upstream has no equivalent request.
-
 For each target release, `scripts/audit-downstream-patches.mjs` classifies every
 patch:
 

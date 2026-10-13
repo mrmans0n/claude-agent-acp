@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "fromTag": "v0.89.0",
-  "toTag": "v0.89.1",
-  "toCommit": "4e1fc1e8df2b9af3b1b2d6880ba90c5862283ba8",
+  "fromTag": "v0.89.1",
+  "toTag": "v0.90.0",
+  "toCommit": "7f7a1404a15024a45e62b699ced4de3fb7a814a2",
   "patches": [
     {
       "name": "goal-capability-opt-in",
@@ -10,14 +10,17 @@
       "upstreamPr": 1245,
       "files": ["docs/air-extensions.md", "src/acp-agent.ts", "src/goal-extension.ts"],
       "tests": ["src/tests/acp-agent.test.ts"],
-      "classification": "unaffected",
+      "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": [],
+      "overlappingFiles": ["docs/air-extensions.md", "src/acp-agent.ts"],
       "resolution": {
         "decision": "retain",
-        "rationale": "No equivalent upstream patch or overlapping path was detected.",
-        "tests": ["src/tests/acp-agent.test.ts"],
-        "automatic": true
+        "rationale": "Upstream v0.90.0 changes docs/air-extensions.md and src/acp-agent.ts for session hooks, auth-source display, ACP v2, background terminals (#1312) and the subagents RFD for non-AIR clients (#1320), but none of it touches goal negotiation: goals stay AIR-only upstream and there is no provider-neutral opt-in. The v0.89 adaptation e7ec32822231129dcc5b1e9ee25ea3f02260d933 replays cleanly and unchanged on v0.90.0.",
+        "tests": [
+          "npm run test:run -- src/tests/acp-agent.test.ts -t \"advertises and publishes goals for an opted-in non-AIR client|publishes active_goal as provider-neutral session state without changing turn settlement|advertises async tasks with steering and goals for an opted-in non-AIR client\"",
+          "npm run build"
+        ],
+        "automatic": false
       }
     },
     {
@@ -26,14 +29,19 @@
       "upstreamPr": null,
       "files": ["src/acp-agent.ts", "src/async-tasks.ts"],
       "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
-      "classification": "unaffected",
+      "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": [],
+      "overlappingFiles": ["src/acp-agent.ts", "src/async-tasks.ts"],
       "resolution": {
-        "decision": "retain",
-        "rationale": "No equivalent upstream patch or overlapping path was detected.",
-        "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
-        "automatic": true
+        "decision": "adapt",
+        "commit": "b752b529fd581085e3e6ea1e995daa8e814b6be6",
+        "rationale": "Upstream v0.90.0 (#1312) wraps the Bash tool result in withRunningTerminal so a non-AIR client that renders terminals keeps a backgrounded command's terminal running until its task ends; upstream async tasks remain AIR-only. Replaying the v0.89 adaptation conflicts only in that call. The replacement keeps the upstream wrapper and passes the AIR asyncTasks capability, not asyncTasks.enabled, to backgroundedBashToolCall, so provider-neutral clients keep the literal-true opt-in, the top-level _meta[\"async-tasks\"] advertisement and the task lifecycle without the AIR-only backgrounded marker. A new test covers a provider-neutral client that renders terminals; it fails when asyncTasks.enabled is restored or the upstream wrapper is dropped.",
+        "tests": [
+          "npm run test:run -- src/tests/async-tasks.test.ts src/tests/acp-agent.test.ts src/tests/tool-call-contract.test.ts src/tests/native-subagents.test.ts",
+          "npm run test:run -- src/tests/acp-agent.test.ts -t \"terminal of a command in the background|holds async_task_spawned\"",
+          "npm run build"
+        ],
+        "automatic": false
       }
     },
     {
@@ -42,18 +50,51 @@
       "upstreamPr": 1247,
       "files": ["src/acp-agent.ts"],
       "tests": ["src/tests/incomplete-tools.test.ts"],
-      "classification": "unaffected",
+      "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": [],
+      "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
-        "decision": "retain",
-        "rationale": "No equivalent upstream patch or overlapping path was detected.",
-        "tests": ["src/tests/incomplete-tools.test.ts"],
-        "automatic": true
+        "decision": "adapt",
+        "commit": "590b7ed9e90414124c60eb0b853ad6ed4575a24c",
+        "rationale": "Upstream v0.90.0 still discards advisor_tool_result in toAcpNotifications, so the patch is not absorbed. PR #1327 added an incomplete-tool test where the advisor tests were inserted, so replaying the v0.87 adaptation conflicts only in src/tests/incomplete-tools.test.ts. The replacement keeps both sets of tests; its source and test lines are identical to the previous adaptation. The advisor result tests fail without the source change.",
+        "tests": ["npm run test:run -- src/tests/incomplete-tools.test.ts", "npm run build"],
+        "automatic": false
+      }
+    },
+    {
+      "name": "context-usage-extension",
+      "commit": "5cb2ba332cb3809d52cd8101a8f546d560408ece",
+      "upstreamPr": null,
+      "files": ["src/acp-agent.ts"],
+      "tests": ["src/tests/acp-agent.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "adapt",
+        "commit": "1f6defde36ba0a5da34259b72bd74dde30e45f42",
+        "rationale": "Upstream v0.90.0 has no _alas/context_usage request or contextUsage advertisement. The original commit was written on top of the provider-neutral async task adaptation (asyncTaskCapabilityMeta and ASYNC_TASK_CONTROL_METHOD), and the sync replays original downstream commits before adaptation commits, so on v0.90.0 it conflicts in src/acp-agent.ts and its test. The replacement reapplies the unchanged patch on top of the v0.90 async task adaptation; its source and test lines are identical to the original. The context usage test fails without the source change.",
+        "tests": [
+          "npm run test:run -- src/tests/acp-agent.test.ts -t \"advertises and serves the context usage breakdown\"",
+          "npm run build"
+        ],
+        "automatic": false
       }
     }
   ],
   "preservedCommits": [],
-  "retiredCommits": [],
+  "retiredCommits": [
+    {
+      "commit": "348049cab3b544328cf6d576d60307c01da6128d",
+      "classification": "absorbed",
+      "rationale": "This non-ledger maintenance commit from PR #16 records the context-usage-extension patch in the ledger, the audit's CLAUDE_PATCH_IDENTITIES, the maintenance tests and docs/ALAS_DOWNSTREAM.md. The candidate replays it before the persistent preserved transitions, where its ledger hunk conflicts with the older replayed ledger. Its ledger entry is carried by the protected ledger that the workflow advances, and its scripts and documentation changes are restored unchanged by a canonical preserved commit on top of the generated integration on the sync branch, so it is retired without dropping its behavior.",
+      "tests": [
+        "npm exec -- vitest run scripts/alas-maintenance.test.mjs scripts/workflow-hardening.test.mjs scripts/sync-review.test.mjs",
+        "git diff --exit-code refs/remotes/origin/alas HEAD -- scripts docs/ALAS_DOWNSTREAM.md",
+        "npm run test:run"
+      ],
+      "automatic": false
+    }
+  ],
   "resolved": true
 }
