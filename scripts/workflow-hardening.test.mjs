@@ -28,6 +28,7 @@ describe("downstream patch ledger", () => {
       "goal-capability-opt-in",
       "async-tasks-opt-in",
       "advisor-tool-results",
+      "context-usage-extension",
     ]);
     for (const patch of ledger.patches) {
       expect(patch.commit).toMatch(/^[0-9a-f]{40}$/);
