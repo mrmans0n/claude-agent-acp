@@ -5,7 +5,7 @@ import * as path from "node:path";
 import type { ClientCapabilities } from "@agentclientprotocol/sdk";
 import { AcpClient, toAcpNotifications, ToolUseCache } from "../acp-agent.js";
 import { ClientCapabilities as ToolCallCapabilities } from "../tool-calls/client-capabilities.js";
-import { backgroundedBashToolCall } from "../tool-calls/background.js";
+import { backgroundedBashToolCall, withRunningTerminal } from "../tool-calls/background.js";
 import { ChangedMetaFilter } from "../tool-calls/changed-meta-filter.js";
 import { ToolCallFieldTracker } from "../tool-calls/field-tracker.js";
 import { AcpToolCallRenderer } from "../tool-calls/renderer.js";
@@ -177,6 +177,36 @@ describe("the ACP tool call contract", () => {
 
     const both = report(terminalAir, "Grep", { pattern: "a", path: "/p", file_path: "/f" });
     expect(both.call.title).toBe('grep "a" /p');
+  });
+
+  it("reads the Grep -l and -c flags like output_mode", () => {
+    expect(report(air, "Grep", { pattern: "a", "-c": true }).call.title).toBe('grep -c "a"');
+    expect(report(air, "Grep", { pattern: "a", "-l": "true" }).call.title).toBe('grep -l "a"');
+    const both = report(air, "Grep", { pattern: "a", "-c": true, output_mode: "content" });
+    expect(both.call.title).toBe('grep "a"');
+  });
+
+  it("reads the Bash command_description alias like description", () => {
+    const { call } = report(terminalAir, "Bash", {
+      command: "ls",
+      command_description: "List files",
+    });
+    expect(call).toMatchObject({
+      title: "ls",
+      _meta: { jetbrains: { air: { commandTitle: "List files" } } },
+    });
+
+    const plain = report(plainAir, "Bash", { command: "ls", command_description: "List files" });
+    expect(plain.call.content).toEqual([
+      { type: "content", content: { type: "text", text: "List files" } },
+    ]);
+
+    const both = report(terminalAir, "Bash", {
+      command: "ls",
+      description: "Canonical",
+      command_description: "Alias",
+    });
+    expect(both.call._meta).toMatchObject({ jetbrains: { air: { commandTitle: "Canonical" } } });
   });
 
   it("keeps the Read error text for AIR", () => {
@@ -737,5 +767,30 @@ describe("background Bash", () => {
 
   it("sends no marker to a client without the asyncTasks capability", () => {
     expect(backgroundedBashToolCall(completed, new Set(["t"]), false)).toBe(completed);
+  });
+
+  const exit = { terminal_id: "t", exit_code: null, signal: null };
+
+  it("keeps the terminal of a command in the background running", () => {
+    const withExit = {
+      ...completed,
+      update: {
+        ...completed.update,
+        _meta: { claudeCode: { toolName: "Bash" }, terminal_exit: exit },
+      },
+    };
+    expect(withRunningTerminal(withExit, "t")).toEqual({
+      ...completed,
+      update: { ...completed.update, _meta: { claudeCode: { toolName: "Bash" } } },
+    });
+    expect(withRunningTerminal(withExit, "other")).toBe(withExit);
+  });
+
+  it("leaves out a `_meta` that held only the terminal's exit, which v2 would store as empty", () => {
+    const onlyExit = {
+      ...completed,
+      update: { ...completed.update, _meta: { terminal_exit: exit } },
+    };
+    expect(withRunningTerminal(onlyExit, "t")).toEqual(completed);
   });
 });
