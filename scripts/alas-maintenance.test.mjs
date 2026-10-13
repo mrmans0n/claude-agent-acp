@@ -36,6 +36,14 @@ const CLAUDE_PATCHES = [
     files: ["src/acp-agent.ts"],
     tests: ["src/tests/incomplete-tools.test.ts"],
   },
+  {
+    name: "context-usage-extension",
+    identityCommit: "5cb2ba332cb3809d52cd8101a8f546d560408ece",
+    commit: "5cb2ba332cb3809d52cd8101a8f546d560408ece",
+    upstreamPr: null,
+    files: ["src/acp-agent.ts"],
+    tests: ["src/tests/acp-agent.test.ts"],
+  },
 ];
 
 afterEach(() => {
