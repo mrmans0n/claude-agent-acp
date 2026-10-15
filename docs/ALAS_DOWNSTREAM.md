@@ -189,6 +189,13 @@ builds on, including any upstream commits past the tag; it never adds more.
 
 ## Recovery
 
+After `npm publish`, the readback can briefly see npm's attestation endpoint
+and `npm audit signatures --include-attestations` disagree while the registry
+propagates. The publish job therefore repeats the whole readback (fresh
+manifest, attestation, install, and audit) up to 12 times, 30 seconds apart.
+Every attempt applies the same exact comparisons; a mismatch that persists
+still fails the job, and the error names which part differed.
+
 If npm publication succeeds but tag or release creation fails, rerun the failed
 release job from the original Actions run. If a complete workflow rerun is still
 valid, it must use the same source while that source remains the protected
