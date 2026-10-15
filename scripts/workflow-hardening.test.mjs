@@ -135,6 +135,32 @@ describe("publish workflow hardening", () => {
     expect(publish).toContain("const attestationMaxAttempts = 60");
     expect(publish).toContain("attestationAttempt === attestationMaxAttempts - 1");
   });
+
+  it("retries the whole publication readback, never a single comparison", () => {
+    expect(publish).toContain("readback_attempt() {");
+    expect(publish).toContain("readback_max_attempts=12");
+    expect(publish).toContain("until readback_attempt; do");
+    expect(publish).toContain(
+      "npm publication readback did not verify after $readback_max_attempts attempts.",
+    );
+    // Inside an `until` condition errexit is off, so every command must propagate failure.
+    const body = publish.slice(
+      publish.indexOf("readback_attempt() {"),
+      publish.indexOf("until readback_attempt; do"),
+    );
+    for (const command of [
+      "--mode npm",
+      "--mode installed",
+      "npm install --prefix",
+      "npm audit signatures",
+    ]) {
+      const start = body.indexOf(command);
+      expect(start, command).toBeGreaterThan(-1);
+      const end = body.indexOf("|| return 1", start);
+      expect(end, command).toBeGreaterThan(start);
+      expect(body.slice(start, end), command).not.toMatch(/\n\s*(node|npm) /);
+    }
+  });
 });
 
 describe("protected branch documentation", () => {
