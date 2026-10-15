@@ -1,48 +1,95 @@
 {
   "version": 1,
-  "baseTag": "v0.86.0",
+  "baseTag": "v0.91.0",
   "patches": [
     {
       "name": "goal-capability-opt-in",
       "identityCommit": "60749d07ff50308ef96c5251152a8d4986fe680f",
-      "commit": "60749d07ff50308ef96c5251152a8d4986fe680f",
+      "commit": "c16a02cb2c98479194eab5e833a54f45d4e21a4c",
       "upstreamPr": 1245,
       "files": ["docs/air-extensions.md", "src/acp-agent.ts", "src/goal-extension.ts"],
       "tests": ["src/tests/acp-agent.test.ts"],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.85.1",
-        "toTag": "v0.86.0",
-        "originalCommit": "60749d07ff50308ef96c5251152a8d4986fe680f",
-        "decision": "retain"
-      }
+        "fromTag": "v0.90.0",
+        "toTag": "v0.91.0",
+        "originalCommit": "e7ec32822231129dcc5b1e9ee25ea3f02260d933",
+        "decision": "adapt",
+        "replacementCommit": "c16a02cb2c98479194eab5e833a54f45d4e21a4c"
+      },
+      "retiredCommits": [
+        "60749d07ff50308ef96c5251152a8d4986fe680f",
+        "e7ec32822231129dcc5b1e9ee25ea3f02260d933"
+      ]
     },
     {
       "name": "async-tasks-opt-in",
       "identityCommit": "3e098c71628cc7d5927ee8a3d794faa433dce12d",
-      "commit": "3e098c71628cc7d5927ee8a3d794faa433dce12d",
+      "commit": "7f504014fe77d895a99adee24e3ca09d735b4eb8",
       "upstreamPr": null,
       "files": ["src/acp-agent.ts", "src/async-tasks.ts"],
       "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.85.1",
-        "toTag": "v0.86.0",
-        "originalCommit": "3e098c71628cc7d5927ee8a3d794faa433dce12d",
-        "decision": "retain"
-      }
+        "fromTag": "v0.90.0",
+        "toTag": "v0.91.0",
+        "originalCommit": "b752b529fd581085e3e6ea1e995daa8e814b6be6",
+        "decision": "adapt",
+        "replacementCommit": "7f504014fe77d895a99adee24e3ca09d735b4eb8"
+      },
+      "retiredCommits": [
+        "3e098c71628cc7d5927ee8a3d794faa433dce12d",
+        "2532463eb13fd01c5e4ab645a1272c73f7359130",
+        "a738efd42a88cd6dc2999d218677718e1d053184",
+        "b752b529fd581085e3e6ea1e995daa8e814b6be6"
+      ]
     },
     {
       "name": "advisor-tool-results",
       "identityCommit": "af55f8bdedebbc951352d68fba44d616cc4908cb",
-      "commit": "f1d8579c03ae1a5c0f7366f678229c0fb3a54116",
+      "commit": "590b7ed9e90414124c60eb0b853ad6ed4575a24c",
       "upstreamPr": 1247,
       "files": ["src/acp-agent.ts"],
       "tests": ["src/tests/incomplete-tools.test.ts"],
-      "disposition": "active"
+      "disposition": "active",
+      "retiredCommits": [
+        "f1d8579c03ae1a5c0f7366f678229c0fb3a54116",
+        "df2799775856e2ec77ae1a65d0303b07776df47c"
+      ],
+      "lastResolution": {
+        "fromTag": "v0.90.0",
+        "toTag": "v0.91.0",
+        "originalCommit": "590b7ed9e90414124c60eb0b853ad6ed4575a24c",
+        "decision": "retain"
+      }
+    },
+    {
+      "name": "context-usage-extension",
+      "identityCommit": "5cb2ba332cb3809d52cd8101a8f546d560408ece",
+      "commit": "1b1425052d7aa057e3d7ebaf84d1067b7c565a30",
+      "upstreamPr": null,
+      "files": ["src/acp-agent.ts"],
+      "tests": ["src/tests/acp-agent.test.ts"],
+      "disposition": "active",
+      "retiredCommits": [
+        "5cb2ba332cb3809d52cd8101a8f546d560408ece",
+        "1f6defde36ba0a5da34259b72bd74dde30e45f42"
+      ],
+      "lastResolution": {
+        "fromTag": "v0.90.0",
+        "toTag": "v0.91.0",
+        "originalCommit": "1f6defde36ba0a5da34259b72bd74dde30e45f42",
+        "decision": "adapt",
+        "replacementCommit": "1b1425052d7aa057e3d7ebaf84d1067b7c565a30"
+      }
     }
   ],
-  "retiredCommits": [],
+  "retiredCommits": [
+    "e3dba66f9a6e59be956ae14a4a3b2e527dab27e2",
+    "1b234d51245c7dee3fee6c78725e397350e8b667",
+    "00b0613ba3cc76c75d5e23d1613db1a766564af2",
+    "348049cab3b544328cf6d576d60307c01da6128d"
+  ],
   "preservedTransitions": [
     {
       "fromTag": "v0.85.1",
@@ -62,6 +109,27 @@
       "fromTag": "v0.85.1",
       "toTag": "v0.86.0",
       "commit": "f4c9bfb1e756a6a7157509de01f765f6c86b231b",
+      "constituentCommits": [],
+      "decision": "retain"
+    },
+    {
+      "fromTag": "v0.86.0",
+      "toTag": "v0.87.0",
+      "commit": "bd7e7a0411d3667e29456f6428c776ab5a58ffd6",
+      "constituentCommits": [],
+      "decision": "retain"
+    },
+    {
+      "fromTag": "v0.86.0",
+      "toTag": "v0.87.0",
+      "commit": "e23fec92eb26331d03cf39bad1221258c8d16832",
+      "constituentCommits": [],
+      "decision": "retain"
+    },
+    {
+      "fromTag": "v0.89.1",
+      "toTag": "v0.90.0",
+      "commit": "6003d7888d4647a97a08644343009a726291e809",
       "constituentCommits": [],
       "decision": "retain"
     }
