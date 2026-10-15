@@ -143,7 +143,9 @@ import type {
   ListUnsubscribeRequest,
 } from "./session-index/list-subscriptions.js";
 import {
+  ASYNC_TASK_CONTROL_METHOD,
   AsyncTaskRuntime,
+  asyncTaskCapabilityMeta,
   backgroundBashTaskFromToolResult,
   backgroundedBashToolCallIds,
   clientSupportsAsyncTasks,
@@ -580,9 +582,6 @@ const TURN_NO_RESULT_MESSAGE =
  *  agreed ACP steering wire protocol; advertised to clients via the top-level
  *  `InitializeResponse._meta.steering.supported`. */
 const STEER_METHOD = "_session/steering";
-
-/** Stops one Claude background task without cancelling the parent prompt turn. */
-const ASYNC_TASK_STOP_METHOD = "_session/async_task/stop";
 
 type AsyncTaskStopRequest = {
   sessionId: string;
@@ -2925,7 +2924,7 @@ export class ClaudeAcpAgent {
       // Top-level `_meta` (sibling of `agentCapabilities`), per the existing ACP
       // steering extension contract: advertises the `_session/steering` request
       // so clients know they may inject a follow-up into a running turn.
-      _meta: {
+      _meta: asyncTaskCapabilityMeta(this.clientCapabilities, {
         ...goalMeta(
           this.clientCapabilities,
           {
@@ -2949,7 +2948,7 @@ export class ClaudeAcpAgent {
         steering: {
           supported: true,
         },
-      },
+      }),
     };
   }
 
@@ -7858,7 +7857,10 @@ export class ClaudeAcpAgent {
                   backgroundedBashToolCall(
                     acceptedPlanToolResult(notification, acceptedPlanToolUseId),
                     backgroundedToolCalls,
-                    asyncTasks.enabled,
+                    clientSupportsAirCapability(
+                      this.clientCapabilities,
+                      AIR_ASYNC_TASKS_CAPABILITY,
+                    ),
                   ),
                   runningTerminal,
                 ),
@@ -13228,7 +13230,7 @@ export function v1AgentApp(
       agent.steer(ctx.params),
     )
     .onRequest<AsyncTaskStopRequest, AsyncTaskStopResponse>(
-      ASYNC_TASK_STOP_METHOD,
+      ASYNC_TASK_CONTROL_METHOD,
       { parse: parseAsyncTaskStopRequest },
       (ctx) => agent.stopAsyncTask(ctx.params),
     )
