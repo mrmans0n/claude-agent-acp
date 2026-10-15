@@ -347,7 +347,11 @@ jobs:
           INTEGRITY: ${{ steps.pack.outputs.integrity }}
         run: |
           set -Eeuo pipefail
-          node --input-type=module <<'NODE'
+          # npm can serve the attestation bundles before `npm audit signatures` sees the same set.
+          # Every attempt re-reads npm from scratch and repeats the exact comparisons; only the timing
+          # is tolerated, never a mismatch that persists.
+          readback_attempt() {
+            node --input-type=module <<'NODE' || return 1
           import { writeFileSync } from 'node:fs';
           const version = process.env.VERSION;
           const maxAttempts = 60;
@@ -378,39 +382,54 @@ jobs:
           writeFileSync(`${process.env.REPORT_DIR}/published-readback.json`, JSON.stringify(metadata));
           writeFileSync(`${process.env.REPORT_DIR}/attestation-readback.json`, JSON.stringify(attestation));
           NODE
-          node scripts/verify-alas-publication.mjs \
-            --mode npm \
-            --metadata "$REPORT_DIR/published-readback.json" \
-            --package @alas-ide/claude-agent-acp \
-            --version "$VERSION" \
-            --integrity "$INTEGRITY" \
-            --upstream-version "$ALAS_UPSTREAM_VERSION" \
-            --upstream-commit "$ALAS_UPSTREAM_COMMIT" \
-            --source-commit "$ALAS_SOURCE_COMMIT" \
-            --attestation "$REPORT_DIR/attestation-readback.json" \
-            --expected-repository "https://github.com/$GITHUB_REPOSITORY" \
-            --expected-workflow-path .github/workflows/publish-alas.yml \
-            --expected-workflow-ref refs/heads/alas \
-            > "$REPORT_DIR/npm-publication-verification.json"
-          attestation_url="$(node -p "require('$REPORT_DIR/published-readback.json').versions['$VERSION'].dist.attestations.url")"
-          provenance_dir="$(mktemp -d)"
-          trap 'rm -rf "$provenance_dir"' EXIT
-          npm install --prefix "$provenance_dir" --ignore-scripts --no-audit --no-fund --save-exact \
-            "@alas-ide/claude-agent-acp@$VERSION" \
-            --registry=https://registry.npmjs.org --prefer-online --fetch-retries=0
-          npm audit signatures --prefix "$provenance_dir" \
-            --registry=https://registry.npmjs.org --json --include-attestations \
-            > "$REPORT_DIR/signature-audit.json"
-          node scripts/verify-alas-publication.mjs \
-            --mode installed \
-            --package @alas-ide/claude-agent-acp \
-            --version "$VERSION" \
-            --integrity "$INTEGRITY" \
-            --attestation-url "$attestation_url" \
-            --attestation "$REPORT_DIR/attestation-readback.json" \
-            --lock "$provenance_dir/package-lock.json" \
-            --audit "$REPORT_DIR/signature-audit.json" \
-            > "$REPORT_DIR/installed-publication-verification.json"
+            node scripts/verify-alas-publication.mjs \
+              --mode npm \
+              --metadata "$REPORT_DIR/published-readback.json" \
+              --package @alas-ide/claude-agent-acp \
+              --version "$VERSION" \
+              --integrity "$INTEGRITY" \
+              --upstream-version "$ALAS_UPSTREAM_VERSION" \
+              --upstream-commit "$ALAS_UPSTREAM_COMMIT" \
+              --source-commit "$ALAS_SOURCE_COMMIT" \
+              --attestation "$REPORT_DIR/attestation-readback.json" \
+              --expected-repository "https://github.com/$GITHUB_REPOSITORY" \
+              --expected-workflow-path .github/workflows/publish-alas.yml \
+              --expected-workflow-ref refs/heads/alas \
+              > "$REPORT_DIR/npm-publication-verification.json" || return 1
+            local attestation_url provenance_dir
+            attestation_url="$(node -p "require('$REPORT_DIR/published-readback.json').versions['$VERSION'].dist.attestations.url")" || return 1
+            provenance_dir="$(mktemp -d)" || return 1
+            npm install --prefix "$provenance_dir" --ignore-scripts --no-audit --no-fund --save-exact \
+              "@alas-ide/claude-agent-acp@$VERSION" \
+              --registry=https://registry.npmjs.org --prefer-online --fetch-retries=0 || return 1
+            npm audit signatures --prefix "$provenance_dir" \
+              --registry=https://registry.npmjs.org --json --include-attestations \
+              > "$REPORT_DIR/signature-audit.json" || return 1
+            node scripts/verify-alas-publication.mjs \
+              --mode installed \
+              --package @alas-ide/claude-agent-acp \
+              --version "$VERSION" \
+              --integrity "$INTEGRITY" \
+              --attestation-url "$attestation_url" \
+              --attestation "$REPORT_DIR/attestation-readback.json" \
+              --lock "$provenance_dir/package-lock.json" \
+              --audit "$REPORT_DIR/signature-audit.json" \
+              > "$REPORT_DIR/installed-publication-verification.json" || return 1
+          }
+          readback_max_attempts=12
+          readback_attempt_number=1
+          until readback_attempt; do
+            if [ "$readback_attempt_number" -ge "$readback_max_attempts" ]; then
+              echo "::error::npm publication readback did not verify after $readback_max_attempts attempts."
+              exit 1
+            fi
+            echo "Publication readback attempt $readback_attempt_number/$readback_max_attempts did not verify; retrying in 30s."
+            readback_attempt_number=$((readback_attempt_number + 1))
+            sleep 30
+          done
+          if [ "$readback_attempt_number" -gt 1 ]; then
+            echo "npm publication readback verified on attempt $readback_attempt_number of $readback_max_attempts." >> "$REPORT_DIR/summary.md"
+          fi
           echo "Verified exact npm version, latest, integrity, alasDownstream metadata, signed provenance source, and npm audit attestation." >> "$REPORT_DIR/summary.md"
       - name: Write durable publication summary
         if: ${{ always() }}
