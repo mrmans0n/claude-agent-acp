@@ -212,6 +212,40 @@ describe("verifyInstalledPublication", () => {
       }),
     ).toThrow(/verified.*attestation|attestation.*verified/i);
   });
+
+  it("rejects an audit whose attestation bundles differ and names the difference", () => {
+    const packageName = "@alas-ide/claude-agent-acp";
+    const attestationUrl = npmMetadata().versions[version].dist.attestations.url;
+    const bundle = attestation();
+    const lock = {
+      packages: {
+        "": { dependencies: { [packageName]: version } },
+        [`node_modules/${packageName}`]: { version, integrity },
+      },
+    };
+    const verified = {
+      name: packageName,
+      version,
+      attestations: {
+        url: attestationUrl,
+        provenance: { predicateType: "https://slsa.dev/provenance/v1" },
+      },
+      attestationBundles: [],
+    };
+    expect(() =>
+      verifyInstalledPublication({
+        packageName,
+        version,
+        integrity,
+        attestationUrl,
+        attestation: bundle,
+        lock,
+        audit: { invalid: [], missing: [], verified: [verified] },
+      }),
+    ).toThrow(
+      /does not exactly match .*: audit has 0 bundle\(s\) \[\], attestation endpoint has \d+ bundle/,
+    );
+  });
 });
 
 describe("verifyGithubPublication", () => {
