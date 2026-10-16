@@ -17,7 +17,6 @@ import {
   type ListSessionsResponse,
 } from "@agentclientprotocol/sdk";
 import { deleteSession as sdkDeleteSession } from "@anthropic-ai/claude-agent-sdk";
-import { airExtensionMeta } from "../air-extension.js";
 import { sanitizeTitle } from "../session-titles.js";
 import type { OwnSessionState } from "./activity.js";
 import {
@@ -60,6 +59,7 @@ import {
   type ListCursor,
 } from "./session-index.js";
 import { sessionInfoOf } from "./session-info.js";
+import { AIR_SESSION_INDEX_META, type SessionIndexMeta } from "./meta.js";
 
 export const SESSION_RENAME_METHOD = "_session/rename";
 export const SESSION_ARCHIVE_METHOD = "_session/archive";
@@ -108,46 +108,50 @@ export type ListScope = {
   includeWorktrees: boolean;
 };
 
-function archivedFilter(list: Record<string, unknown>): ArchivedFilter {
+function archivedFilter(list: Record<string, unknown>, metaPath: string): ArchivedFilter {
   // Omitted or null is `unarchived`.
   const value = list.archived ?? "unarchived";
   if (!ARCHIVED_FILTERS.includes(value as ArchivedFilter)) {
     throw RequestError.invalidParams(
       { archived: value },
-      '`_meta.jetbrains.air.list.archived` must be "unarchived", "archived" or "all"',
+      `\`${metaPath}.list.archived\` must be "unarchived", "archived" or "all"`,
     );
   }
   return value as ArchivedFilter;
 }
 
-function optionalBoolean(list: Record<string, unknown>, key: string): boolean {
+function optionalBoolean(list: Record<string, unknown>, key: string, metaPath: string): boolean {
   // Omitted or null is false.
   const value = list[key] ?? false;
   if (typeof value !== "boolean") {
     throw RequestError.invalidParams(
       { [key]: value },
-      `\`_meta.jetbrains.air.list.${key}\` must be a boolean`,
+      `\`${metaPath}.list.${key}\` must be a boolean`,
     );
   }
   return value;
 }
 
-/** `_meta.jetbrains.air.list` of a list request. */
-export function parseListOptions(meta: unknown): ListOptions {
-  const list = asRecord(airExtensionMeta(meta)?.list);
+/** `_meta.jetbrains.air.list` (or `_meta.sessionIndex.list`) of a list request. */
+export function parseListOptions(
+  meta: unknown,
+  namespace: SessionIndexMeta = AIR_SESSION_INDEX_META,
+): ListOptions {
+  const metaPath = namespace.path;
+  const list = asRecord(namespace.read(meta)?.list);
   // Omitted or null is the default; an integer of at least 1 is clamped;
   // anything else is invalid.
   const raw = list.limit ?? DEFAULT_LIST_LIMIT;
   if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 1) {
     throw RequestError.invalidParams(
       { limit: raw },
-      "`_meta.jetbrains.air.list.limit` must be an integer of at least 1",
+      `\`${metaPath}.list.limit\` must be an integer of at least 1`,
     );
   }
   return {
     limit: Math.min(MAX_LIST_LIMIT, raw),
-    archived: archivedFilter(list),
-    includeWorktrees: optionalBoolean(list, "includeWorktrees"),
+    archived: archivedFilter(list, metaPath),
+    includeWorktrees: optionalBoolean(list, "includeWorktrees", metaPath),
   };
 }
 
@@ -458,6 +462,8 @@ export type SessionIndexDeps = {
     "debounceMs" | "maxWaitMs" | "rescanMs" | "minSessionIntervalMs"
   >;
   logError: (message: string, error: unknown) => void;
+  /** Where rows and list requests carry the index metadata; AIR's by default. */
+  meta?: SessionIndexMeta;
 };
 
 export class SessionIndexService {
@@ -484,7 +490,7 @@ export class SessionIndexService {
     params: ListSessionsRequest,
     own: (sessionId: string) => OwnSessionState | undefined,
   ): Promise<ListSessionsResponse> {
-    const { limit, archived, includeWorktrees } = parseListOptions(params._meta);
+    const { limit, archived, includeWorktrees } = parseListOptions(params._meta, this.deps.meta);
     const cwd = params.cwd ?? null;
     const scope: ListScope = { cwd, archived, includeWorktrees };
     const after =
@@ -503,7 +509,7 @@ export class SessionIndexService {
     const live = await livePromise;
     const now = this.now();
     const sessions = rows.map((row) =>
-      sessionInfoOf(row, own(row.sessionId), live.get(row.sessionId), now),
+      sessionInfoOf(row, own(row.sessionId), live.get(row.sessionId), now, this.deps.meta),
     );
     const last = rows[rows.length - 1];
     return hasMore && last ? { sessions, nextCursor: encodeListCursor(last, scope) } : { sessions };
@@ -709,6 +715,7 @@ export class SessionIndexService {
       own: (sessionId) => this.deps.ownSessionState?.(sessionId),
       notify: (changes) => this.deps.notifyListChanges?.(changes) ?? Promise.resolve(),
       logError: this.deps.logError,
+      meta: this.deps.meta,
       ...this.deps.listSubscriptionTiming,
     });
     return this.subscriptions.subscribe(cwd);
