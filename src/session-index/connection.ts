@@ -1,7 +1,7 @@
 /**
  * The session index of one ACP connection: what `ClaudeAcpAgent` does for a
- * client that declared `sessionIndex`, and the archive of an AIR client
- * without it. The agent keeps thin call sites; everything else
+ * client that declared `sessionIndex` (AIR, or the client-neutral
+ * `_meta.sessionIndex`), and the archive of an AIR client without it. The agent keeps thin call sites; everything else
  * lives here.
  *
  * Wire contract: docs/air-extensions.md, "Session index".
@@ -25,9 +25,15 @@ import {
   AIR_SESSION_RENAME_CAPABILITY,
   AIR_SESSION_WORKTREES_CAPABILITY,
   clientSupportsAirCapability,
-  withAirMeta,
 } from "../air-extension.js";
 import type { OwnSessionState } from "./activity.js";
+import {
+  AIR_SESSION_INDEX_META,
+  clientOptsIntoNeutralSessionIndex,
+  NEUTRAL_SESSION_INDEX_META,
+  withNeutralSessionIndexCapabilities,
+  type SessionIndexMeta,
+} from "./meta.js";
 import { isArchivedTitle, storedTitle, visibleTitle } from "./archive-title.js";
 import {
   LIST_CHANGES_METHOD,
@@ -111,22 +117,33 @@ export class SessionIndexConnection {
   /** The archive behind `session/delete` of an AIR client without
    *  `sessionIndex`: the same writes, without a list or a watcher. */
   private archiver?: SessionIndexService;
+  /** Where the client reads and writes the index metadata; set with
+   *  {@link service}. */
+  private meta?: SessionIndexMeta;
   /** When the query of a session failed here, by session id. */
   private readonly failedQueries = new Map<string, number>();
 
   constructor(private readonly host: SessionIndexHost) {}
 
   /** Sets the index up for the client of `initialize`. ACP v2 does not route
-   *  the session index methods yet. */
+   *  the session index methods yet. An AIR client gets it only through its
+   *  AIR capability; any other client through `_meta.sessionIndex`. */
   negotiate(request: InitializeRequest, options: { v2: boolean }): void {
     this.service?.dispose();
     this.service = undefined;
-    if (
-      !options.v2 &&
-      this.host.isAirClient() &&
-      clientSupportsAirCapability(request.clientCapabilities, AIR_SESSION_INDEX_CAPABILITY)
-    ) {
+    this.meta = undefined;
+    if (options.v2) return;
+    const capabilities = request.clientCapabilities;
+    if (this.host.isAirClient()) {
+      if (clientSupportsAirCapability(capabilities, AIR_SESSION_INDEX_CAPABILITY)) {
+        this.meta = AIR_SESSION_INDEX_META;
+      }
+    } else if (clientOptsIntoNeutralSessionIndex(capabilities)) {
+      this.meta = NEUTRAL_SESSION_INDEX_META;
+    }
+    if (this.meta) {
       this.service = new SessionIndexService({
+        meta: this.meta,
         ownSessionState: (sessionId) => this.ownSessionState(sessionId),
         notifyListChanges: (changes) =>
           this.host.agent.client.extNotification(LIST_CHANGES_METHOD, changes),
@@ -136,26 +153,40 @@ export class SessionIndexConnection {
     }
   }
 
-  /** A stored title as the client shows it: an AIR client gets the title
-   *  of an archived session without the archive prefix, as in its list;
-   *  every other client the title as stored. */
+  /** A stored title as the client shows it: an AIR client and a client
+   *  with the session index get the title of an archived session without
+   *  the archive prefix, as in the list; every other client the title as
+   *  stored. */
   clientTitle(title: string): string {
-    return this.host.isAirClient() && isArchivedTitle(title) ? visibleTitle(title) : title;
+    const strip = this.host.isAirClient() || this.service !== undefined;
+    return strip && isArchivedTitle(title) ? visibleTitle(title) : title;
   }
 
   /** The AIR capabilities the agent advertises for the index: the index
    *  itself, archive, rename, the list subscription and the `agentWorktree`
-   *  row field, all only to a client that declared `sessionIndex`. */
+   *  row field, all only to an AIR client that declared `sessionIndex`. */
   capabilities(): string[] {
-    return this.service
-      ? [
-          AIR_SESSION_INDEX_CAPABILITY,
-          AIR_SESSION_ARCHIVE_CAPABILITY,
-          AIR_SESSION_RENAME_CAPABILITY,
-          AIR_SESSION_LIST_SUBSCRIBE_CAPABILITY,
-          AIR_SESSION_WORKTREES_CAPABILITY,
-        ]
-      : [];
+    return this.meta === AIR_SESSION_INDEX_META ? this.indexCapabilities() : [];
+  }
+
+  /** The initialize `_meta` with top-level `sessionIndex` for a client that
+   *  opted into the client-neutral index; unchanged for every other client. */
+  withNeutralCapabilities(
+    meta: Record<string, unknown> | undefined,
+  ): Record<string, unknown> | undefined {
+    return this.meta === NEUTRAL_SESSION_INDEX_META
+      ? withNeutralSessionIndexCapabilities(meta, this.indexCapabilities())
+      : meta;
+  }
+
+  private indexCapabilities(): string[] {
+    return [
+      AIR_SESSION_INDEX_CAPABILITY,
+      AIR_SESSION_ARCHIVE_CAPABILITY,
+      AIR_SESSION_RENAME_CAPABILITY,
+      AIR_SESSION_LIST_SUBSCRIBE_CAPABILITY,
+      AIR_SESSION_WORKTREES_CAPABILITY,
+    ];
   }
 
   dispose(): void {
@@ -403,19 +434,19 @@ export class SessionIndexConnection {
 
   /** Tells the client the archive state of a session that was loaded on
    *  this connection (`session_info_update` with
-   *  `_meta.jetbrains.air.archived`, RFD #2161's `archived` field), also
-   *  once the archive closed it. */
+   *  `_meta.jetbrains.air.archived` or `_meta.sessionIndex.archived`, RFD
+   *  #2161's `archived` field), also once the archive closed it. */
   private async reportArchived(
     sessionId: string,
     archived: boolean,
     loaded: boolean,
   ): Promise<void> {
-    if (!loaded) return;
+    if (!loaded || !this.meta) return;
     await this.host.agent.client.sessionUpdate({
       sessionId,
       update: {
         sessionUpdate: "session_info_update",
-        _meta: withAirMeta(undefined, "archived", archived),
+        _meta: this.meta.with(undefined, "archived", archived),
       },
     });
   }
