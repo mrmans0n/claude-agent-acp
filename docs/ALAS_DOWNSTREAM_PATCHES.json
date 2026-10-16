@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "baseTag": "v0.91.0",
+  "baseTag": "v0.92.0",
   "patches": [
     {
       "name": "goal-capability-opt-in",
@@ -11,11 +11,10 @@
       "tests": ["src/tests/acp-agent.test.ts"],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.90.0",
-        "toTag": "v0.91.0",
-        "originalCommit": "e7ec32822231129dcc5b1e9ee25ea3f02260d933",
-        "decision": "adapt",
-        "replacementCommit": "c16a02cb2c98479194eab5e833a54f45d4e21a4c"
+        "fromTag": "v0.91.0",
+        "toTag": "v0.92.0",
+        "originalCommit": "c16a02cb2c98479194eab5e833a54f45d4e21a4c",
+        "decision": "retain"
       },
       "retiredCommits": [
         "60749d07ff50308ef96c5251152a8d4986fe680f",
@@ -31,11 +30,10 @@
       "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.90.0",
-        "toTag": "v0.91.0",
-        "originalCommit": "b752b529fd581085e3e6ea1e995daa8e814b6be6",
-        "decision": "adapt",
-        "replacementCommit": "7f504014fe77d895a99adee24e3ca09d735b4eb8"
+        "fromTag": "v0.91.0",
+        "toTag": "v0.92.0",
+        "originalCommit": "7f504014fe77d895a99adee24e3ca09d735b4eb8",
+        "decision": "retain"
       },
       "retiredCommits": [
         "3e098c71628cc7d5927ee8a3d794faa433dce12d",
@@ -57,8 +55,8 @@
         "df2799775856e2ec77ae1a65d0303b07776df47c"
       ],
       "lastResolution": {
-        "fromTag": "v0.90.0",
-        "toTag": "v0.91.0",
+        "fromTag": "v0.91.0",
+        "toTag": "v0.92.0",
         "originalCommit": "590b7ed9e90414124c60eb0b853ad6ed4575a24c",
         "decision": "retain"
       }
@@ -76,11 +74,10 @@
         "1f6defde36ba0a5da34259b72bd74dde30e45f42"
       ],
       "lastResolution": {
-        "fromTag": "v0.90.0",
-        "toTag": "v0.91.0",
-        "originalCommit": "1f6defde36ba0a5da34259b72bd74dde30e45f42",
-        "decision": "adapt",
-        "replacementCommit": "1b1425052d7aa057e3d7ebaf84d1067b7c565a30"
+        "fromTag": "v0.91.0",
+        "toTag": "v0.92.0",
+        "originalCommit": "1b1425052d7aa057e3d7ebaf84d1067b7c565a30",
+        "decision": "retain"
       }
     },
     {
@@ -98,14 +95,21 @@
         "src/session-index/session-info.ts"
       ],
       "tests": ["src/tests/acp-scenarios.test.ts", "src/tests/session-index.test.ts"],
-      "disposition": "active"
+      "disposition": "active",
+      "lastResolution": {
+        "fromTag": "v0.91.0",
+        "toTag": "v0.92.0",
+        "originalCommit": "325c503f05cd7fb9ed98b7a05192b8afb6c8e164",
+        "decision": "retain"
+      }
     }
   ],
   "retiredCommits": [
     "e3dba66f9a6e59be956ae14a4a3b2e527dab27e2",
     "1b234d51245c7dee3fee6c78725e397350e8b667",
     "00b0613ba3cc76c75d5e23d1613db1a766564af2",
-    "348049cab3b544328cf6d576d60307c01da6128d"
+    "348049cab3b544328cf6d576d60307c01da6128d",
+    "ff040bf76ec9d79a3b9c652916cf7c9f4bba3e94"
   ],
   "preservedTransitions": [
     {
@@ -147,6 +151,13 @@
       "fromTag": "v0.89.1",
       "toTag": "v0.90.0",
       "commit": "6003d7888d4647a97a08644343009a726291e809",
+      "constituentCommits": [],
+      "decision": "retain"
+    },
+    {
+      "fromTag": "v0.91.0",
+      "toTag": "v0.92.0",
+      "commit": "2ddc71dcfe4c84e92e3ecf57028019d5b6ca476d",
       "constituentCommits": [],
       "decision": "retain"
     }
