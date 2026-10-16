@@ -62,6 +62,15 @@ is advertised as `_meta.contextUsage` only to clients that send
 `clientCapabilities._meta.contextUsage: true`, so other clients see no change.
 Upstream has no equivalent request.
 
+The neutral session index patch exposes the AIR session index (bounded
+`session/list` with row metadata, linked-worktree scope, archive filter,
+`_session/rename`, `_session/archive`, `_session/unarchive` and the list
+subscription) to a client that does not declare `_meta.jetbrains.air`. It opts
+in with `clientCapabilities._meta.sessionIndex: { "version": 1 }` and gets the
+same payloads under top-level `_meta.sessionIndex`, so Alas keeps the tool call
+and subagent formats of a non-AIR client. AIR clients follow only their AIR
+capability, and clients that do not opt in see no change.
+
 For each target release, `scripts/audit-downstream-patches.mjs` classifies every
 patch:
 
