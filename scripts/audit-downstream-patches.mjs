@@ -36,6 +36,21 @@ const CLAUDE_PATCH_IDENTITIES = [
     files: ["src/acp-agent.ts"],
     tests: ["src/tests/acp-agent.test.ts"],
   },
+  {
+    name: "neutral-session-index",
+    identityCommit: "325c503f05cd7fb9ed98b7a05192b8afb6c8e164",
+    upstreamPr: null,
+    files: [
+      "docs/air-extensions.md",
+      "src/acp-agent.ts",
+      "src/session-index/connection.ts",
+      "src/session-index/list-subscriptions.ts",
+      "src/session-index/meta.ts",
+      "src/session-index/service.ts",
+      "src/session-index/session-info.ts",
+    ],
+    tests: ["src/tests/acp-scenarios.test.ts", "src/tests/session-index.test.ts"],
+  },
 ];
 
 function sameJson(left, right) {
