@@ -82,6 +82,23 @@
         "decision": "adapt",
         "replacementCommit": "1b1425052d7aa057e3d7ebaf84d1067b7c565a30"
       }
+    },
+    {
+      "name": "neutral-session-index",
+      "identityCommit": "325c503f05cd7fb9ed98b7a05192b8afb6c8e164",
+      "commit": "325c503f05cd7fb9ed98b7a05192b8afb6c8e164",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/acp-agent.ts",
+        "src/session-index/connection.ts",
+        "src/session-index/list-subscriptions.ts",
+        "src/session-index/meta.ts",
+        "src/session-index/service.ts",
+        "src/session-index/session-info.ts"
+      ],
+      "tests": ["src/tests/acp-scenarios.test.ts", "src/tests/session-index.test.ts"],
+      "disposition": "active"
     }
   ],
   "retiredCommits": [
