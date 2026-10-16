@@ -49,7 +49,7 @@ Each extension is shaped so that it can become a first-class ACP API later.
 ## Compatibility rule
 
 An AIR client declares `initialize.clientCapabilities._meta.jetbrains.air` (see [Client declaration](#client-declaration)).
-Every extension in this document except [Goal](#goal) and the provider-neutral form of [Async tasks](#async-tasks) applies only to an AIR client.
+Every extension in this document except [Goal](#goal) and the provider-neutral forms of [Async tasks](#async-tasks) and the [Session index](#client-neutral-session-index) applies only to an AIR client.
 
 A client that does not declare `_meta.jetbrains.air` is not AIR. Zed is such a client.
 It gets the same information in the same fields as from the upstream adapter:
@@ -59,7 +59,7 @@ It gets the same information in the same fields as from the upstream adapter:
 - the keys of other teams: `steering`, `quota`, `authStatus`, and `gateway`.
 
 It gets no key that exists only for AIR.
-It gets no `_meta.jetbrains.air` key at all. A client that opts into the goal or async task extension receives the provider-neutral top-level `_meta.goal` or `_meta["async-tasks"]`; other removed upstream copies of AIR keys remain absent (see [Removed keys](#removed-keys)).
+It gets no `_meta.jetbrains.air` key at all. A client that opts into the goal, async task or session index extension receives the provider-neutral top-level `_meta.goal`, `_meta["async-tasks"]` or `_meta.sessionIndex`; other removed upstream copies of AIR keys remain absent (see [Removed keys](#removed-keys)).
 
 The adapter leaves out only repeated data for such a client:
 
@@ -121,6 +121,12 @@ A non-AIR client opts into async tasks only with the literal boolean `true`:
 
 `false`, a string, an object, an array, `null`, or a missing key does not opt in. If the client declares `_meta.jetbrains.air`, it is an AIR client and only the AIR `asyncTasks` capability controls this extension; adding the top-level neutral flag cannot bypass a missing AIR capability.
 
+A non-AIR client opts into the session index with a versioned top-level object (see [Client-neutral session index](#client-neutral-session-index)):
+
+```json
+{ "clientCapabilities": { "_meta": { "sessionIndex": { "version": 1 } } } }
+```
+
 ### Agent declaration
 
 The `initialize` response of an AIR client carries the agent side of the extension:
@@ -154,7 +160,7 @@ The `initialize` response of an AIR client carries the agent side of the extensi
 
 The agent list does not depend on the capabilities that AIR declares, except `sessionIndex`: the agent lists it, together with `sessionArchive`, `sessionRename`, `sessionListSubscribe` and `sessionWorktrees`, only for a client that declared `sessionIndex`.
 An extension is active only when the client declared its capability. The client does not declare `sessionArchive`, `sessionRename`, `sessionListSubscribe` and `sessionWorktrees`.
-The response to a client that is not AIR has no `_meta.jetbrains` key. An opted-in non-AIR client receives the same `goal` capability at top-level `_meta.goal` and the async task capability at top-level `_meta["async-tasks"]`:
+The response to a client that is not AIR has no `_meta.jetbrains` key. An opted-in non-AIR client receives the same `goal` capability at top-level `_meta.goal`, the async task capability at top-level `_meta["async-tasks"]`, and the session index capabilities at top-level `_meta.sessionIndex`:
 
 ```json
 {
@@ -1287,6 +1293,7 @@ The session index makes `session/list` a bounded, ordered page with row metadata
 ### Activation
 
 AIR declares `sessionIndex` in `_meta.jetbrains.air.capabilities`.
+A client that is not AIR opts in with top-level `_meta.sessionIndex` (see [Client-neutral session index](#client-neutral-session-index)).
 Unlike the other capabilities, the agent advertises `sessionIndex` only to a client that declared it, and never under ACP v2.
 Exactly when it advertises `sessionIndex`, the agent also advertises `sessionArchive` (it supports `_session/archive` and `_session/unarchive`), `sessionRename` (it supports `_session/rename`), `sessionListSubscribe` (it supports `_session/list/subscribe` and `_session/list/unsubscribe`) and `sessionWorktrees` (rows carry `agentWorktree`, see [List response](#list-response)).
 The client does not declare these four; declaring them without `sessionIndex` enables nothing.
@@ -1422,7 +1429,7 @@ The archive state lives in the session title, in the format of AIR's own Claude 
   Every `[archived] ` prefix of the current title is removed before one is added, so unarchive also unarchives a title stored with the prefix twice.
   A new session archived before it has a title gets `[archived] Session …`, and keeps `Session …` as its name once unarchived: no title is generated for a named session.
 
-- The list shows the title without the prefix, and so does the `session_info_update { title }` of a loaded session for an AIR client. Another client, and the `claude --resume` picker, show the title as stored, with the prefix.
+- The list shows the title without the prefix, and so does the `session_info_update { title }` of a loaded session for an AIR client or a client with the [client-neutral session index](#client-neutral-session-index). Another client, and the `claude --resume` picker, show the title as stored, with the prefix.
 
 - Archive of a session loaded on this connection stops it, as Codex's `thread/archive` unloads its thread:
   1. it cancels the running turn, as `session/cancel` does, and sends the CLI the interrupt;
@@ -1546,6 +1553,45 @@ It differs in transport, until the RFD lands in the SDK, in the list filter, and
 - the capability is `sessionArchive` in `_meta.jetbrains.air.capabilities`, advertised together with `sessionIndex`, not `sessionCapabilities.archive`;
 - the list parameter is `_meta.jetbrains.air.list.archived`, and the state is `_meta.jetbrains.air.archived` on rows and in `session_info_update`, not the `archived` fields;
 - an AIR client without `sessionIndex` still archives with `session/delete` (see [Delete and close](#delete-and-close)), which the RFD asks clients not to do.
+
+### Client-neutral session index
+
+A client that is not AIR gets the same session index, with `_meta.sessionIndex` in place of `_meta.jetbrains.air`.
+It opts in at `initialize` with `clientCapabilities._meta.sessionIndex: { "version": 1 }`.
+Only an object whose `version` is an integer of at least 1 opts in; `true`, a string, an array, `null`, a missing `version`, `0` or a fraction enables nothing.
+An AIR client is governed only by its AIR `sessionIndex` capability: the adapter ignores a top-level `sessionIndex` from it. As for AIR, the agent never advertises it under ACP v2.
+
+The `initialize` response of an opted-in client carries the agent side at top level, with the AIR capability names and no `_meta.jetbrains` key:
+
+```json
+{
+  "_meta": {
+    "sessionIndex": {
+      "version": 1,
+      "capabilities": [
+        "sessionIndex",
+        "sessionArchive",
+        "sessionRename",
+        "sessionListSubscribe",
+        "sessionWorktrees"
+      ]
+    }
+  }
+}
+```
+
+| AIR form                                                                                                                                     | Client-neutral form                                             |
+| -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `session/list` `_meta.jetbrains.air.list { limit, includeWorktrees, archived }`                                                              | `_meta.sessionIndex.list { limit, includeWorktrees, archived }` |
+| row `_meta.jetbrains.air.{ archived, lastPromptAt, … }`                                                                                      | row `_meta.sessionIndex.{ archived, lastPromptAt, … }`          |
+| `_session/list/changes` rows                                                                                                                 | the same rows, with `_meta.sessionIndex`                        |
+| `session_info_update` `_meta.jetbrains.air.archived`                                                                                         | `session_info_update` `_meta.sessionIndex.archived`             |
+| `_session/rename`, `_session/archive`, `_session/unarchive`, `_session/list/subscribe`, `_session/list/unsubscribe`, `_session/list/changes` | unchanged                                                       |
+
+- The fields, validation, limits, ordering, cursors, scope, errors, subscription rules, [Delete and close](#delete-and-close) for a `sessionIndex` client, and the title without the archive prefix in `session_info_update { title }` are those of the AIR session index.
+- The `_meta.sessionIndex` object of a row or an update has no `version`: as for the neutral goal, the version is negotiated once at `initialize`.
+- The adapter reads list parameters only from `_meta.sessionIndex.list` for such a client, never from `_meta.jetbrains.air.list`.
+- Everything else is what any client that is not AIR gets: tool calls, the subagents RFD, the other opt-ins, and no `_meta.jetbrains` key.
 
 ## Context compaction
 
