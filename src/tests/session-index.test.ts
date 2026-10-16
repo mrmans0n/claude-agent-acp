@@ -507,6 +507,46 @@ describe("client-neutral session index", () => {
     await agent.dispose();
   });
 
+  it("holds a fork back from session/list and list changes until its session/fork response is out", async () => {
+    const { agent, notifications } = await neutralAgent();
+    await agent.subscribeSessionList({ cwd: workspace });
+    await settle();
+    const rowsOf = (sessionId: string) =>
+      notifications
+        .filter((n) => n.method === "_session/list/changes")
+        .flatMap((n) => (n.params as unknown as ListChanges).sessions)
+        .filter((row) => row.sessionId === sessionId);
+    const parent = await writeTranscript({ prompt: "Parent" });
+    expect(await waitFor(() => rowsOf(parent.id).length > 0)).toBe(true);
+    let answer!: () => void;
+    const responded = new Promise<void>((resolve) => (answer = resolve));
+    const forkWritten = writeTranscript({ prompt: "Parent", forkedFrom: parent.id });
+    const forked = agent.forking(parent.id, async () => {
+      (agent as any).sessionIndex.onForkCreated(parent.id, (await forkWritten).id);
+      await responded;
+    });
+    const fork = await forkWritten;
+    // A session that is no fork of the parent goes out meanwhile.
+    const other = await writeTranscript({ prompt: "Other" });
+    expect(await waitFor(() => rowsOf(other.id).length > 0)).toBe(true);
+    expect(rowsOf(fork.id)).toEqual([]);
+    const held = await agent.listSessions({ cwd: workspace });
+    expect(held.sessions.map((s) => s.sessionId)).not.toContain(fork.id);
+
+    answer();
+    await forked;
+    expect(await waitFor(() => rowsOf(fork.id).length > 0)).toBe(true);
+    expect(rowsOf(fork.id)[0]!._meta).toEqual({
+      sessionIndex: expect.objectContaining({ forkedFrom: parent.id }),
+    });
+    const listed = await agent.listSessions({ cwd: workspace });
+    const row = listed.sessions.find((s) => s.sessionId === fork.id);
+    expect(row?._meta).toEqual({
+      sessionIndex: expect.objectContaining({ forkedFrom: parent.id }),
+    });
+    await agent.dispose();
+  });
+
   it("deletes for real", async () => {
     const session = await writeTranscript({});
     const { agent } = await neutralAgent();
@@ -1483,6 +1523,38 @@ describe("_session/list/subscribe", () => {
       ["Named", false],
       ["Done", true],
     ]);
+    await agent.dispose();
+  });
+
+  it("holds a fork back until the response of its session/fork is out", async () => {
+    const { rowsOf, agent } = await subscribedAgent();
+    const parent = await writeTranscript({ prompt: "Parent" });
+    expect(await waitFor(() => rowsOf(parent.id).length > 0)).toBe(true);
+    let answer!: () => void;
+    const responded = new Promise<void>((resolve) => (answer = resolve));
+    const forkWritten = writeTranscript({ prompt: "Parent", forkedFrom: parent.id });
+    // A fork whose head has no `forkedFrom`, as one with a first record over 64 KB.
+    const unmarkedWritten = writeTranscript({ prompt: "Parent" });
+    const forked = agent.forking(parent.id, async () => {
+      await forkWritten;
+      (agent as any).sessionIndex.onForkCreated(parent.id, (await unmarkedWritten).id);
+      await responded;
+    });
+    const fork = await forkWritten;
+    const unmarked = await unmarkedWritten;
+    // A session that is no fork of the parent goes out meanwhile.
+    const other = await writeTranscript({ prompt: "Other" });
+    expect(await waitFor(() => rowsOf(other.id).length > 0)).toBe(true);
+    expect(rowsOf(fork.id)).toEqual([]);
+    expect(rowsOf(unmarked.id)).toEqual([]);
+    const listed = await agent.listSessions({ cwd: workspace });
+    expect(listed.sessions.map((s) => s.sessionId)).not.toContain(unmarked.id);
+
+    answer();
+    await forked;
+    expect(await waitFor(() => rowsOf(fork.id).length > 0)).toBe(true);
+    expect(await waitFor(() => rowsOf(unmarked.id).length > 0)).toBe(true);
+    expect(airRow(rowsOf(fork.id)[0]!).forkedFrom).toBe(parent.id);
     await agent.dispose();
   });
 
