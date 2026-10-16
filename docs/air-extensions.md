@@ -20,6 +20,7 @@ It describes only this adapter.
 - [Session hooks](#session-hooks)
 - [Permission presentation](#permission-presentation)
 - [Goal](#goal)
+- [Predicted follow-up prompt](#predicted-follow-up-prompt)
 - [Recommended config values](#recommended-config-values)
 - [Async tasks](#async-tasks)
 - [Agent file-change report](#agent-file-change-report)
@@ -217,6 +218,7 @@ The adapter sends these keys only to an AIR client. "AIR" in the Gate column mea
 | `commandTitle`                 | Bash and PowerShell tool call `_meta.jetbrains.air`                                   | the `description` input string                                         | AIR                                                                                    |
 | `subagent`                     | Agent and Task tool call `_meta.jetbrains.air`                                        | `true`                                                                 | AIR                                                                                    |
 | `skill`                        | Skill tool call `_meta.jetbrains.air`                                                 | `{name, path?}`                                                        | AIR                                                                                    |
+| `mcp`                          | MCP tool call `_meta.jetbrains.air`                                                   | `{server, tool}`                                                       | AIR                                                                                    |
 | `contextCompaction`            | compaction tool call or `compaction_update`, `_meta.jetbrains.air`                    | `{version: 1, trigger?, preTokens?, postTokens?, durationMs?, error?}` | AIR                                                                                    |
 | `customAnswer`                 | elicitation schema property `_meta.jetbrains.air`                                     | `{questionId, isCustomAnswer: true}`                                   | AIR, when the client supports form elicitation                                         |
 | `kind`                         | session mode `_meta.jetbrains.air` and mode config option value `_meta.jetbrains.air` | `standard`, `plan`, `auto_review`, or `full_access`                    | AIR                                                                                    |
@@ -237,6 +239,7 @@ The adapter keeps them where they are.
 | `steering`              | `initialize` response `_meta.steering = {supported: true}`                                                                                | The agent accepts `_session/steering` for a running turn.                          |
 | `quota`                 | `PromptResponse._meta.quota`                                                                                                              | Token usage of the turn, also split by model.                                      |
 | `authStatus`            | `initialize` response `agentCapabilities._meta.authStatus`                                                                                | The agent pushes `_auth/status_update`. The object carries no payload.             |
+| `promptSuggestions`     | `session_info_update._meta.promptSuggestions = {suggestions: [{text}]}`, AIR only                                                         | The prompt the agent predicts for the next turn. An empty list clears it.          |
 
 ## Auth source display
 
@@ -354,9 +357,13 @@ For every tool, a client that is not AIR also gets these upstream fields:
 | `Skill`                                                        | `kind: other`, `title: "Load skill: <name>"`.                                                                                 | `_meta.jetbrains.air.skill`.                                                                                                                                                                   | none                                                                                             |
 | `TodoWrite`, `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet` | The stream reports them as a standard `plan` with entries. Only a permission request shows them as a tool call.               | A plan that repeats the previous plan is not sent.                                                                                                                                             | Every plan goes out.                                                                             |
 | `ReportFindings`                                               | `kind: think`, `title: "Report <n> findings"`.                                                                                | With `rawInputRendering`, no copy of the findings in `content`.                                                                                                                                | none                                                                                             |
-| MCP tools (`mcp__*`) and other tools                           | `kind: other`, `title` is the tool name. The result text goes to `content`.                                                   | `_meta.is_mcp_tool_call` for MCP.                                                                                                                                                              | none                                                                                             |
+| MCP tools (`mcp__*`) and other tools                           | `kind: other`, `title` is the tool name. The result text goes to `content`.                                                   | `_meta.is_mcp_tool_call` for MCP, and `_meta.jetbrains.air.mcp = {server, tool}`.                                                                                                              | none                                                                                             |
 | Context compaction                                             | `compaction_update` when the client declares `session.compaction`. Otherwise a synthetic tool call.                           | Both forms carry `_meta.jetbrains.air.contextCompaction`.                                                                                                                                      | See [Context compaction](#context-compaction).                                                   |
 | Background work that is not a subagent                         | none                                                                                                                          | With `asyncTasks`, async task updates.                                                                                                                                                         | none                                                                                             |
+
+`_meta.jetbrains.air.mcp` comes from the tool name `mcp__<server>__<tool>`, on `tool_call` and on a `tool_call_update` that changes it.
+`server` is the part up to the next `__`. `tool` is the whole rest and can contain `__`, as in Claude Code.
+A name that does not split (`mcp__x`) gets no `mcp` key, and `_meta.is_mcp_tool_call` still marks it.
 
 ## Diff patch
 
@@ -632,6 +639,7 @@ The client already has the rest of the tool call, because the adapter sends the 
 - `content` is present only with an exact preview patch for a `diffPatch` client.
 - `locations` is present only when a valid `blockedPath` is not a location of the tool call yet.
 - `_meta.claudeCode.mcpServer` names the MCP server of an `mcp__*` tool.
+  It is the server name as authored in the config. `_meta.jetbrains.air.mcp.server` on the tool call is the normalized name (characters outside `[a-zA-Z0-9_-]` replaced by `_`), so the two can differ.
 
 A client that is not AIR gets the upstream request `toolCall`: `toolCallId`, `name`, `status: pending`, the whole `rawInput`, `title`, `kind`, `content`, and `locations`.
 Its `_meta.claudeCode` carries `toolName`, and `parentToolUseId` for a subagent tool call, next to `mcpServer`.
@@ -846,6 +854,37 @@ It publishes `goal: null` for `/goal clear`.
 While that command is pending, the adapter ignores late updates for the previous goal.
 A matching runtime `active_goal` stays authoritative and adds the iteration, reason, and timestamp.
 A failed command restores the previous state.
+
+## Predicted follow-up prompt
+
+After a turn, the Claude Code CLI can predict the prompt the user is likely to send next.
+The adapter asks for it with the SDK option `promptSuggestions: true` and forwards the one prediction of the turn.
+
+ACP has no field for a composer prefill, so the prediction travels outside the AIR namespace:
+
+```json
+{
+  "sessionUpdate": "session_info_update",
+  "_meta": { "promptSuggestions": { "suggestions": [{ "text": "Run the tests" }] } }
+}
+```
+
+The key names no vendor, so another client can read it.
+The adapter sends it only to an AIR client; see the [compatibility rule](#compatibility-rule).
+
+AIR shows the first non-blank `suggestions[].text` as gray text in an empty composer.
+Tab fills the composer with it and sends nothing.
+
+`suggestions: []` clears the prediction the client holds. The adapter clears it:
+
+- when the next `session/prompt` arrives, because that turn's prediction is spent;
+- on a `conversation_reset`, because the prediction was drawn from the transcript the reset dropped.
+
+A prediction the next prompt outran — the user sent it before the adapter read the prediction off the SDK stream — is dropped instead of published.
+
+The CLI predicts nothing on the first turn of a session, after an API error, in plan mode, and at the account's usage limit, so many turns end with no prediction.
+A client must treat a turn without one as normal.
+A caller can turn the whole feature off with `_meta.claudeCode.options.promptSuggestions: false` on `session/new`; a user can turn it off in Claude Code settings or with `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false`.
 
 ## Recommended config values
 

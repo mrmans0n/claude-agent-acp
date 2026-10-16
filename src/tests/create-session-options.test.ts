@@ -323,6 +323,25 @@ describe("createSession options merging", () => {
     expect(capturedOptions?.env?.HOME).toBe("/custom/home");
   });
 
+  it("asks the SDK for a predicted follow-up prompt per turn", async () => {
+    await agent.newSession({
+      cwd: process.cwd(),
+      mcpServers: [],
+    });
+
+    expect(capturedOptions!.promptSuggestions).toBe(true);
+  });
+
+  it("lets a caller turn the predicted follow-up prompt off", async () => {
+    await agent.newSession({
+      cwd: process.cwd(),
+      mcpServers: [],
+      _meta: { claudeCode: { options: { promptSuggestions: false } } },
+    });
+
+    expect(capturedOptions!.promptSuggestions).toBe(false);
+  });
+
   it("defaults tools to claude_code preset when not provided", async () => {
     await agent.newSession({
       cwd: process.cwd(),
@@ -713,6 +732,108 @@ describe("createSession options merging", () => {
         preset: "claude_code",
         append: "extra",
       });
+    });
+  });
+
+  describe("systemPrompt", () => {
+    const text = (value: string) => ({ type: "text" as const, text: value });
+
+    it("appends text blocks to the claude_code preset", async () => {
+      await agent.newSession({
+        cwd: process.cwd(),
+        mcpServers: [],
+        systemPrompt: { mode: "append", content: [text("First."), text("Second.")] },
+      });
+
+      expect(capturedOptions!.systemPrompt).toEqual({
+        type: "preset",
+        preset: "claude_code",
+        append: "First.\n\nSecond.",
+      });
+    });
+
+    it("replaces the claude_code preset in override mode", async () => {
+      await agent.newSession({
+        cwd: process.cwd(),
+        mcpServers: [],
+        systemPrompt: { mode: "override", content: [text("You are a release bot.")] },
+      });
+
+      expect(capturedOptions!.systemPrompt).toBe("You are a release bot.");
+    });
+
+    it("takes precedence over _meta.systemPrompt and keeps AIR custom instructions", async () => {
+      await agent.newSession({
+        cwd: process.cwd(),
+        mcpServers: [],
+        systemPrompt: { mode: "append", content: [text("Client prompt.")] },
+        _meta: {
+          systemPrompt: "legacy prompt",
+          jetbrains: { air: { customInstructions: "AIR instructions" } },
+        },
+      });
+
+      expect(capturedOptions!.systemPrompt).toEqual({
+        type: "preset",
+        preset: "claude_code",
+        append: "Client prompt.\n\nAIR instructions",
+      });
+    });
+
+    it("rejects an unsupported mode without creating a session", async () => {
+      capturedOptions = undefined;
+      await expect(
+        agent.newSession({
+          cwd: process.cwd(),
+          mcpServers: [],
+          systemPrompt: { mode: "_vendor", content: [text("x")] },
+        }),
+      ).rejects.toMatchObject({ code: RequestError.invalidParams().code });
+      expect(capturedOptions).toBeUndefined();
+    });
+
+    it("rejects content other than text without creating a session", async () => {
+      capturedOptions = undefined;
+      await expect(
+        agent.newSession({
+          cwd: process.cwd(),
+          mcpServers: [],
+          systemPrompt: {
+            mode: "append",
+            content: [{ type: "image", data: "", mimeType: "image/png" }],
+          },
+        }),
+      ).rejects.toMatchObject({ code: RequestError.invalidParams().code });
+      expect(capturedOptions).toBeUndefined();
+    });
+
+    it("recreates a live session when resume sends a different systemPrompt", async () => {
+      const { sessionId } = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+      capturedOptions = undefined;
+
+      await agent.resumeSession({
+        sessionId,
+        cwd: process.cwd(),
+        systemPrompt: { mode: "append", content: [text("New instructions.")] },
+      });
+
+      expect(capturedOptions!.systemPrompt).toEqual({
+        type: "preset",
+        preset: "claude_code",
+        append: "New instructions.",
+      });
+    });
+
+    it("rejects an unsupported systemPrompt on resume of a live session", async () => {
+      const { sessionId } = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+
+      await expect(
+        agent.resumeSession({
+          sessionId,
+          cwd: process.cwd(),
+          systemPrompt: { mode: "_vendor", content: [text("x")] },
+        }),
+      ).rejects.toMatchObject({ code: RequestError.invalidParams().code });
     });
   });
 
