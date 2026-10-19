@@ -9,8 +9,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import * as v1 from "@agentclientprotocol/sdk";
-import * as v2 from "@agentclientprotocol/sdk/experimental/v2";
+import * as v1 from "@agentclientprotocol/sdk/unstable";
+import * as v2 from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import {
   forkSession,
   getSessionMessages,
@@ -276,6 +276,46 @@ describe("ACP protocol routing", () => {
     for (const method of response.authMethods ?? []) {
       expect(method).toHaveProperty("id");
     }
+  });
+
+  it("routes the Alas context usage request of a v1 client to the v1 app", async () => {
+    // `_alas/context_usage` is not an ACP method. The router hands it to the v1
+    // app, which checks the params and answers with `getContextUsage` unchanged.
+    const usage = { categories: [{ name: "Messages", tokens: 10, color: "x", kind: "used" }] };
+    const getContextUsage = vi.fn(async () => usage);
+    const result = await v1
+      .client({ name: "v1-test-client" })
+      .onNotification(
+        "_auth/status_update",
+        (params) => params,
+        () => {},
+      )
+      .connectWith(connectRouter() as unknown as v1.Stream, async (agent) => {
+        const initialized = await agent.request(v1.methods.agent.initialize, {
+          protocolVersion: v1.PROTOCOL_VERSION,
+          clientCapabilities: { _meta: { contextUsage: true } },
+        });
+        const { sessionId } = await agent.request(v1.methods.agent.session.new, {
+          cwd,
+          mcpServers: [],
+        });
+        (agents[0].sessions[sessionId].query as any).getContextUsage = getContextUsage;
+        const answer = await agent.request("_alas/context_usage", { sessionId, detail: "summary" });
+        const invalid = await agent
+          .request("_alas/context_usage", { sessionId, detail: "everything" })
+          .then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+        return { initialized, answer, invalid };
+      });
+
+    expect((result.initialized._meta as any)?.contextUsage).toEqual({ supported: true });
+    expect(result.answer).toEqual(usage);
+    expect(getContextUsage).toHaveBeenCalledTimes(1);
+    expect(getContextUsage).toHaveBeenCalledWith({ detail: "summary" });
+    // A bad `detail` is an invalid params error, and does not reach the SDK.
+    expect(result.invalid).toMatchObject({ code: -32602 });
   });
 
   it("serves the v2 handshake to a v2 client", async () => {
@@ -1089,6 +1129,59 @@ describe("ACP v2 prompts", () => {
       }),
       { sessionUpdate: "state_update", state: "idle", stopReason: "end_turn" },
     ]);
+  });
+
+  it("ends a resume with replay with one end event for a client with loadReplayEnd", async () => {
+    const client = v2Client();
+    const isEnd = (notification: v2.UpdateSessionNotification) =>
+      (notification.update._meta as any)?.jetbrains?.air?.loadReplayEnd === true;
+    let atResponse: v2.UpdateSessionNotification[] = [];
+    let resumedSessionId = "";
+    await client.app.connectWith(connectRouter(), async (agent) => {
+      await initializeV2(agent, {
+        _meta: { jetbrains: { air: { version: 1, capabilities: ["loadReplayEnd"] } } },
+      } as v2.ClientCapabilities);
+      const { sessionId } = await agent.request(v2.methods.agent.session.new, { cwd });
+      resumedSessionId = sessionId;
+      vi.mocked(getSessionMessages).mockResolvedValueOnce([
+        transcriptEntry("user", randomUUID(), { role: "user", content: "Say hello" }),
+        transcriptEntry("assistant", randomUUID(), {
+          id: "msg_hello",
+          role: "assistant",
+          content: [{ type: "text", text: "Hello!" }],
+        }),
+      ] as unknown as Awaited<ReturnType<typeof getSessionMessages>>);
+      client.sessionUpdates.length = 0;
+      await agent.request(v2.methods.agent.session.resume, {
+        sessionId,
+        cwd,
+        replayFrom: { type: "start" },
+      });
+      atResponse = [...client.sessionUpdates];
+      // A resume without a replay sends no end event.
+      await agent.request(v2.methods.agent.session.resume, { sessionId, cwd });
+      await client.authUpdate(1);
+    });
+
+    // The end event closes the replay. v2 then requires the state snapshot
+    // after the replay and before the response.
+    expect(atResponse.map(({ update }) => update.sessionUpdate)).toEqual([
+      "user_message",
+      "user_message_chunk",
+      "agent_message",
+      "agent_message_chunk",
+      "session_info_update",
+      "state_update",
+    ]);
+    expect(atResponse.at(-2)).toEqual({
+      sessionId: resumedSessionId,
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: { jetbrains: { air: { version: 1, loadReplayEnd: true } } },
+      },
+    });
+    expect(atResponse.at(-1)?.update).toEqual({ sessionUpdate: "state_update", state: "idle" });
+    expect(client.sessionUpdates.filter(isEnd)).toHaveLength(1);
   });
 
   it("replays the plan of an approved ExitPlanMode as a markdown plan", async () => {

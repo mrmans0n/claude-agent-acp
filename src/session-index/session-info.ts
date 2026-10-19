@@ -5,7 +5,7 @@
  * that opted into the client-neutral session index.
  */
 
-import type { SessionInfo } from "@agentclientprotocol/sdk";
+import type { SessionInfo } from "@agentclientprotocol/sdk/unstable";
 import { deriveActivity, selectCost, type OwnSessionState } from "./activity.js";
 import type { LiveRecord } from "./live-registry.js";
 import type { IndexRow } from "./session-index.js";

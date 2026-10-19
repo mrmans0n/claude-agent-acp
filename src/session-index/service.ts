@@ -15,7 +15,7 @@ import {
   RequestError,
   type ListSessionsRequest,
   type ListSessionsResponse,
-} from "@agentclientprotocol/sdk";
+} from "@agentclientprotocol/sdk/unstable";
 import { deleteSession as sdkDeleteSession } from "@anthropic-ai/claude-agent-sdk";
 import { sanitizeTitle } from "../session-titles.js";
 import type { OwnSessionState } from "./activity.js";

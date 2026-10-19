@@ -55,7 +55,7 @@ import {
   WriteTextFileRequest,
   WriteTextFileResponse,
   ToolCallContent,
-} from "@agentclientprotocol/sdk";
+} from "@agentclientprotocol/sdk/unstable";
 import type { ForegroundEvents, StopReason, TurnEvents, TurnOutcome } from "./turn-events.js";
 import {
   AccountInfo,
@@ -133,6 +133,8 @@ import {
   AIR_DIFF_PATCH_CAPABILITY,
   AIR_PLAN_FILE_CAPABILITY,
   AIR_KIND_KEY,
+  AIR_LOAD_REPLAY_END_CAPABILITY,
+  AIR_LOAD_REPLAY_END_KEY,
   AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY,
   AIR_SKILL_PATH_KEY,
   clientSupportsAirCapability,
@@ -298,7 +300,7 @@ import {
   type ToolCallUpdate,
   type ToolUpdateMeta,
 } from "./tool-calls/renderer.js";
-import { resolveSkillPath } from "./tool-calls/reporters/interaction.js";
+import { resolveSkillPath, type SkillScanCache } from "./tool-calls/reporters/interaction.js";
 import {
   messageLoopYielder,
   nodeToWebReadable,
@@ -9571,6 +9573,22 @@ export class ClaudeAcpAgent {
     this.logger.log(
       `[session/replay] sessionId=${sessionId} phase=publish durationMs=${Math.round(replayFinishedAt - historyLoadedAt)} totalMs=${Math.round(replayFinishedAt - replayStartedAt)} messages=${messages.length}`,
     );
+    // A client with `loadReplayEnd` gets one more update after the whole
+    // replay, the subagent history included. A stopped replay (the CLI start
+    // failed) does not get it, and a failed replay throws before this line.
+    if (
+      !pending?.stopped &&
+      clientSupportsAirCapability(this.clientCapabilities, AIR_LOAD_REPLAY_END_CAPABILITY)
+    ) {
+      await this.client.sessionUpdate({
+        sessionId,
+        // No `title` and no `updatedAt`: `null` would clear them.
+        update: {
+          sessionUpdate: "session_info_update",
+          _meta: withAirMeta(undefined, AIR_LOAD_REPLAY_END_KEY, true),
+        },
+      });
+    }
   }
 
   async readTextFile(params: ReadTextFileRequest): Promise<ReadTextFileResponse> {
@@ -12599,10 +12617,12 @@ function getAvailableSlashCommands(
   skillPaths?: Map<string, string | undefined>,
   query?: Query,
 ): AvailableCommand[] {
+  // The container listings of this one pass, so a list of a hundred commands lists each container once.
+  const skillScans: SkillScanCache = new Map();
   const skillPath = (name: string, cwd: string): string | undefined => {
     const key = `${cwd}\0${name}`;
     if (skillPaths?.has(key)) return skillPaths.get(key);
-    const resolved = resolveSkillPath(name, cwd);
+    const resolved = resolveSkillPath(name, cwd, skillScans);
     skillPaths?.set(key, resolved);
     return resolved;
   };
