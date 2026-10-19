@@ -25018,6 +25018,28 @@ describe("turn steering (_session/steering)", () => {
     });
   });
 
+  it("advertises and serves the context usage breakdown", async () => {
+    const agent = createMockAgent();
+    const plain = await agent.initialize({ protocolVersion: 1, clientCapabilities: {} });
+    expect(plain._meta).not.toHaveProperty("contextUsage");
+    const response = await agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: { _meta: { contextUsage: true } },
+    });
+    expect((response._meta as any)?.contextUsage).toEqual({ supported: true });
+
+    injectGeneratorSession(agent, async function* () {});
+    const usage = { categories: [{ name: "Messages", tokens: 10, color: "x", kind: "used" }] };
+    const getContextUsage = vi.fn(async () => usage);
+    (agent.sessions["test-session"].query as any).getContextUsage = getContextUsage;
+
+    await expect(
+      agent.contextUsage({ sessionId: "test-session", detail: "summary" }),
+    ).resolves.toBe(usage);
+    expect(getContextUsage).toHaveBeenCalledWith({ detail: "summary" });
+    await expect(agent.contextUsage({ sessionId: "missing", detail: "full" })).rejects.toThrow();
+  });
+
   it("advertises async tasks with steering and goals for an opted-in non-AIR client", async () => {
     const agent = createMockAgent();
     const response = await agent.initialize({
