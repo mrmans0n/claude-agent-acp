@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AcpSessionNotification } from "../acp-subagents.js";
 import {
   AsyncTaskRuntime,
+  asyncTaskCapabilityMeta,
   backgroundBashTaskFromToolResult,
   clientSupportsAsyncTasks,
 } from "../async-tasks.js";
@@ -587,6 +588,28 @@ describe("AsyncTaskRuntime", () => {
       }),
     ).toBe(true);
     expect(clientSupportsAsyncTasks({})).toBe(false);
+  });
+
+  it.each([true, false, null, {}, [], "true"])(
+    "requires literal true for provider-neutral async task opt-in (%j)",
+    (asyncTasks) => {
+      expect(clientSupportsAsyncTasks({ _meta: { "async-tasks": asyncTasks } })).toBe(
+        asyncTasks === true,
+      );
+    },
+  );
+
+  it("does not let the neutral flag bypass a mixed AIR client without asyncTasks", () => {
+    const capabilities = {
+      _meta: {
+        "async-tasks": true,
+        jetbrains: { air: { version: 1, capabilities: [] } },
+      },
+    };
+    expect(clientSupportsAsyncTasks(capabilities)).toBe(false);
+    expect(asyncTaskCapabilityMeta(capabilities, { steering: { supported: true } })).toEqual({
+      steering: { supported: true },
+    });
   });
 
   it("publishes one durable lifecycle with progress and a terminal state", async () => {
