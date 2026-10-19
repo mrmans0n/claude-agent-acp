@@ -81,6 +81,7 @@ import {
   query,
   resolveSettings,
   SDKAssistantMessageError,
+  SDKControlGetContextUsageResponse,
   SDKActiveGoalMessage,
   SDKMessage,
   SDKMessageOrigin,
@@ -669,6 +670,41 @@ function parseAsyncTaskStopRequest(value: unknown): AsyncTaskStopRequest {
     );
   }
   return { sessionId, asyncTaskId };
+}
+
+/** Alas extension: returns the SDK's `getContextUsage` breakdown (categories,
+ *  memory files, skills, agents, MCP tools, message breakdown) unchanged, so
+ *  the client can draw what fills the context window. Advertised via the
+ *  top-level `InitializeResponse._meta.contextUsage.supported`, only to a
+ *  client that sends `clientCapabilities._meta.contextUsage: true`. */
+const CONTEXT_USAGE_METHOD = "_alas/context_usage";
+
+function clientRequestsContextUsage(capabilities?: ClientCapabilities | null): boolean {
+  const meta = capabilities?._meta as Record<string, unknown> | undefined;
+  return meta?.contextUsage === true;
+}
+
+type ContextUsageRequest = {
+  sessionId: string;
+  detail: "summary" | "full";
+};
+
+function parseContextUsageRequest(value: unknown): ContextUsageRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw RequestError.invalidParams(undefined, "context usage params must be an object");
+  }
+  const params = value as Record<string, unknown>;
+  const sessionId = typeof params.sessionId === "string" ? params.sessionId.trim() : "";
+  if (!sessionId) {
+    throw RequestError.invalidParams(
+      undefined,
+      "context usage params require a non-empty sessionId",
+    );
+  }
+  if (params.detail !== undefined && params.detail !== "summary" && params.detail !== "full") {
+    throw RequestError.invalidParams(undefined, "context usage detail must be summary or full");
+  }
+  return { sessionId, detail: params.detail ?? "full" };
 }
 
 /** How urgently the SDK delivers a steered message relative to the running
@@ -3026,6 +3062,9 @@ export class ClaudeAcpAgent {
         steering: {
           supported: true,
         },
+        ...(clientRequestsContextUsage(this.clientCapabilities)
+          ? { contextUsage: { supported: true } }
+          : {}),
       }),
     };
   }
@@ -4383,6 +4422,12 @@ export class ClaudeAcpAgent {
     const firstText = params.prompt[0]?.type === "text" ? params.prompt[0].text : "";
     await this.publishGoalFromPrompt(sessionId, firstText, steeredUuid);
     return { outcome: "injected" };
+  }
+
+  async contextUsage(params: ContextUsageRequest): Promise<SDKControlGetContextUsageResponse> {
+    const session = this.sessions[params.sessionId];
+    if (!session) throw RequestError.resourceNotFound(params.sessionId);
+    return await session.query.getContextUsage({ detail: params.detail });
   }
 
   async stopAsyncTask(params: AsyncTaskStopRequest): Promise<AsyncTaskStopResponse> {
@@ -13624,6 +13669,11 @@ export function v1AgentApp(
     .onNotification(methods.agent.session.cancel, (ctx) => agent.cancel(ctx.params))
     .onRequest<SteerRequest, SteerResponse>(STEER_METHOD, { parse: parseSteerRequest }, (ctx) =>
       agent.steer(ctx.params),
+    )
+    .onRequest<ContextUsageRequest, SDKControlGetContextUsageResponse>(
+      CONTEXT_USAGE_METHOD,
+      { parse: parseContextUsageRequest },
+      (ctx) => agent.contextUsage(ctx.params),
     )
     .onRequest<AsyncTaskStopRequest, AsyncTaskStopResponse>(
       ASYNC_TASK_CONTROL_METHOD,
