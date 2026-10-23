@@ -21201,6 +21201,48 @@ describe("deferred settlement for live background subagents (issues #864/#866)",
     await agent.sessions["test-session"]?.consumer;
   });
 
+  it("answers the prompt at its result while a subagent is live, for a client that opts into settleAtResult", async () => {
+    const { agent, events } = chunkCapturingAgent();
+    const response = await agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: { _meta: { settleAtResult: true } },
+    });
+    expect((response._meta as any)?.settleAtResult).toEqual({ supported: true });
+
+    let releaseSubagent!: () => void;
+    const subagentDone = new Promise<void>((resolve) => (releaseSubagent = resolve));
+    injectGeneratorSession(agent, (input) => {
+      async function* messageGenerator() {
+        const iter = input[Symbol.asyncIterator]();
+        yield userEcho((await iter.next()).value);
+        yield running();
+        yield subagentStarted("agent-1");
+        yield resultMessage();
+        yield idle();
+        // The subagent ends only after the prompt was answered.
+        await subagentDone;
+        yield taskNotification("agent-1");
+        yield running();
+        yield assistantText("promised summary");
+        yield resultMessage({ origin: { kind: "task-notification" } });
+        yield idle();
+      }
+      return messageGenerator();
+    });
+
+    const answer = await agent.prompt({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "explore" }],
+    });
+    events.push("resolved");
+    releaseSubagent();
+
+    expect(answer.stopReason).toBe("end_turn");
+    await agent.sessions["test-session"]?.consumer;
+    // The follow-up still reaches the client, after the answer.
+    expect(events).toEqual(["resolved", "chunk:promised summary"]);
+  });
+
   it("resumes a held turn's foreground work for a steer, and ends it again at the steered result", async () => {
     const foreground: string[] = [];
     const agent = new ClaudeAcpAgent(
