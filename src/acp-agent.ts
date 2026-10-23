@@ -684,6 +684,20 @@ function clientRequestsContextUsage(capabilities?: ClientCapabilities | null): b
   return meta?.contextUsage === true;
 }
 
+/** Alas extension: a client that sends `clientCapabilities._meta.settleAtResult:
+ *  true` gets the `session/prompt` response at the turn's result even when the
+ *  turn started background subagents that still run. Without it, the response
+ *  waits until those subagents end and the model has written its follow-up
+ *  (see Turn.deferredSettle), which can be hours for a chain of subagents.
+ *  The hold exists for clients that stop reading updates at the response; a
+ *  client that opts in keeps reading, and answers a subagent's
+ *  `session/request_permission` outside a turn. Advertised back as
+ *  `InitializeResponse._meta.settleAtResult.supported`. */
+function clientRequestsSettleAtResult(capabilities?: ClientCapabilities | null): boolean {
+  const meta = capabilities?._meta as Record<string, unknown> | undefined;
+  return meta?.settleAtResult === true;
+}
+
 type ContextUsageRequest = {
   sessionId: string;
   detail: "summary" | "full";
@@ -3066,6 +3080,9 @@ export class ClaudeAcpAgent {
           ...(clientRequestsContextUsage(this.clientCapabilities)
             ? { contextUsage: { supported: true } }
             : {}),
+          ...(clientRequestsSettleAtResult(this.clientCapabilities)
+            ? { settleAtResult: { supported: true } }
+            : {}),
         }),
       ),
     };
@@ -5201,6 +5218,11 @@ export class ClaudeAcpAgent {
      *  output and permission requests land inside it (see
      *  Turn.deferredSettle). */
     const turnAwaitingSubagents = (turn: Turn) => {
+      // A client that opted into settleAtResult gets the response at the
+      // result; its subagents' output reaches it outside the turn.
+      if (clientRequestsSettleAtResult(this.clientCapabilities)) {
+        return false;
+      }
       if (!turn.spawnedTaskIds?.size) {
         return false;
       }
