@@ -1,22 +1,21 @@
 {
   "version": 1,
-  "fromTag": "v0.93.0",
-  "toTag": "v0.94.0",
-  "toCommit": "7bcbfc7a5ca7ab9c7eece4f0749ccaf49c7ba7e1",
+  "fromTag": "v0.94.0",
+  "toTag": "v0.95.0",
+  "toCommit": "ebfbfbdaa9c2a6a8bd9eb0a4965b521009152350",
   "patches": [
     {
       "name": "goal-capability-opt-in",
-      "commit": "c16a02cb2c98479194eab5e833a54f45d4e21a4c",
+      "commit": "79047b35a8d185d78567d3c6875d1adfb986c8b7",
       "upstreamPr": 1245,
       "files": ["docs/air-extensions.md", "src/acp-agent.ts", "src/goal-extension.ts"],
       "tests": ["src/tests/acp-agent.test.ts"],
       "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": ["docs/air-extensions.md", "src/acp-agent.ts", "src/goal-extension.ts"],
+      "overlappingFiles": ["docs/air-extensions.md", "src/acp-agent.ts"],
       "resolution": {
-        "decision": "adapt",
-        "commit": "79047b35a8d185d78567d3c6875d1adfb986c8b7",
-        "rationale": "Upstream v0.94.0 moves the SDK imports to @agentclientprotocol/sdk/unstable (#1386, ACP SDK 2.0.0), including the RequestError import of src/goal-extension.ts, and adds AIR_LOAD_REPLAY_END_CAPABILITY and AIR_LOAD_REPLAY_END_KEY next to the goal keys in the air-extension import list of src/acp-agent.ts (#1361). Both are context lines of this patch. The v0.91 adaptation c16a02cb2c98479194eab5e833a54f45d4e21a4c still applies to the bare v0.94.0 tag, but its replay gets a different stable patch-id, so the candidate build no longer sees the second copy of it in alas history (2a888894c25f9d342ddb59caa8cde25d5dd5fb99) as already applied and fails replaying it on top of the first. The replacement reapplies the patch on v0.94.0 with the same added and removed lines; only the context differs. Upstream v0.94.0 does not touch goal negotiation, goals stay AIR-only upstream, and the load replay end update is a separate AIR capability that this patch does not gate, so the patch is not absorbed. The replacement has a stable patch-id distinct from every retired commit, and the goal tests pass on it.",
+        "decision": "retain",
+        "rationale": "Upstream v0.95.0 does not touch goal negotiation: goals stay AIR-only upstream and there is no provider-neutral opt-in, so the patch is not absorbed. Its docs/air-extensions.md edits add the Background subagents (#1262) and Autonomous turn (#1390) sections and the session index status of held sessions with open background tasks (#1399), none of them in the goal sentences the patch adds. Its src/acp-agent.ts edits add the AIR backgroundSubagents capability to the AIR capability list (`...(this.v2 ? [] : [AIR_BACKGROUND_SUBAGENTS_CAPABILITY])`), which is a context line of this patch, plus autonomous turns (#1390, #1413), background task tracking (#1399), Remote Control messages (#1371), RFD delegation messages (#1405), early session titles (#1406) and read-only subagent configuration (#1417); none reads or advertises the goal capability. 79047b35a8d185d78567d3c6875d1adfb986c8b7 replays cleanly onto v0.95.0 with the same added and removed lines; only that context line differs, so its replay has a new stable patch-id, and no other copy of the patch in alas history conflicts. The goal tests pass on the integration.",
         "tests": [
           "npm run test:run -- src/tests/acp-agent.test.ts -t \"advertises and publishes goals for an opted-in non-AIR client|publishes active_goal as provider-neutral session state without changing turn settlement|advertises async tasks with steering and goals for an opted-in non-AIR client\"",
           "npm run build"
@@ -26,7 +25,7 @@
     },
     {
       "name": "async-tasks-opt-in",
-      "commit": "7f504014fe77d895a99adee24e3ca09d735b4eb8",
+      "commit": "d98fd9e5abf588d7c4d703245e129ada6a8c5182",
       "upstreamPr": null,
       "files": ["src/acp-agent.ts", "src/async-tasks.ts"],
       "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
@@ -34,9 +33,8 @@
       "equivalent": false,
       "overlappingFiles": ["src/acp-agent.ts", "src/async-tasks.ts"],
       "resolution": {
-        "decision": "adapt",
-        "commit": "d98fd9e5abf588d7c4d703245e129ada6a8c5182",
-        "rationale": "Upstream v0.94.0 (#1386, ACP SDK 2.0.0) moves the ClientCapabilities import of src/async-tasks.ts to @agentclientprotocol/sdk/unstable, a context line of this patch, and the patch is written on top of the goal opt-in, which is adapted again for v0.94. The candidate replays original downstream commits before adaptation commits, so the v0.91 commit 7f504014fe77d895a99adee24e3ca09d735b4eb8 conflicts. The replacement reapplies it on top of the v0.94 goal adaptation with the same added and removed lines. Upstream async tasks remain AIR-only and clientSupportsAsyncTasks and its callers are unchanged. Upstream #1384 (Claude Code 2.1.303) turns on fork subagents in the Agent SDK; fork children are subagents, not async tasks, and the fork replay fix in subagent-history.ts does not read the async task capability, so an opted-in non-AIR client is still treated exactly like AIR with asyncTasks. The replacement has a stable patch-id distinct from every retired commit; the async task, create-session-options (including the per-task stop affordance cases), tool call contract and native subagent suites pass with it.",
+        "decision": "retain",
+        "rationale": "Upstream async tasks remain AIR-only in v0.95.0 and clientSupportsAsyncTasks keeps the same three callers as in v0.94.0 (the live and history-replay AsyncTaskRuntime and the stopsWorkflowsOnCancel choice), so the patch is not absorbed. Upstream #1390 publishes a turn that Claude Code starts after end_turn as the async task autonomous-turn-<uuid>, and _session/async_task/stop on it interrupts that turn (#1413 adds the scheduled wakeup description). That path is gated on AsyncTaskRuntime.enabled, which is clientSupportsAsyncTasks, so an opted-in non-AIR client gets it exactly like an AIR client with asyncTasks. That is the patch's contract: the opt-in only decides which clients get async task updates and _session/async_task/stop, and it is unchanged. #1399 changes the session index activity of held sessions with open background tasks and does not read the async task capability. The `import { randomUUID } from \"node:crypto\"` that #1390 adds to src/async-tasks.ts is a context line of the patch, so d98fd9e5abf588d7c4d703245e129ada6a8c5182 replays cleanly with the same added and removed lines and a new stable patch-id. The async task, create-session-options (including the per-task stop affordance cases), tool call contract and native subagent suites, with the new upstream autonomous-turn tests, pass with it.",
         "tests": [
           "npm run test:run -- src/tests/async-tasks.test.ts src/tests/acp-agent.test.ts src/tests/create-session-options.test.ts src/tests/tool-call-contract.test.ts src/tests/native-subagents.test.ts",
           "npm run test:run -- src/tests/create-session-options.test.ts -t \"per-task stop affordance\"",
@@ -56,14 +54,14 @@
       "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
         "decision": "retain",
-        "rationale": "Upstream v0.94.0 still lists advisor_tool_result among the ignored content blocks of toAcpNotifications, so the patch is not absorbed. The v0.94.0 src/acp-agent.ts edits (the SDK 2.0 import path, the load replay end update and the skill scan cache) do not touch the advisor path. 590b7ed9e90414124c60eb0b853ad6ed4575a24c replays cleanly with an unchanged stable patch-id, and the incomplete-tool suite passes with it.",
+        "rationale": "Upstream v0.95.0 still lists advisor_tool_result among the ignored content blocks of toAcpNotifications, so the patch is not absorbed. The v0.95.0 src/acp-agent.ts edits (backgroundSubagents, autonomous turns, ACP v2 routing, background task tracking, Remote Control messages, read-only subagent configuration) do not touch the advisor path, and the @anthropic-ai/sdk 1.1.0 dev dependency still typechecks the patch. 590b7ed9e90414124c60eb0b853ad6ed4575a24c replays cleanly with an unchanged stable patch-id, and the incomplete-tool suite passes with it.",
         "tests": ["npm run test:run -- src/tests/incomplete-tools.test.ts", "npm run build"],
         "automatic": false
       }
     },
     {
       "name": "context-usage-extension",
-      "commit": "1b1425052d7aa057e3d7ebaf84d1067b7c565a30",
+      "commit": "eebbea33e42160f5e2b4d700539476086c9c41f1",
       "upstreamPr": null,
       "files": ["src/acp-agent.ts"],
       "tests": ["src/tests/acp-agent.test.ts"],
@@ -71,9 +69,8 @@
       "equivalent": false,
       "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
-        "decision": "adapt",
-        "commit": "eebbea33e42160f5e2b4d700539476086c9c41f1",
-        "rationale": "The patch is written on top of the async task patch: it adds contextUsage inside the asyncTaskCapabilityMeta(...) call of the initialize response and the request next to ASYNC_TASK_CONTROL_METHOD. Both are adapted again for v0.94, so the v0.91 commit 1b1425052d7aa057e3d7ebaf84d1067b7c565a30 conflicts when the candidate replays it before the adaptations. The replacement reapplies the unchanged patch on top of the v0.94 async task adaptation. Upstream v0.94.0 has no _alas/context_usage request or contextUsage advertisement, and Claude Agent SDK 0.3.303 (#1384) keeps Query.getContextUsage({ detail }) and SDKControlGetContextUsageResponse. Upstream #1386 moves the agent to ACP SDK 2.0.0, whose protocol router hands v1 messages to the v1 app, so the replacement adds a test that drives _alas/context_usage from a v1 client through acpProtocolRouter: the client gets the getContextUsage result unchanged, and a bad detail is an invalid params error that does not reach the SDK. The test fails without the request registration, without the params check, and without the advertisement. The test also gives the replacement a stable patch-id distinct from 1b1425052d7aa057e3d7ebaf84d1067b7c565a30, which an unchanged restack would have kept.",
+        "decision": "retain",
+        "rationale": "Upstream v0.95.0 has no _alas/context_usage request or contextUsage advertisement, so the patch is not absorbed. Claude Agent SDK 0.3.309 (#1413) keeps Query.getContextUsage({ detail }) unchanged; SDKControlGetContextUsageResponse only gains optional fields (a category id, mcpInstructions, plugin ids and file paths of agents and skills), which the request passes through unchanged because it returns the SDK result as is. Since #1400 the adapter always connects through acpProtocolRouter: a v1 client still reaches the v1 app that registers the request, as the acp-v2 routing test shows, and a client that asks for protocol version 2 or later gets the v2 app, which serves no Alas extension. The v0.95.0 src/acp-agent.ts edits do not touch the initialize advertisement or the request handler. eebbea33e42160f5e2b4d700539476086c9c41f1 replays cleanly on top of the replayed async task patch with an unchanged stable patch-id, and the context usage tests pass.",
         "tests": [
           "npm run test:run -- src/tests/acp-v2.test.ts -t \"routes the Alas context usage request of a v1 client to the v1 app\"",
           "npm run test:run -- src/tests/acp-agent.test.ts -t \"advertises and serves the context usage breakdown\"",
@@ -85,7 +82,7 @@
     },
     {
       "name": "neutral-session-index",
-      "commit": "b1b5a7faa341850e4437e887abf78dd6783993c0",
+      "commit": "4e44af411027d3bf41ce26694f299a058d1f721e",
       "upstreamPr": null,
       "files": [
         "docs/air-extensions.md",
@@ -102,18 +99,36 @@
       "overlappingFiles": [
         "docs/air-extensions.md",
         "src/acp-agent.ts",
-        "src/session-index/connection.ts",
-        "src/session-index/list-subscriptions.ts",
-        "src/session-index/service.ts",
-        "src/session-index/session-info.ts"
+        "src/session-index/service.ts"
       ],
       "resolution": {
         "decision": "adapt",
-        "commit": "4e44af411027d3bf41ce26694f299a058d1f721e",
-        "rationale": "Upstream v0.94.0 (#1386, ACP SDK 2.0.0) moves the SessionInfo import of src/session-index/session-info.ts to @agentclientprotocol/sdk/unstable, on the line next to the withAirMeta import that this patch removes, so replaying b1b5a7faa341850e4437e887abf78dd6783993c0 conflicts there. It also moves the SDK import of src/session-index/service.ts, a context line of the patch, and the patch is written on top of the goal, async task and context usage patches, which are adapted again for v0.94. The replacement keeps upstream's import path and the patch's removal of withAirMeta, because rows build their metadata with the negotiated key from ./meta.js; the rest of the patch replays unchanged. Upstream v0.94.0 does not change the session index contract and still gates it on AIR's sessionIndex, so the patch is not absorbed. The load replay end update (#1361) is a separate AIR capability that this patch does not expose to clients without the AIR declaration. The replacement has a stable patch-id distinct from every retired commit, and the session index, scenario and prompt suggestion suites pass with it.",
+        "commit": "9c4ddd79b8dfb480a72cf4e1071615c383cee84e",
+        "rationale": "Upstream v0.95.0 (#1262) adds the AIR capability backgroundSubagents to the initialize capability list that this patch wraps in sessionIndex.withNeutralCapabilities, and a Background subagents section in docs/air-extensions.md right after the Session index section, where this patch adds Client-neutral session index. Both hunks conflict when 4e44af411027d3bf41ce26694f299a058d1f721e is replayed. The replacement keeps upstream's capability entry, re-indented inside the neutral wrapper, and keeps the client-neutral section as the last subsection of Session index, followed by upstream's new section; every other added and removed line is unchanged. The capability stays AIR-only because it sits inside the toolCallCapabilities.air.client branch. Upstream v0.95.0 changes session index internals (background task and activity tracking, #1399) but adds no _meta.jetbrains.air field to rows, list updates or list parameters, and the session index stays gated on AIR's sessionIndex, so the neutral meta path is complete and the patch is not absorbed. The replacement has a stable patch-id distinct from every ledger and retired commit, and the session index, scenario and prompt suggestion suites pass with it.",
         "tests": [
-          "npm run test:run -- src/tests/session-index.test.ts -t \"holds a fork back\"",
+          "npm run test:run -- src/tests/session-index.test.ts -t \"sessionIndex negotiation|client-neutral session index|holds a fork back\"",
           "npm run test:run -- src/tests/session-index.test.ts src/tests/acp-scenarios.test.ts src/tests/prompt-suggestions.test.ts",
+          "npm run build"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "settle-at-result",
+      "commit": "5e5dd2485e577189dee329e860f0f7368bf1de2f",
+      "upstreamPr": null,
+      "files": ["src/acp-agent.ts"],
+      "tests": ["src/tests/acp-agent.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "adapt",
+        "commit": "a90195ee378736d7da5540fbbb1f72f9af6688a2",
+        "rationale": "First stable sync of this patch. Upstream v0.95.0 (#1262) adds the AIR capability backgroundSubagents, which ends an ACP v1 prompt turn at its result while background subagents still run, the same purpose as settleAtResult. It gates turnAwaitingSubagents on a new endsTurnsWithLiveSubagents(), the line this patch edits, so 5e5dd2485e577189dee329e860f0f7368bf1de2f conflicts. The same gate also keeps the streamed tool input of live subagents when such a turn ends, and drops the clear-context option from an ExitPlanMode request made out of a turn. The replacement routes settleAtResult through endsTurnsWithLiveSubagents() instead of short-circuiting turnAwaitingSubagents, so an opted-in client also gets upstream's out-of-turn handling. The wire contract is unchanged: the opt-in is clientCapabilities._meta.settleAtResult: true and the answer is _meta.settleAtResult.supported. Like backgroundSubagents it now applies to ACP v1 only: an ACP v2 session keeps the hold and is not advertised the extension. This matters because since #1400 the adapter speaks ACP v2 to any client that asks for protocol version 2 or later; that is recorded, not changed, here. The patch is not absorbed, because backgroundSubagents is read only from the AIR declaration. Three new tests fail with a plain replay of the original gate and pass with the replacement: the streamed input of a running subagent still refines its tool call after the response, an out-of-turn ExitPlanMode request has no clear-context option, and ACP v2 does not advertise the extension. The original test passes with both. The replacement has a stable patch-id distinct from every ledger and retired commit.",
+        "tests": [
+          "npm run test:run -- src/tests/acp-agent.test.ts -t \"settleAtResult\"",
+          "npm run test:run -- src/tests/acp-agent.test.ts src/tests/incomplete-tools.test.ts",
           "npm run build"
         ],
         "automatic": false
@@ -121,6 +136,18 @@
     }
   ],
   "preservedCommits": [],
-  "retiredCommits": [],
+  "retiredCommits": [
+    {
+      "commit": "6b6121d47cbd0cd2810d5df1cd7b455a8a1ae820",
+      "classification": "absorbed",
+      "rationale": "This non-ledger maintenance commit from PR #25 records the settle-at-result patch in the ledger, the audit's CLAUDE_PATCH_IDENTITIES, the maintenance tests and docs/ALAS_DOWNSTREAM.md. The candidate replays it before the persistent preserved transitions, where its ledger and scripts hunks conflict with the older replayed state. Its ledger entry is carried by the protected ledger that the workflow advances, and its scripts and documentation changes are restored unchanged by a canonical preserved commit on top of the generated integration, so it is retired without dropping its behavior.",
+      "tests": [
+        "npm exec -- vitest run scripts/alas-maintenance.test.mjs scripts/workflow-hardening.test.mjs scripts/sync-review.test.mjs",
+        "git diff --exit-code refs/remotes/origin/alas HEAD -- scripts docs/ALAS_DOWNSTREAM.md",
+        "npm run test:run"
+      ],
+      "automatic": false
+    }
+  ],
   "resolved": true
 }

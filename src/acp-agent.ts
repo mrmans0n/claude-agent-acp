@@ -88,6 +88,7 @@ import {
   SDKPartialAssistantMessage,
   SessionMessage,
   SDKUserMessage,
+  SDKUserMessageReplay,
   Settings,
   SlashCommand,
   ThinkingConfig,
@@ -128,6 +129,7 @@ import {
 } from "./native-subagents.js";
 import {
   AIR_ASYNC_TASKS_CAPABILITY,
+  AIR_BACKGROUND_SUBAGENTS_CAPABILITY,
   AIR_CUSTOM_INSTRUCTIONS_CAPABILITY,
   airCustomInstructions,
   AIR_DIFF_PATCH_CAPABILITY,
@@ -319,6 +321,12 @@ import {
 } from "./exit-plan.js";
 import { DEFAULT_AGENT_ID } from "./session-config-ids.js";
 import { parseToolResultMeta } from "./tool-result-meta.js";
+import {
+  markerTagText,
+  type PersistedTaskNotification,
+  TASK_NOTIFICATION_TAG,
+  taskNotificationsOf,
+} from "./task-notifications.js";
 import { formatUsageResponse, isUsageCommandText, parseUsageResponse } from "./usage-markdown.js";
 
 export { DEFAULT_AGENT_ID } from "./session-config-ids.js";
@@ -348,6 +356,7 @@ import {
   buildEffortConfigOption,
   EFFORT_CONFIG_ID,
   effortFlagSettings,
+  effortLevelName,
   mergeEffortSettings,
   settingsEffortForModel,
 } from "./session-effort.js";
@@ -595,6 +604,19 @@ function parseRemoteControlCommand(prompt: PromptRequest["prompt"]): RemoteContr
   return argument ? { action: "connect", name: argument } : { action: "connect" };
 }
 
+/** A top-level message a person typed in another client of the session, such
+ *  as claude.ai or the Claude mobile app over Remote Control. Tool results and
+ *  the CLI's own synthetic messages are user-role too, but carry no human
+ *  origin. */
+function isRemoteHumanMessage(message: SDKUserMessage | SDKUserMessageReplay): boolean {
+  return (
+    message.type === "user" &&
+    message.origin?.kind === "human" &&
+    message.parent_tool_use_id === null &&
+    !message.isSynthetic
+  );
+}
+
 /** Whether Claude Code offers a slash command of this name to an ACP client.
  *  This is the rule `getAvailableSlashCommands` applies when it lists the
  *  commands, so the adapter stands in for the command exactly when the client
@@ -692,7 +714,10 @@ function clientRequestsContextUsage(capabilities?: ClientCapabilities | null): b
  *  The hold exists for clients that stop reading updates at the response; a
  *  client that opts in keeps reading, and answers a subagent's
  *  `session/request_permission` outside a turn. Advertised back as
- *  `InitializeResponse._meta.settleAtResult.supported`. */
+ *  `InitializeResponse._meta.settleAtResult.supported`.
+ *  It is the client-neutral form of the AIR `backgroundSubagents`
+ *  capability: both go through `endsTurnsWithLiveSubagents()`, so they
+ *  share its ACP v1 scope and its out-of-turn behavior. */
 function clientRequestsSettleAtResult(capabilities?: ClientCapabilities | null): boolean {
   const meta = capabilities?._meta as Record<string, unknown> | undefined;
   return meta?.settleAtResult === true;
@@ -887,7 +912,9 @@ type Turn = {
    *  names only a launching subagent), so a spawn made by a
    *  PREVIOUS turn's followup chain while a later turn happens to be held
    *  is attributed to the holder — extending that hold behind a foreign
-   *  chain. Bounded: the hold still ends at drain, hand-off, or cancel. */
+   *  chain. Bounded: the hold still ends at drain, hand-off, or cancel.
+   *  The set is also kept for a client with `backgroundSubagents`, but no
+   *  hold reads it there (see `deferredSettle`). */
   spawnedTaskIds?: Set<string>;
   /** Set instead of settling when the turn's terminal result arrives while
    *  subagents it spawned are still live (`spawnedTaskIds` ∩
@@ -897,6 +924,17 @@ type Turn = {
    *  client that stops consuming at the prompt response never answers —
    *  issue #866), and the model's task-notification followup summary all
    *  land inside the turn.
+   *
+   *  An ACP v1 AIR client that declares `backgroundSubagents` gets no hold:
+   *  this field stays unset, and the turn settles at its result. AIR keeps
+   *  listening after the prompt response, so the subagent updates, their
+   *  permission requests and elicitations, and the followup summary go out
+   *  after it, with the same routing. A held turn hides the end of the
+   *  answer, and the next user message would steer into it. Consequences:
+   *  a followup result is an out-of-turn autonomous result; a steer with no
+   *  turn in flight starts a new turn; the file-change report of the turn
+   *  leaves out subagent edits after the result. Every other client keeps
+   *  the hold, so issue #866 stays fixed for it.
    *
    *  Idle cadence depends on the CLI. Through 2.1.269 the trailing idle is
    *  NOT held for background agents (observed on 2.1.206: `idle` follows
@@ -1122,6 +1160,10 @@ export type Session = {
    *  terminal (e.g. /doctor, /color). ACP clients aren't that terminal, so
    *  these are filtered out of `available_commands_update` payloads. */
   terminalSlashCommands?: string[];
+  /** The uuids of the user messages this adapter pushed whose echo has not come
+   *  back yet. Claude Code stamps the echo with the same human origin as a
+   *  message typed in another client, so the uuid is what tells the two apart. */
+  sentUserUuids?: Set<string>;
   /** The `/remote-control` command that is running, from its request to its
    *  reply. Prompts wait for it, and a second command is refused meanwhile. */
   remoteControlCommand?: Promise<void>;
@@ -1349,7 +1391,9 @@ export type Session = {
    *  `turnAwaitingSubagents` (with `spawnedTaskIds`) to decide whether a
    *  turn's settlement is deferred (see `Turn.deferredSettle`), so the
    *  subagents' post-result output and permission requests stay inside the
-   *  turn (issues #864/#866). Deliberately false for non-subagent background
+   *  turn (issues #864/#866). A client with `backgroundSubagents` gets no
+   *  such hold. Its subagent requests keep this attribution after the
+   *  prompt response. Deliberately false for non-subagent background
    *  tasks (e.g. a `run_in_background` dev server): those can outlive every
    *  turn, and the model's contract with them is a wake-on-exit
    *  notification, not a turn-scoped drain — a hold must NEVER wait on a
@@ -1417,7 +1461,9 @@ export type Session = {
    *  agent id without a new `task_started` (a running `task_updated` patch or
    *  a SendMessage `resumedAgentId`). The resume signal puts the subagent back
    *  into `liveBackgroundTasks` from this record, so the resuming turn holds
-   *  and its permission requests keep their attribution. Bounded by
+   *  and its permission requests keep their attribution. With
+   *  `backgroundSubagents` the resuming turn does not hold, and the
+   *  attribution stays the same. Bounded by
    *  `MAX_RESUMABLE_SUBAGENTS`, oldest first. */
   resumableSubagents?: Map<string, { parentToolUseId?: string }>;
   /** The latest `run_id` seen on each task's events, so a late frame of an
@@ -1588,7 +1634,8 @@ const UNREPORTED_FOREGROUND: ForegroundEvents = {
 /** Whether this turn's terminal result arrived but its settlement is being
  *  held for background subagents it spawned (see Turn.deferredSettle). The
  *  single spelling of the hold predicate, shared by the consumer's settle
- *  lanes and cancel(). */
+ *  lanes and cancel(). Always false for a client with `backgroundSubagents`,
+ *  because no turn of that client is held. */
 function isHeldOpen(turn: Turn | null | undefined): turn is Turn & { deferredSettle: TurnOutcome } {
   return turn != null && turn.deferredSettle !== undefined && !turn.settled;
 }
@@ -2172,7 +2219,6 @@ const LOCAL_COMMAND_MARKERS = [
 // model that a background task stopped; live, the SDK `task_notification`
 // frame reports the same stop, so replay restores the task state from it (see
 // taskNotificationsOf) instead of showing it.
-const TASK_NOTIFICATION_TAG = "task-notification";
 const INJECTED_CONTEXT_MARKERS = ["system-reminder", TASK_NOTIFICATION_TAG].map((tag) => ({
   open: `<${tag}>`,
   close: `</${tag}>`,
@@ -2209,16 +2255,6 @@ function stripMarkerTags(text: string): string {
     i++;
   }
   return result + text.slice(copiedUpTo);
-}
-
-function markerTagText(text: string, tag: string): string | undefined {
-  const open = `<${tag}>`;
-  const close = `</${tag}>`;
-  const start = text.indexOf(open);
-  if (start === -1) return undefined;
-  const end = text.indexOf(close, start + open.length);
-  if (end === -1) return undefined;
-  return text.slice(start + open.length, end);
 }
 
 function hasMarkerTag(text: string, tag: string): boolean {
@@ -2279,57 +2315,6 @@ export function stripLocalCommandMetadata(content: unknown): unknown | null {
 
 export function isLocalCommandMetadata(content: unknown): boolean {
   return stripLocalCommandMetadata(content) === null;
-}
-
-/** The fields of a persisted `<task-notification>`, in the shape of the SDK
- *  `task_notification` frame that reported the same stop live. */
-type PersistedTaskNotification = {
-  task_id: string;
-  status: string;
-  tool_use_id?: string;
-  summary?: string;
-  output_file?: string;
-};
-
-/**
- * Returns each `<task-notification>` in user-message content (a string or its
- * text blocks). The `<result>` body is model context that the live frame does
- * not carry, so the scan stops at it and a tag quoted in it cannot match.
- */
-function taskNotificationsOf(content: unknown): PersistedTaskNotification[] {
-  const texts =
-    typeof content === "string"
-      ? [content]
-      : Array.isArray(content)
-        ? content.flatMap((block) =>
-            block?.type === "text" && typeof block.text === "string" ? [block.text as string] : [],
-          )
-        : [];
-  const open = `<${TASK_NOTIFICATION_TAG}>`;
-  const close = `</${TASK_NOTIFICATION_TAG}>`;
-  const notifications: PersistedTaskNotification[] = [];
-  for (const text of texts) {
-    let start = text.indexOf(open);
-    while (start !== -1) {
-      const end = text.indexOf(close, start + open.length);
-      if (end === -1) break;
-      const body = text.slice(start + open.length, end).split("<result>", 1)[0];
-      const field = (tag: string) => markerTagText(body, tag)?.trim() || undefined;
-      const taskId = field("task-id");
-      const status = field("status");
-      if (taskId && status) {
-        notifications.push({
-          task_id: taskId,
-          status,
-          tool_use_id: field("tool-use-id"),
-          summary: field("summary"),
-          output_file: field("output-file"),
-        });
-      }
-      start = text.indexOf(open, end + close.length);
-    }
-  }
-  return notifications;
 }
 
 /**
@@ -2803,6 +2788,21 @@ export class ClaudeAcpAgent {
     teardownSession: (sessionId) => this.teardownSession(sessionId),
   });
 
+  /**
+   * Whether a turn ends at its result while background subagents that it
+   * spawned or resumed still run. Only an ACP v1 AIR client that declares
+   * `backgroundSubagents`, or an ACP v1 client that opts into the Alas
+   * `settleAtResult` extension, gets this. Every other client keeps the hold
+   * of `Turn.deferredSettle`.
+   */
+  private endsTurnsWithLiveSubagents(): boolean {
+    return (
+      !this.v2 &&
+      (clientSupportsAirCapability(this.clientCapabilities, AIR_BACKGROUND_SUBAGENTS_CAPABILITY) ||
+        clientRequestsSettleAtResult(this.clientCapabilities))
+    );
+  }
+
   constructor(
     client: AcpClient,
     logger?: Logger,
@@ -3070,6 +3070,8 @@ export class ClaudeAcpAgent {
                   AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY,
                   AIR_DIFF_PATCH_CAPABILITY,
                   AIR_PLAN_FILE_CAPABILITY,
+                  // ACP v2 keeps the hold (see `src/v2/prompt.ts`).
+                  ...(this.v2 ? [] : [AIR_BACKGROUND_SUBAGENTS_CAPABILITY]),
                   ...this.sessionIndex.capabilities(),
                 )
               : undefined,
@@ -3080,7 +3082,8 @@ export class ClaudeAcpAgent {
           ...(clientRequestsContextUsage(this.clientCapabilities)
             ? { contextUsage: { supported: true } }
             : {}),
-          ...(clientRequestsSettleAtResult(this.clientCapabilities)
+          // ACP v2 keeps the hold, as for `backgroundSubagents`.
+          ...(!this.v2 && clientRequestsSettleAtResult(this.clientCapabilities)
             ? { settleAtResult: { supported: true } }
             : {}),
         }),
@@ -3891,6 +3894,11 @@ export class ClaudeAcpAgent {
           "Remote Control is already being changed. Try again in a moment.",
         );
       }
+      // Once Remote Control is on, other clients can start turns or send
+      // messages on their own. Something has to read the query stream for
+      // those to reach this client, and a command that answers without a turn
+      // would otherwise leave the stream unread until the next prompt.
+      this.ensureConsumer(session, params.sessionId);
       // Answered by the adapter without a model turn; v2 clients treat an
       // `ended` without a prior `inserted` as a refused prompt.
       events.inserted(randomUUID());
@@ -4001,8 +4009,10 @@ export class ClaudeAcpAgent {
 
     session.turnQueue ??= [];
     session.turnQueue.push(turn);
+    (session.sentUserUuids ??= new Set()).add(promptUuid);
     session.input.push(userMessage);
     this.ensureConsumer(session, params.sessionId);
+    session.titles.onPromptQueued(session, params.prompt);
     // The prompt is queued, so its turn goes ahead even if the client misses
     // the goal it sets; the turn's events report the outcome.
     await this.publishGoalFromPrompt(params.sessionId, firstText, promptUuid).catch((error) =>
@@ -4437,6 +4447,7 @@ export class ClaudeAcpAgent {
       // The held turn's work had ended at its result; the steer resumes it.
       this.startForeground(sessionId, turnInFlight);
     }
+    (session.sentUserUuids ??= new Set()).add(steeredUuid);
     session.input.push(userMessage);
     const firstText = params.prompt[0]?.type === "text" ? params.prompt[0].text : "";
     await this.publishGoalFromPrompt(sessionId, firstText, steeredUuid);
@@ -4455,7 +4466,18 @@ export class ClaudeAcpAgent {
     if (!session || !asyncTasks?.claimStop(params.asyncTaskId)) return { stopped: false };
 
     try {
-      await session.query.stopTask(params.asyncTaskId);
+      if (asyncTasks.isAutonomousTurn(params.asyncTaskId)) {
+        // The task stands for a turn that Claude Code started on its own, so
+        // stopping it interrupts that turn. A prompt that waits for its turn
+        // would be folded into it, and the interrupt would drop that prompt.
+        if ((session.turnQueue ?? []).some((turn) => !turn.settled)) {
+          asyncTasks.releaseStop(params.asyncTaskId);
+          return { stopped: false };
+        }
+        await session.query.interrupt();
+      } else {
+        await session.query.stopTask(params.asyncTaskId);
+      }
       await asyncTasks.taskStopped(params.asyncTaskId);
       return { stopped: true };
     } catch (error) {
@@ -4549,10 +4571,27 @@ export class ClaudeAcpAgent {
     // Tool-use blocks start streaming before their JSON input. Keep the
     // partial input per parent message and block index so completed top-level
     // fields can refine the pending tool call while it streams. Entries are
-    // dropped at block/message boundaries; the whole map is swept when a turn
+    // dropped at block/message boundaries; the map is swept when a turn
     // settles, since an interrupted subagent stream (keyed by a
     // parent_tool_use_id that never recurs) has no boundary event of its own.
     const streamedToolInputs: StreamedToolInputCache = new Map();
+    /** Sweeps `streamedToolInputs` when a turn ends. A turn of a client with
+     *  `backgroundSubagents` can end while its subagents still stream tool
+     *  input, so the sweep keeps the lanes of live subagents, unless the turn
+     *  ends cancelled. Their own message boundaries drop them later. */
+    const sweepStreamedToolInputs = (turnStopReason?: StopReason) => {
+      if (turnStopReason === "cancelled" || !this.endsTurnsWithLiveSubagents()) {
+        streamedToolInputs.clear();
+        return;
+      }
+      const liveLanes = new Set<string>();
+      for (const task of session.liveBackgroundTasks.values()) {
+        if (task.isSubagent && task.parentToolUseId) liveLanes.add(task.parentToolUseId);
+      }
+      for (const lane of streamedToolInputs.keys()) {
+        if (!liveLanes.has(lane)) streamedToolInputs.delete(lane);
+      }
+    };
     // Stop reason accumulated for the active turn (result subtype, refusal,
     // max_tokens, …). Reset per turn; read when the turn settles at idle.
     let stopReason: StopReason = "end_turn";
@@ -5044,6 +5083,7 @@ export class ClaudeAcpAgent {
       if (!head) {
         return;
       }
+      if (asyncTasks.autonomousTurnOpen) await asyncTasks.autonomousTurnEnded("completed");
       activateTurn(head);
     };
 
@@ -5148,9 +5188,10 @@ export class ClaudeAcpAgent {
 
     /** Registers a live background task (see `liveBackgroundTasks`). A
      *  subagent is also recorded on the active turn, so that turn holds until
-     *  the subagent settles (see `Turn.spawnedTaskIds`). Its requests may
-     *  already be open, and where it runs decides whether they block the
-     *  foreground work, so that is checked again. */
+     *  the subagent settles (see `Turn.spawnedTaskIds`). A client with
+     *  `backgroundSubagents` gets no hold (see `turnAwaitingSubagents`).
+     *  Its requests may already be open, and where it runs decides
+     *  whether they block the foreground work, so that is checked again. */
     const registerLiveTask = (
       taskId: string,
       parentToolUseId: string | undefined,
@@ -5204,8 +5245,9 @@ export class ClaudeAcpAgent {
 
     /** Registers a settled subagent again when the SDK resumes it without a
      *  new `task_started`. The active turn is the one that resumed it, so it
-     *  holds until the subagent settles again. A repeated resume signal finds
-     *  the subagent live and changes nothing. */
+     *  holds until the subagent settles again, unless the client declared
+     *  `backgroundSubagents`. A repeated resume signal finds the subagent live
+     *  and changes nothing. */
     const resumeLiveTask = (taskId: string) => {
       if (session.liveBackgroundTasks.has(taskId)) return;
       const settled = session.resumableSubagents?.get(taskId);
@@ -5216,14 +5258,12 @@ export class ClaudeAcpAgent {
     /** Whether any background subagent this turn spawned is still live —
      *  while true, the turn's settlement stays deferred so the subagent's
      *  output and permission requests land inside it (see
-     *  Turn.deferredSettle). */
+     *  Turn.deferredSettle). Always false for a client that declared
+     *  `backgroundSubagents`: its turns end at their result, and the subagent
+     *  traffic goes out after the prompt response. This is the single gate of
+     *  the hold, so no turn of such a client is ever held open. */
     const turnAwaitingSubagents = (turn: Turn) => {
-      // A client that opted into settleAtResult gets the response at the
-      // result; its subagents' output reaches it outside the turn.
-      if (clientRequestsSettleAtResult(this.clientCapabilities)) {
-        return false;
-      }
-      if (!turn.spawnedTaskIds?.size) {
+      if (this.endsTurnsWithLiveSubagents() || !turn.spawnedTaskIds?.size) {
         return false;
       }
       for (const taskId of turn.spawnedTaskIds) {
@@ -5256,7 +5296,8 @@ export class ClaudeAcpAgent {
      *  turn open (see Turn.deferredSettle). Every result-time settle of a
      *  turn that can have spawned subagents must route through here: a site
      *  calling settleActive directly bypasses the hold and re-opens the
-     *  out-of-turn permission deadlock (issue #866) through its lane. */
+     *  out-of-turn permission deadlock (issue #866) through its lane. For a
+     *  client with `backgroundSubagents` this always settles now. */
     const settleOrDefer = async (outcome: TurnOutcome) => {
       // No result ends a steered turn: the steer aborted the cycle this result
       // may belong to, and the steered one is still to come. Record the outcome
@@ -5565,7 +5606,7 @@ export class ClaudeAcpAgent {
       disarmForceCancel(session);
       session.turnQueue = (session.turnQueue ?? []).filter((t) => t !== turn);
       session.activeTurn = null;
-      streamedToolInputs.clear();
+      sweepStreamedToolInputs(result.stopReason);
       if (wasHeld) {
         // Settling a held turn is its delivery-stretch boundary: the turn's
         // answer finished long ago, so text streamed since the last boundary
@@ -5599,7 +5640,7 @@ export class ClaudeAcpAgent {
       turn.settled = true;
       session.turnQueue = (session.turnQueue ?? []).filter((t) => t !== turn);
       session.activeTurn = null;
-      streamedToolInputs.clear();
+      sweepStreamedToolInputs();
       // A failed turn's stretch is over, and some failure lanes (the issue
       // #825 idle-fail) never see the result whose `finally` would close it —
       // start the next stretch clean, or its stale delivery record would
@@ -5903,9 +5944,28 @@ export class ClaudeAcpAgent {
         // turn activation and settlement stay driven by echoes/results/idle.
         // (Raw-mode emission above still forwards these frames.)
         if ((message as { type: string }).type === "command_lifecycle") {
-          const frame = message as unknown as { command_uuid: string; state: string };
+          const frame = message as unknown as {
+            command_uuid: string;
+            state: string;
+            wakeup_source?: string;
+            scheduled_for?: number;
+          };
           switch (frame.state) {
             case "started": {
+              // CLIs 2.1.307+ (capability lifecycle_wakeup_source_v1) mark a
+              // command that a scheduler fire started. With no prompt of ours
+              // open, it starts an autonomous turn: name the fire as its cause,
+              // whether `session_state_changed` already opened the task or not.
+              const cause = scheduledFireCause(frame);
+              if (
+                cause &&
+                asyncTasks.enabled &&
+                !session.cancelled &&
+                !session.activeTurn &&
+                !firstUnsettledQueuedTurn()
+              ) {
+                await asyncTasks.autonomousTurnStarted(cause);
+              }
               // Remember dispatch on the live turn so a cancel() that orphans
               // it seeds the right state (see Turn.commandStarted)...
               const queued = findUnsettledTurn(frame.command_uuid);
@@ -6008,6 +6068,21 @@ export class ClaudeAcpAgent {
         }
 
         this.startAutonomousCycle(params.sessionId, session, message);
+
+        // From CLI 2.1.270 the state stays `running` while background agents
+        // run, so a turn that their notification starts has no `running`
+        // transition. Its first output with no prompt open starts its task.
+        if (
+          asyncTasks.enabled &&
+          !asyncTasks.autonomousTurnOpen &&
+          (message.type === "assistant" || message.type === "stream_event") &&
+          message.parent_tool_use_id === null &&
+          !session.cancelled &&
+          !session.activeTurn &&
+          !firstUnsettledQueuedTurn()
+        ) {
+          await asyncTasks.autonomousTurnStarted();
+        }
 
         switch (message.type) {
           case "system":
@@ -6157,6 +6232,20 @@ export class ClaudeAcpAgent {
                 sessionIndex.noteSessionState(session, previousState, message.state);
                 if (message.state === "running") this.sessionIndex.onTurnStarted(params.sessionId);
                 this.sessionIndex.onOwnSessionChanged(params.sessionId);
+                // With no prompt active or queued, the agent runs a turn of
+                // its own, for example for a task notification. The client
+                // sees it as an async task (see autonomousTurnStarted).
+                if (
+                  asyncTasks.enabled &&
+                  message.state === "running" &&
+                  previousState !== "running" &&
+                  !session.activeTurn &&
+                  !firstUnsettledQueuedTurn()
+                ) {
+                  await asyncTasks.autonomousTurnStarted();
+                } else if (message.state === "idle" && asyncTasks.autonomousTurnOpen) {
+                  await asyncTasks.autonomousTurnEnded("completed");
+                }
                 if (
                   message.state === "running" &&
                   previousState !== "running" &&
@@ -6865,6 +6954,15 @@ export class ClaudeAcpAgent {
             const startedByClaudeCode =
               message.origin != null && AUTONOMOUS_RESULT_ORIGINS.has(message.origin.kind);
             const isAutonomousResult = startedByClaudeCode && !answersPendingPrompt(message);
+            // A placeholder result (`num_turns: 0`, see below) comes before
+            // the followup that answers it, so the autonomous turn goes on.
+            if (
+              isAutonomousResult &&
+              asyncTasks.autonomousTurnOpen &&
+              (message.num_turns > 0 || message.is_error)
+            ) {
+              await asyncTasks.autonomousTurnEnded(message.is_error ? "failed" : "completed");
+            }
             const pendingExitPlanModeInterruption = session.pendingExitPlanModeInterruption;
             const pendingExitPlanContextReset = session.pendingExitPlanContextReset;
             try {
@@ -7203,6 +7301,43 @@ export class ClaudeAcpAgent {
                   await settleOrDefer({ ...heldTurn.deferredSettle, stopReason: "cancelled" });
                   break;
                 }
+                // The same followup with no held turn: the client declared
+                // `backgroundSubagents`, or the hold already ended. A user
+                // turn that took the cycle over owns the request (see
+                // `requestOwnerTurn`), so it continues the accepted plan in a
+                // fresh context, as the user lane does. With no such turn
+                // the user answered out of a turn, and the interrupt only
+                // stops this autonomous cycle. Drop the markers, so that a
+                // later user-turn result is not read as this interruption.
+                // `canUseTool` offers no clear-context option to a request
+                // without an owner turn, so a reset here is only a race with
+                // the end of a turn.
+                if (
+                  pendingExitPlanModeInterruption &&
+                  isExitPlanInterruptionResult(message, pendingExitPlanModeInterruption)
+                ) {
+                  session.pendingExitPlanModeInterruption = undefined;
+                  const ownerTurn = this.requestOwnerTurn(params.sessionId, session);
+                  if (
+                    pendingExitPlanContextReset?.toolUseId ===
+                      pendingExitPlanModeInterruption.toolUseId &&
+                    ownerTurn !== undefined &&
+                    ownerTurn === session.activeTurn
+                  ) {
+                    await this.exitPlan.restart(
+                      params.sessionId,
+                      session,
+                      pendingExitPlanContextReset,
+                    );
+                    return;
+                  }
+                  if (pendingExitPlanContextReset) {
+                    session.pendingExitPlanContextReset = undefined;
+                    this.logger.error(
+                      `Session ${params.sessionId}: no turn to continue the accepted plan in a fresh context`,
+                    );
+                  }
+                }
                 // CLI 2.1.274+ answers background-task completions that were
                 // already queued with ONE model call: every queued
                 // notification still gets its own result, but all except the
@@ -7525,7 +7660,9 @@ export class ClaudeAcpAgent {
               // permission requests, and the model's promised summary all land
               // inside the turn. `session/cancel` and the next prompt's echo
               // hand-off still settle a deferred turn early, so a long-running
-              // subagent never holds the prompt hostage.
+              // subagent never holds the prompt hostage. A client with
+              // `backgroundSubagents` gets no hold: the turn settles here, and
+              // the subagent traffic goes out after the prompt response.
               //
               // is_error/auth already settled via failActive (activeTurn is null
               // then, so both branches no-op); a cancelled turn settles at
@@ -7579,6 +7716,11 @@ export class ClaudeAcpAgent {
             // it) can all be tagged with the same, replay-stable id.
             if (message.event.type === "message_start") {
               currentStreamMessageId = message.event.message.id || undefined;
+              await subagents.reportModel(
+                message.parent_tool_use_id,
+                message.event.message.model,
+                sendUpdate,
+              );
               // A new top-level message starts: clear any streamed-content
               // residue from a prior message that never reached its
               // consolidated reset — a cancelled turn breaks out before the
@@ -7794,6 +7936,9 @@ export class ClaudeAcpAgent {
               if (session.pendingGoalUpdate?.commandUuid === message.uuid) {
                 session.pendingGoalUpdate.started = true;
               }
+              // Taken out for every echo, not only in the branch below, so the
+              // set does not grow with each prompt.
+              const sentByAdapter = session.sentUserUuids?.delete(message.uuid) ?? false;
               const queued = findUnsettledTurn(message.uuid);
               if (queued) {
                 // Only (re)activate if this isn't already the active turn — a
@@ -7859,6 +8004,10 @@ export class ClaudeAcpAgent {
                   // mid-message, so deltas already streamed belong to the turn
                   // being activated — clearing would forget them and let its
                   // result re-emit the answer.
+                  // A prompt folded into an autonomous turn owns that turn now.
+                  if (asyncTasks.autonomousTurnOpen) {
+                    await asyncTasks.autonomousTurnEnded("completed");
+                  }
                   activateTurn(queued);
                 }
                 break;
@@ -7876,7 +8025,34 @@ export class ClaudeAcpAgent {
                 ) {
                   session.activeTurn.steeredAwaitingResult = true;
                 }
-                // Unrelated replay (e.g. the echo of an already-settled turn).
+                // A message typed in another client of the session (Remote
+                // Control from claude.ai or the mobile app). The adapter's own
+                // prompts and steers are stamped human too, so they are told
+                // apart by uuid: a steer matches no turn, and a turn can settle
+                // before its echo comes.
+                const remoteContent =
+                  !sentByAdapter && isRemoteHumanMessage(message)
+                    ? stripLocalCommandMetadata(message.message.content)
+                    : null;
+                if (remoteContent !== null) {
+                  for (const notification of toAcpNotifications(
+                    remoteContent as ContentBlockParam[] | string,
+                    "user",
+                    params.sessionId,
+                    session.toolUseCache,
+                    routedNotificationClient,
+                    this.logger,
+                    {
+                      clientCapabilities: this.clientCapabilities,
+                      toolCallCapabilities: this.toolCallCapabilities,
+                      cwd: session.cwd,
+                      messageId: messageIdForGrouping(message),
+                    },
+                  )) {
+                    await sendUpdate(notification);
+                  }
+                }
+                // Otherwise an unrelated replay (e.g. the echo of an already-settled turn).
                 break;
               }
             }
@@ -7909,6 +8085,14 @@ export class ClaudeAcpAgent {
               compaction.hasDeliveredOutput
             ) {
               break;
+            }
+
+            if (message.type === "assistant") {
+              await subagents.reportModel(
+                message.parent_tool_use_id,
+                message.message.model,
+                sendUpdate,
+              );
             }
 
             // Snapshot the latest top-level assistant usage and model so the
@@ -9521,6 +9705,7 @@ export class ClaudeAcpAgent {
         ) {
           continue;
         }
+        if (rfdReplay && (await rfdReplay.toolCallUpdate(notification.update, child))) continue;
         await this.client.sessionUpdate({ ...notification, sessionId: replayTargetSessionId });
       }
 
@@ -9850,6 +10035,20 @@ export class ClaudeAcpAgent {
     return this.foregroundWork.get(sessionId)?.owner === AUTONOMOUS_CYCLE;
   }
 
+  /** The ACP turn that owns a root request of the session now, if any. A
+   *  model cycle that Claude Code started on its own owns no turn. A turn that
+   *  took a cycle over owns it. A queued turn owns the request too, because
+   *  Claude Code can ask for a queued prompt before the consumer reaches its
+   *  echo (see `recordForegroundToolCall`). The ExitPlanMode request and the
+   *  result of its interruption use this one rule, so an offered
+   *  clear-context option always has a turn to continue. */
+  private requestOwnerTurn(sessionId: string, session: Session): Turn | undefined {
+    if (this.runsAutonomousCycle(sessionId)) return undefined;
+    const active = session.activeTurn;
+    if (active && !active.settled) return active;
+    return session.turnQueue?.find((queued) => !queued.settled);
+  }
+
   /** Forward a permission request to the client, wiring the tool call's
    *  `signal` through as a `cancellationSignal`. When the turn is cancelled
    *  while the client's prompt is still open the signal aborts, the SDK sends
@@ -10021,6 +10220,69 @@ export class ClaudeAcpAgent {
     return {
       ...(parentToolUseId ? { parentToolUseId } : {}),
       toolCallSessionId: child?.announced ? child.sessionId : sessionId,
+    };
+  }
+
+  private subagentConfigurationHook(sessionId: string): HookCallback {
+    return async (input) => {
+      const session = this.sessions[sessionId];
+      if (!session || !input.agent_id) return { continue: true };
+      const options: SessionConfigOption[] = [];
+      if (input.permission_mode) {
+        const mode = session.modes.availableModes.find((mode) => mode.id === input.permission_mode);
+        options.push(
+          SessionModeManager.configOption({
+            currentModeId: input.permission_mode,
+            availableModes: [mode ?? { id: input.permission_mode, name: input.permission_mode }],
+          }),
+        );
+      }
+      if (input.hook_event_name === "PostModelSwitch" && input.to_model) {
+        options.push({
+          id: MODEL_CONFIG_ID,
+          name: "Model",
+          category: "model",
+          type: "select",
+          currentValue: input.to_model,
+          options: [{ value: input.to_model, name: input.to_model }],
+        });
+      }
+      if (input.effort?.level) {
+        options.push({
+          id: EFFORT_CONFIG_ID,
+          name: "Effort",
+          description: "Current reasoning effort",
+          category: "thought_level",
+          type: "select",
+          currentValue: input.effort.level,
+          options: [{ value: input.effort.level, name: effortLevelName(input.effort.level) }],
+        });
+      }
+      if (input.agent_type) {
+        const agent = session.agents.find((agent) => agent.name === input.agent_type);
+        options.push({
+          id: AGENT_CONFIG_ID,
+          name: "Agent",
+          description: "Subagent type",
+          type: "select",
+          currentValue: input.agent_type,
+          options: [
+            {
+              value: input.agent_type,
+              name: input.agent_type,
+              ...(agent?.description ? { description: agent.description } : {}),
+            },
+          ],
+        });
+      }
+      await session.nativeSubagentRuntime
+        ?.reportConfiguration(input.agent_id, options)
+        .catch((error) =>
+          this.logger.error(
+            `Session ${sessionId}: failed to report subagent configuration: ${error}`,
+          ),
+        );
+      return { continue: true };
     };
   }
 
@@ -10249,6 +10511,12 @@ export class ClaudeAcpAgent {
         defaultToNo,
         availableModes: this.sessionModes.availableModeIds(session.modes),
         prePlanMode: session.prePlanMode,
+        // A fresh context continues the ACP turn that owns the request. With
+        // `backgroundSubagents` a followup cycle can ask out of a turn, and
+        // then there is no turn to continue.
+        allowContextReset:
+          !this.endsTurnsWithLiveSubagents() ||
+          this.requestOwnerTurn(sessionId, session) !== undefined,
         contextUsedPercent:
           session.contextUsedTokens === undefined || session.contextWindowSize <= 0
             ? undefined
@@ -11280,6 +11548,10 @@ export class ClaudeAcpAgent {
       `[session/query] sessionId=${sessionId} resume=${creationOpts?.resume ?? "none"} apiType=${resolvedProvider?.apiType ?? "native"} baseUrl=${resolvedProvider?.baseUrl ?? "native"}`,
     );
 
+    const subagentConfigHook =
+      subagentForm(this.clientCapabilities) === "rfd"
+        ? this.subagentConfigurationHook(sessionId)
+        : undefined;
     const options: Options = {
       systemPrompt,
       settingSources: ["user", "project", "local"],
@@ -11348,14 +11620,33 @@ export class ClaudeAcpAgent {
       tools,
       hooks: {
         ...userProvidedOptions?.hooks,
+        ...(subagentConfigHook
+          ? {
+              SubagentStart: [
+                ...(userProvidedOptions?.hooks?.SubagentStart ?? []),
+                { hooks: [subagentConfigHook] },
+              ],
+              SubagentStop: [
+                ...(userProvidedOptions?.hooks?.SubagentStop ?? []),
+                { hooks: [subagentConfigHook] },
+              ],
+              PostToolUseFailure: [
+                ...(userProvidedOptions?.hooks?.PostToolUseFailure ?? []),
+                { hooks: [subagentConfigHook] },
+              ],
+            }
+          : {}),
         // On v2, an Edit or Write shows its exact patch before it runs, also
         // when no permission request shows it (`fileChangePreviewHook`): a v2
         // diff cannot hold the input's snippet.
-        ...(this.v2
+        ...(this.v2 || subagentConfigHook
           ? {
               PreToolUse: [
                 ...(userProvidedOptions?.hooks?.PreToolUse || []),
-                { matcher: "Edit|Write", hooks: [this.fileChangePreviewHook(sessionId)] },
+                ...(subagentConfigHook ? [{ hooks: [subagentConfigHook] }] : []),
+                ...(this.v2
+                  ? [{ matcher: "Edit|Write", hooks: [this.fileChangePreviewHook(sessionId)] }]
+                  : []),
               ],
             }
           : {}),
@@ -11363,6 +11654,7 @@ export class ClaudeAcpAgent {
           ...(userProvidedOptions?.hooks?.PostToolUse || []),
           {
             hooks: [
+              ...(subagentConfigHook ? [subagentConfigHook] : []),
               createPostToolUseHook({
                 onEnterPlanMode: async () => {
                   await this.sessionModes.publishCurrent(sessionId, "plan");
@@ -11386,9 +11678,11 @@ export class ClaudeAcpAgent {
           ...(userProvidedOptions?.hooks?.PostModelSwitch || []),
           {
             hooks: [
+              ...(subagentConfigHook ? [subagentConfigHook] : []),
               async (input) => {
                 if (
                   input.hook_event_name === "PostModelSwitch" &&
+                  !input.agent_id &&
                   input.source !== "sdk" &&
                   input.source !== "resume"
                 ) {
@@ -13905,5 +14199,31 @@ function getMatchingModelUsage(modelUsage: Record<string, ModelUsage>, currentMo
     // handler caches under that spelling too, for seed-time reads that fall
     // back to a bare id (rows without `resolvedModel`).
     return { key: bestKey, usage: modelUsage[bestKey] };
+  }
+}
+
+/**
+ * What a `command_lifecycle` "started" frame says started the command: a
+ * ScheduleWakeup (dynamic `/loop`) wakeup, with the time it was set for in
+ * epoch milliseconds, or another scheduled task such as a cron job. Undefined
+ * for any other command, and for a value this adapter does not know. The time
+ * is given in UTC because the agent does not know the client's time zone.
+ */
+function scheduledFireCause(frame: {
+  wakeup_source?: string;
+  scheduled_for?: number;
+}): string | undefined {
+  switch (frame.wakeup_source) {
+    case "loop_wakeup": {
+      const scheduledFor =
+        typeof frame.scheduled_for === "number" ? new Date(frame.scheduled_for) : undefined;
+      return scheduledFor && !Number.isNaN(scheduledFor.getTime())
+        ? `A scheduled wakeup fired (set for ${scheduledFor.toISOString()}).`
+        : "A scheduled wakeup fired.";
+    }
+    case "schedule_wakeup":
+      return "A scheduled task fired.";
+    default:
+      return undefined;
   }
 }

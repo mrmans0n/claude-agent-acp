@@ -30,7 +30,6 @@ describe("downstream patch ledger", () => {
       "advisor-tool-results",
       "context-usage-extension",
       "neutral-session-index",
-      "settle-at-result",
     ]);
     for (const patch of ledger.patches) {
       expect(patch.commit).toMatch(/^[0-9a-f]{40}$/);

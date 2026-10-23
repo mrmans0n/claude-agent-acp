@@ -776,6 +776,27 @@ describe("NativeSubagentRuntime in the RFD form", () => {
         _meta: { claudeCode: { parentToolUseId } },
       },
     }) as AcpSessionNotification;
+  /** The final update of the Agent call `toolCallId`, showing `text` as the
+   *  reporter renders the result, under the SDK's raw output and its trailer. */
+  const launchResult = (
+    toolCallId: string,
+    status: "completed" | "failed",
+    text: string,
+    parentToolUseId?: string,
+  ): AcpSessionNotification =>
+    ({
+      sessionId: "root",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId,
+        status,
+        content: [{ type: "content", content: { type: "text", text } }],
+        rawOutput: [{ type: "text", text: `${text}\nagentId: a1 (use SendMessage to continue)` }],
+        _meta: {
+          claudeCode: { toolName: "Agent", ...(parentToolUseId ? { parentToolUseId } : {}) },
+        },
+      },
+    }) as AcpSessionNotification;
   /** A SendMessage call, of the root or of the child that `parentToolUseId` launched. */
   const sendMessage = (toolCallId: string, parentToolUseId?: string): AcpSessionNotification =>
     ({
@@ -821,17 +842,232 @@ describe("NativeSubagentRuntime in the RFD form", () => {
       update.sessionUpdate === "subagent_update" && update.state ? [update.state] : [],
     );
 
-  it("keeps the Agent tool call as a tool call of the session that made it", async () => {
-    const { runtime, control } = await runningWorker();
+  it("reports only the observed child model and refreshes it on a model change", async () => {
+    const { runtime, published } = await runningWorker({ model: "inherit" });
+    const deliver = async (notification: AcpSessionNotification) => {
+      const routed = await runtime.route(notification, deliver);
+      if (routed) published.push(routed);
+    };
+    await runtime.reportModel(null, "parent-model", deliver);
+    await runtime.reportModel("launch-1", "<synthetic>", deliver);
+    expect(published.some(({ update }) => update.sessionUpdate === "config_option_update")).toBe(
+      false,
+    );
 
-    expect(control).toMatchObject({ sessionId: "root", update: { toolCallId: "launch-1" } });
-    // A nested launch is a tool call of the child that made it.
-    await expect(
-      runtime.route(launch("launch-2", { description: "Dig" }, "launch-1"), async () => {}),
-    ).resolves.toMatchObject({ sessionId: "worker-1", update: { toolCallId: "launch-2" } });
+    await runtime.reportModel("launch-1", "child-model", deliver);
+    await runtime.reportModel("launch-1", "child-model", deliver);
+    await runtime.finishTask("worker-1", "completed", deliver, "launch-1");
+    await runtime.taskStarted(
+      { taskId: "worker-1", toolUseId: "resume-1", prompt: "Continue" },
+      deliver,
+    );
+    await runtime.reportModel("resume-1", "fallback-model", deliver);
+
+    const configs = published.filter(
+      ({ update }) => update.sessionUpdate === "config_option_update",
+    );
+    expect(configs).toHaveLength(2);
+    for (const [index, model] of ["child-model", "fallback-model"].entries()) {
+      expect(configs[index]).toMatchObject({
+        sessionId: "worker-1",
+        update: {
+          sessionUpdate: "config_option_update",
+          configOptions: [
+            {
+              id: "model",
+              category: "model",
+              type: "select",
+              currentValue: model,
+              options: [{ value: model, name: model }],
+            },
+          ],
+        },
+      });
+    }
   });
 
-  it("announces the child with the parent's labels, then sends it the prompt", async () => {
+  it("buffers model observations until the child is announced", async () => {
+    const published: AcpSessionNotification[] = [];
+    const runtime = new NativeSubagentRuntime(
+      "rfd",
+      "root",
+      {},
+      async (notification) => {
+        published.push(notification);
+      },
+      { log: () => {} },
+    );
+    const deliver = async (notification: AcpSessionNotification) => {
+      const routed = await runtime.route(notification, deliver);
+      if (routed) published.push(routed);
+    };
+    await runtime.reportModel("launch-1", "child-model", deliver);
+    expect(published).toEqual([]);
+    await runtime.taskStarted(
+      { taskId: "worker-1", toolUseId: "launch-1", subagentType: "Explore" },
+      deliver,
+    );
+    expect(published).toEqual([]);
+    await deliver(launch("launch-1", {}));
+    expect(published.map(({ update }) => update.sessionUpdate)).toEqual([
+      "subagent_update",
+      "config_option_update",
+    ]);
+    expect(published[1]?.sessionId).toBe("worker-1");
+  });
+
+  const effortOption = (level: string) => ({
+    id: "effort",
+    name: "Effort",
+    category: "thought_level",
+    type: "select" as const,
+    currentValue: level,
+    options: [{ value: level, name: level }],
+  });
+
+  it("merges hook observations with model snapshots without inheriting other sessions", async () => {
+    const { runtime, published } = await runningWorker();
+    const deliver = async (notification: AcpSessionNotification) => {
+      const routed = await runtime.route(notification, deliver);
+      if (routed) published.push(routed);
+    };
+    await runtime.reportConfiguration("worker-1", [
+      effortOption("high"),
+      {
+        id: "mode",
+        name: "Mode",
+        category: "mode",
+        type: "select",
+        currentValue: "plan",
+        options: [{ value: "plan", name: "Plan" }],
+      },
+    ]);
+    await runtime.reportModel("launch-1", "child-model", deliver);
+    await runtime.reportConfiguration("worker-1", [effortOption("low")]);
+    await runtime.reportModel("launch-1", "fallback-model", deliver);
+    const configs = published.flatMap(({ update }) =>
+      update.sessionUpdate === "config_option_update" ? [update.configOptions] : [],
+    );
+    expect(configs).toHaveLength(4);
+    expect(configs.at(-1)?.map((option) => [option.id, option.currentValue])).toEqual([
+      ["mode", "plan"],
+      ["model", "fallback-model"],
+      ["effort", "low"],
+    ]);
+    expect(
+      configs.at(-1)?.every((option) => option.type === "select" && option.options.length === 1),
+    ).toBe(true);
+    await runtime.reportConfiguration("root", [effortOption("max")]);
+    expect(
+      published.filter(({ update }) => update.sessionUpdate === "config_option_update"),
+    ).toHaveLength(4);
+  });
+
+  it("keeps hook observations pending until truthful parentage is announced", async () => {
+    const published: AcpSessionNotification[] = [];
+    const runtime = new NativeSubagentRuntime(
+      "rfd",
+      "root",
+      {},
+      async (notification) => {
+        published.push(notification);
+      },
+      { log: () => {} },
+    );
+    await runtime.reportConfiguration("worker-1", [effortOption("high")]);
+    expect(published).toEqual([]);
+    await runtime.taskStarted(
+      { taskId: "worker-1", toolUseId: "launch-1", subagentType: "Explore" },
+      async () => {},
+    );
+    expect(published).toEqual([]);
+    await runtime.route(launch("launch-1", {}), async () => {});
+    expect(published.map(({ sessionId, update }) => [sessionId, update.sessionUpdate])).toEqual([
+      ["root", "subagent_update"],
+      ["worker-1", "config_option_update"],
+    ]);
+  });
+
+  it("serializes concurrent config publications and retries a failed snapshot", async () => {
+    const started = deferred();
+    const release = deferred();
+    const published: AcpSessionNotification[] = [];
+    const value = child({ announced: true });
+    let fail = false;
+    const runtime = new NativeSubagentRuntime(
+      "rfd",
+      "root",
+      sessionWith(value),
+      async (notification) => {
+        if (fail) throw new Error("transport failed");
+        published.push(notification);
+        if (published.length === 1) {
+          started.resolve();
+          await release.promise;
+        }
+      },
+      { log: () => {} },
+    );
+    const first = runtime.reportConfiguration(value.sessionId, [effortOption("high")]);
+    await started.promise;
+    const second = runtime.reportConfiguration(value.sessionId, [effortOption("low")]);
+    release.resolve();
+    await Promise.all([first, second]);
+    expect(
+      published.flatMap(({ update }) =>
+        update.sessionUpdate === "config_option_update"
+          ? update.configOptions.map((option) => option.currentValue)
+          : [],
+      ),
+    ).toEqual(["high", "low"]);
+    fail = true;
+    await expect(
+      runtime.reportConfiguration(value.sessionId, [effortOption("max")]),
+    ).rejects.toThrow("transport failed");
+    fail = false;
+    await runtime.reportConfiguration(value.sessionId, [effortOption("max")]);
+    expect(published).toHaveLength(3);
+  });
+
+  it("forgets unannounced configuration when the runtime is cleared", async () => {
+    const published: AcpSessionNotification[] = [];
+    const runtime = new NativeSubagentRuntime(
+      "rfd",
+      "root",
+      {},
+      async (notification) => {
+        published.push(notification);
+      },
+      { log: () => {} },
+    );
+    await runtime.reportConfiguration("worker-1", [effortOption("high")]);
+    runtime.clear();
+    await runtime.taskStarted({ taskId: "worker-1", subagentType: "Explore" }, async () => {});
+    expect(published.map(({ update }) => update.sessionUpdate)).toEqual(["subagent_update"]);
+  });
+
+  it.each(["air", undefined] as const)(
+    "does not report child config in the %s form",
+    async (form) => {
+      const deliver = vi.fn(async () => {});
+      const runtime = new NativeSubagentRuntime(form, "root", {}, deliver, { log: () => {} });
+      await runtime.reportModel("launch-1", "child-model", deliver);
+      await runtime.reportConfiguration("worker-1", [effortOption("high")]);
+      expect(deliver).not.toHaveBeenCalled();
+    },
+  );
+
+  it("hides the Agent tool call, which the parent's session messages replace", async () => {
+    const { runtime, control } = await runningWorker();
+
+    expect(control).toBeNull();
+    // So is a nested launch, in the child that made it.
+    await expect(
+      runtime.route(launch("launch-2", { description: "Dig" }, "launch-1"), async () => {}),
+    ).resolves.toBeNull();
+  });
+
+  it("announces the child with the parent's labels, then sends the prompt to both transcripts", async () => {
     const { published } = await runningWorker({ name: "builder" });
 
     expect(published).toEqual([
@@ -847,16 +1083,207 @@ describe("NativeSubagentRuntime in the RFD form", () => {
         },
       },
       {
+        sessionId: "root",
+        update: {
+          sessionUpdate: "session_message",
+          messageId: "launch-1",
+          senderSessionId: "root",
+          recipientSessionId: "worker-1",
+          recipientMessageId: "launch-1",
+          content: [{ type: "text", text: "Make it pass" }],
+        },
+      },
+      {
         sessionId: "worker-1",
         update: {
           sessionUpdate: "session_message",
           messageId: "launch-1",
           senderSessionId: "root",
           recipientSessionId: "worker-1",
+          senderMessageId: "launch-1",
           content: [{ type: "text", text: "Make it pass" }],
         },
       },
     ]);
+  });
+
+  it("sends a foreground child's answer to its parent as the child's reply", async () => {
+    const { runtime, published } = await runningWorker();
+
+    await expect(
+      runtime.route(launchResult("launch-1", "completed", "The build passes."), async () => {}),
+    ).resolves.toBeNull();
+
+    expect(published.at(-1)).toEqual({
+      sessionId: "root",
+      update: {
+        sessionUpdate: "session_message",
+        messageId: "launch-1:reply",
+        senderSessionId: "worker-1",
+        recipientSessionId: "root",
+        content: [{ type: "text", text: "The build passes." }],
+      },
+    });
+  });
+
+  describe("a child's SubagentHandback call", () => {
+    /** An update of the child's hand-back call. Only its first update names the tool. */
+    const handback = (
+      status: "pending" | "completed" | "failed",
+      rawInput?: Record<string, unknown>,
+    ): AcpSessionNotification =>
+      ({
+        sessionId: "root",
+        update: {
+          sessionUpdate: status === "pending" ? "tool_call" : "tool_call_update",
+          toolCallId: "handback-1",
+          status,
+          ...(status === "pending" ? { title: "SubagentHandback" } : {}),
+          ...(rawInput ? { rawInput } : {}),
+          _meta: {
+            claudeCode: {
+              parentToolUseId: "launch-1",
+              ...(status === "pending" ? { toolName: "SubagentHandback" } : {}),
+            },
+          },
+        },
+      }) as AcpSessionNotification;
+    const pointer = "This agent's report was delivered to you as a message.";
+
+    it("is the child's message to its parent, which replaces the launch's reply", async () => {
+      const { runtime, published } = await runningWorker();
+      const before = published.length;
+
+      // The streamed call starts without input; a refinement brings the report.
+      const refinement = {
+        sessionId: "root",
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "handback-1",
+          rawInput: { message: "PONG" },
+          _meta: { claudeCode: { parentToolUseId: "launch-1" } },
+        },
+      } as AcpSessionNotification;
+      for (const update of [
+        handback("pending", {}),
+        refinement,
+        handback("completed"),
+        launchResult("launch-1", "completed", pointer),
+      ]) {
+        await expect(runtime.route(update, async () => {})).resolves.toBeNull();
+      }
+
+      const message = {
+        sessionUpdate: "session_message",
+        messageId: "handback-1",
+        senderSessionId: "worker-1",
+        recipientSessionId: "root",
+        content: [{ type: "text", text: "PONG" }],
+      };
+      expect(published.slice(before)).toEqual([
+        { sessionId: "worker-1", update: { ...message, recipientMessageId: "handback-1" } },
+        { sessionId: "root", update: { ...message, senderMessageId: "handback-1" } },
+      ]);
+    });
+
+    it("stays a tool call of the child when it fails, and the launch's result is the reply", async () => {
+      const { runtime, published } = await runningWorker();
+
+      await runtime.route(handback("pending", { message: "PONG" }), async () => {});
+      await expect(runtime.route(handback("failed"), async () => {})).resolves.toMatchObject({
+        sessionId: "worker-1",
+        update: { sessionUpdate: "tool_call", toolCallId: "handback-1", status: "failed" },
+      });
+      await runtime.route(launchResult("launch-1", "completed", "PONG"), async () => {});
+
+      expect(published.at(-1)).toMatchObject({
+        sessionId: "root",
+        update: { messageId: "launch-1:reply", content: [{ type: "text", text: "PONG" }] },
+      });
+    });
+  });
+
+  it("reports no reply for a failed launch, whose child's idle state reports the failure", async () => {
+    const { runtime, published } = await runningWorker();
+    const before = published.length;
+
+    await expect(
+      runtime.route(launchResult("launch-1", "failed", "The build still fails."), async () => {}),
+    ).resolves.toBeNull();
+
+    expect(published).toHaveLength(before);
+  });
+
+  it("reports no reply for a background launch, which completes before its child works", async () => {
+    const { runtime, published } = await runningWorker({ run_in_background: true });
+    const before = published.length;
+
+    await expect(
+      runtime.route(
+        launchResult("launch-1", "completed", "Async agent launched successfully."),
+        async () => {},
+      ),
+    ).resolves.toBeNull();
+
+    expect(published).toHaveLength(before);
+  });
+
+  it("recognizes the adapter's report that closes a hidden launch, which has no tool name", async () => {
+    const { runtime, published } = await runningWorker();
+    // The report that closes a call the cancel left open, for a v2 client.
+    const close = (toolCallId: string): AcpSessionNotification => ({
+      sessionId: "root",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId,
+        status: "cancelled" as "failed",
+        content: [],
+      },
+    });
+    const before = published.length;
+
+    // The child was exposed, so its idle state reports the stop.
+    await expect(runtime.route(close("launch-1"), async () => {})).resolves.toBeNull();
+    expect(published).toHaveLength(before);
+    // A launch whose child never started is shown after all.
+    await runtime.route(launch("launch-9", { description: "Dig" }), async () => {});
+    await expect(runtime.route(close("launch-9"), async () => {})).resolves.toMatchObject({
+      sessionId: "root",
+      update: { sessionUpdate: "tool_call", toolCallId: "launch-9", status: "cancelled" },
+    });
+  });
+
+  it("keeps a launch whose child never started as a tool call with its final status", async () => {
+    const published: AcpSessionNotification[] = [];
+    const runtime = new NativeSubagentRuntime(
+      "rfd",
+      "root",
+      {},
+      async (notification) => {
+        published.push(notification);
+      },
+      { log: () => {} },
+    );
+    for (const [toolCallId, status] of [
+      ["launch-ok", "completed"],
+      ["launch-bad", "failed"],
+    ] as const) {
+      await expect(
+        runtime.route(launch(toolCallId, { description: "Dig" }), async () => {}),
+      ).resolves.toBeNull();
+      await expect(
+        runtime.route(launchResult(toolCallId, status, "Done"), async () => {}),
+      ).resolves.toMatchObject({
+        sessionId: "root",
+        update: { sessionUpdate: "tool_call", toolCallId, status },
+      });
+    }
+    // A background launch completes before its child starts, so it stays hidden.
+    await runtime.route(launch("launch-bg", { run_in_background: true }), async () => {});
+    await expect(
+      runtime.route(launchResult("launch-bg", "completed", "Async agent launched"), async () => {}),
+    ).resolves.toBeNull();
+    expect(published).toEqual([]);
   });
 
   it("titles a child without a name by its role", async () => {
@@ -885,7 +1312,10 @@ describe("NativeSubagentRuntime in the RFD form", () => {
       { state: "running" },
       { state: "idle", stopReason: "end_turn" },
     ]);
+    // The SendMessage call stays a tool call of its sender, so its message has
+    // only the child's view, with no reference.
     expect(published.filter(({ update }) => update.sessionUpdate === "session_message")).toEqual([
+      expect.objectContaining({ sessionId: "root" }),
       expect.objectContaining({ sessionId: "worker-1" }),
       {
         sessionId: "worker-1",
@@ -938,8 +1368,10 @@ describe("NativeSubagentRuntime in the RFD form", () => {
     expect(
       published
         .filter(({ update }) => update.sessionUpdate === "session_message")
-        .map(({ update }) => (update as { messageId: string }).messageId),
-    ).toEqual(["launch-1", "send-1"]);
+        .map(
+          ({ sessionId, update }) => `${sessionId} ${(update as { messageId: string }).messageId}`,
+        ),
+    ).toEqual(["root launch-1", "worker-1 launch-1", "worker-1 send-1"]);
   });
 
   it("ignores a SendMessage result that arrives after the run it started ended", async () => {
@@ -985,7 +1417,10 @@ describe("NativeSubagentRuntime in the RFD form", () => {
 
     expect(states(published).at(-1)).toEqual({ state: "running" });
     expect(
-      published.filter(({ update }) => update.sessionUpdate === "session_message"),
+      published.filter(
+        ({ sessionId, update }) =>
+          sessionId === "worker-1" && update.sessionUpdate === "session_message",
+      ),
     ).toHaveLength(1);
     expect(runtime.isStaleEnd("worker-1", "launch-1")).toBe(false);
   });
@@ -1245,10 +1680,17 @@ describe("NativeSubagentRuntime in the RFD form", () => {
     // A resume signal does not give the unexposed child another call.
     await runtime.taskStarted({ taskId: "worker-2", toolUseId: "send-9" }, async () => {});
     await runtime.finishTask("worker-2", "completed", async () => {});
-    // The frame arrives late: it is the tool call of worker-1 that made it.
+    // The frame arrives late, and the launch stays hidden while it runs. Its
+    // child was never exposed, so its result makes it a tool call of worker-1.
     await expect(
       runtime.route(launch("launch-2", { description: "Dig" }, "launch-1"), async () => {}),
-    ).resolves.toMatchObject({ sessionId: "worker-1" });
+    ).resolves.toBeNull();
+    await expect(
+      runtime.route(launchResult("launch-2", "completed", "Dug", "launch-1"), async () => {}),
+    ).resolves.toMatchObject({
+      sessionId: "worker-1",
+      update: { sessionUpdate: "tool_call", toolCallId: "launch-2", status: "completed" },
+    });
 
     expect(
       published.some(

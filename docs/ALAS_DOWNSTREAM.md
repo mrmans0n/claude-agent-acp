@@ -71,16 +71,6 @@ same payloads under top-level `_meta.sessionIndex`, so Alas keeps the tool call
 and subagent formats of a non-AIR client. AIR clients follow only their AIR
 capability, and clients that do not opt in see no change.
 
-The settle-at-result patch answers `session/prompt` at the turn's result for a
-client that sends `clientCapabilities._meta.settleAtResult: true`. Upstream
-holds the response of a turn that started background subagents until they end
-and the model has written its follow-up (upstream PR #870), for clients that
-stop reading updates at the response. Alas keeps reading, so the hold only kept
-its turns open for as long as the subagents ran, sometimes hours. The
-subagents' output, permission requests and the follow-up still reach the
-client, outside the turn. It is advertised as `_meta.settleAtResult` only to
-clients that opt in, so other clients see no change.
-
 For each target release, `scripts/audit-downstream-patches.mjs` classifies every
 patch:
 
