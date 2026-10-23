@@ -21770,6 +21770,141 @@ describe("deferred settlement for live background subagents (issues #864/#866)",
     await agent.sessions["test-session"]?.consumer;
   });
 
+  it("answers the prompt at its result while a subagent is live, for a client that opts into settleAtResult", async () => {
+    const { agent, events } = chunkCapturingAgent();
+    const response = await agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: { _meta: { settleAtResult: true } },
+    });
+    expect((response._meta as any)?.settleAtResult).toEqual({ supported: true });
+
+    let releaseSubagent!: () => void;
+    const subagentDone = new Promise<void>((resolve) => (releaseSubagent = resolve));
+    injectGeneratorSession(agent, (input) => {
+      async function* messageGenerator() {
+        const iter = input[Symbol.asyncIterator]();
+        yield userEcho((await iter.next()).value);
+        yield running();
+        yield subagentStarted("agent-1");
+        yield resultMessage();
+        yield idle();
+        // The subagent ends only after the prompt was answered.
+        await subagentDone;
+        yield taskNotification("agent-1");
+        yield running();
+        yield assistantText("promised summary");
+        yield resultMessage({ origin: { kind: "task-notification" } });
+        yield idle();
+      }
+      return messageGenerator();
+    });
+
+    const answer = await agent.prompt({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "explore" }],
+    });
+    events.push("resolved");
+    releaseSubagent();
+
+    expect(answer.stopReason).toBe("end_turn");
+    await agent.sessions["test-session"]?.consumer;
+    // The follow-up still reaches the client, after the answer.
+    expect(events).toEqual(["resolved", "chunk:promised summary"]);
+  });
+
+  describe("with settleAtResult (Alas)", () => {
+    /** Declares the Alas `settleAtResult` opt-in, which ends a turn at its
+     *  result like the AIR `backgroundSubagents` capability. */
+    const declareSettleAtResult = (agent: ClaudeAcpAgent) =>
+      agent.initialize({
+        protocolVersion: 1,
+        clientCapabilities: { _meta: { settleAtResult: true } },
+      });
+
+    it("keeps the streamed tool input of a running subagent when the turn ends at its result", async () => {
+      const updates: AcpSessionNotification[] = [];
+      const agent = new ClaudeAcpAgent(
+        {
+          sessionUpdate: async (n: AcpSessionNotification) => {
+            updates.push(n);
+          },
+        } as unknown as AcpClient,
+        { log: () => {}, error: () => {} },
+      );
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const childStream = (event: unknown) => ({
+        type: "stream_event",
+        parent_tool_use_id: "toolu_agent-1",
+        uuid: randomUUID(),
+        session_id: "test-session",
+        event,
+      });
+      injectGeneratorSession(agent, (input) => {
+        async function* messageGenerator() {
+          const { value: first } = await input[Symbol.asyncIterator]().next();
+          yield userEcho(first);
+          yield running();
+          yield subagentStarted("agent-1");
+          yield childStream({
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "tool_use", id: "toolu_child_read", name: "Read", input: {} },
+          });
+          yield resultMessage();
+          yield idle();
+          await gate;
+          yield childStream({
+            type: "content_block_delta",
+            index: 0,
+            delta: {
+              type: "input_json_delta",
+              partial_json: '{"file_path":"/test/src/late.ts","offset":',
+            },
+          });
+          yield taskNotification("agent-1");
+          yield resultMessage({ origin: { kind: "task-notification" } });
+          yield idle();
+        }
+        return messageGenerator();
+      });
+      await declareSettleAtResult(agent);
+      const session = agent.sessions["test-session"]!;
+
+      const response = await agent.prompt({
+        sessionId: "test-session",
+        prompt: [{ type: "text", text: "explore" }],
+      });
+      expect(response.stopReason).toBe("end_turn");
+      expect(session.activeTurn).toBeNull();
+
+      // The input delta after the prompt response still refines the tool call.
+      release();
+      await session.consumer;
+      expect(
+        updates.find(
+          (n) =>
+            n.update.sessionUpdate === "tool_call_update" &&
+            n.update.toolCallId === "toolu_child_read",
+        )?.update,
+      ).toMatchObject({ locations: [{ path: "/test/src/late.ts" }] });
+    });
+
+    it("is not advertised under ACP v2, which keeps the hold", async () => {
+      const agent = new ClaudeAcpAgent(
+        { sessionUpdate: async () => {} } as unknown as AcpClient,
+        { log: () => {}, error: () => {} },
+        { v2: true },
+      );
+      const response = await agent.initialize({
+        protocolVersion: 1,
+        clientCapabilities: { _meta: { settleAtResult: true } },
+      });
+      expect((response._meta as any)?.settleAtResult).toBeUndefined();
+      expect((agent as any).endsTurnsWithLiveSubagents()).toBe(false);
+    });
+  });
+
   it("resumes a held turn's foreground work for a steer, and ends it again at the steered result", async () => {
     const foreground: string[] = [];
     const agent = new ClaudeAcpAgent(
@@ -22179,6 +22314,70 @@ describe("deferred settlement for live background subagents (issues #864/#866)",
       // The turn's work ended at its result; the follow-up that planned is a
       // cycle, which the error-shaped diagnostic of the answer ends cancelled.
       expect(foreground).toEqual(["running", "ended end_turn", "running", "ended cancelled"]);
+    });
+
+    describe("with settleAtResult (Alas)", () => {
+      it("asks out of the turn without a clear-context option", async () => {
+        let request: RequestPermissionRequest | undefined;
+        const agent = new ClaudeAcpAgent(
+          {
+            sessionUpdate: async () => {},
+            requestPermission: async (params: RequestPermissionRequest) => {
+              request = params;
+              return { outcome: { outcome: "selected", optionId: "reject" } };
+            },
+          } as unknown as AcpClient,
+          { log: () => {}, error: () => {} },
+        );
+        let answer!: () => void;
+        const answered = new Promise<void>((resolve) => (answer = resolve));
+        let planToolSeen = false;
+        injectGeneratorSession(agent, (input) => {
+          async function* messageGenerator() {
+            const iter = input[Symbol.asyncIterator]();
+            const { value: first } = await iter.next();
+            const followup = heldTurnPlanningFollowup(first);
+            for (let step = followup.next(); !step.done; step = followup.next()) {
+              const message: any = step.value;
+              if (message.type === "user" && message.tool_result_meta) {
+                planToolSeen = true;
+                await answered;
+              }
+              yield message;
+            }
+            yield idle();
+          }
+          return messageGenerator();
+        });
+        await agent.initialize({
+          protocolVersion: 1,
+          clientCapabilities: { _meta: { settleAtResult: true } },
+        });
+        const session = agent.sessions["test-session"]!;
+
+        const first = await agent.prompt({
+          sessionId: "test-session",
+          prompt: [{ type: "text", text: "plan" }],
+        });
+        // The turn ends at its own result; the plan comes after it.
+        expect(first.stopReason).toBe("end_turn");
+        await waitFor(() => planToolSeen);
+        expect(session.activeTurn).toBeNull();
+
+        await agent.canUseTool("test-session")("ExitPlanMode", { plan: "Implement it" }, {
+          signal: new AbortController().signal,
+          suggestions: [],
+          toolUseID: "tool-plan",
+        } as any);
+        // No ACP turn can continue a fresh context out of a turn.
+        expect(request?.options.map((o) => o.optionId)).not.toEqual(
+          expect.arrayContaining([expect.stringMatching(/^exit-plan-clear-/)]),
+        );
+        expect(request?.options.map((o) => o.optionId)).toContain("reject");
+
+        answer();
+        await session.consumer;
+      });
     });
 
     describe("with backgroundSubagents", () => {
