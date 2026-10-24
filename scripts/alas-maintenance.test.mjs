@@ -60,6 +60,14 @@ const CLAUDE_PATCHES = [
     ],
     tests: ["src/tests/acp-scenarios.test.ts", "src/tests/session-index.test.ts"],
   },
+  {
+    name: "settle-at-result",
+    identityCommit: "5e5dd2485e577189dee329e860f0f7368bf1de2f",
+    commit: "5e5dd2485e577189dee329e860f0f7368bf1de2f",
+    upstreamPr: null,
+    files: ["src/acp-agent.ts"],
+    tests: ["src/tests/acp-agent.test.ts"],
+  },
 ];
 
 afterEach(() => {
