@@ -1,42 +1,139 @@
 {
   "version": 1,
-  "fromTag": "v0.85.1",
-  "toTag": "v0.85.1",
-  "toCommit": "686c0c99b3b89217b74d1f5de8272e7c9ef1aab4",
+  "fromTag": "v0.96.0",
+  "toTag": "v0.97.0",
+  "toCommit": "d52c7c64d8e4b3e5bb988658fed4cd487b9f935c",
   "patches": [
     {
       "name": "goal-capability-opt-in",
-      "commit": "60749d07ff50308ef96c5251152a8d4986fe680f",
+      "commit": "22067f19cc8c3adc4367f023d534542fd69eaf78",
       "upstreamPr": 1245,
       "files": ["docs/air-extensions.md", "src/acp-agent.ts", "src/goal-extension.ts"],
       "tests": ["src/tests/acp-agent.test.ts"],
-      "classification": "unaffected",
+      "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": [],
+      "overlappingFiles": ["docs/air-extensions.md", "src/acp-agent.ts"],
       "resolution": {
         "decision": "retain",
-        "rationale": "No equivalent upstream patch or overlapping path was detected.",
-        "tests": ["src/tests/acp-agent.test.ts"],
-        "automatic": true
+        "rationale": "Upstream v0.97.0 does not touch goal negotiation: goalMeta, the GOAL_* constants and src/goal-extension.ts are unchanged, and goals stay AIR-only upstream, so the patch is not absorbed. The v0.97.0 src/acp-agent.ts edits add the ultracode session config option (#1438), let a result that names only a steer's uuid answer the live turn that owns the steer (#1185), route advisor_tool_result through the tool result path (#1247), keep a foreground fork's placeholder launch result out of its own transcript (#1431), keep the usage-limit error when it arrives after compaction (#1377) and pass --settings before the auth status subcommand (#1392). None of them is in the lines this patch adds or removes; the docs/air-extensions.md overlap is the ultracode word added to the clear-context paragraph, outside the goal sections. 22067f19cc8c3adc4367f023d534542fd69eaf78 replays cleanly on v0.97.0 with an unchanged stable patch-id (eb660c29), so git cherry still recognises its other copy in alas history and the goal opt-in ships unchanged.",
+        "tests": ["npm exec -- vitest run src/tests/acp-agent.test.ts", "npm run test:run"],
+        "automatic": false
       }
     },
     {
       "name": "async-tasks-opt-in",
-      "commit": "3e098c71628cc7d5927ee8a3d794faa433dce12d",
+      "commit": "1f57f966a6baaba1fa7285fb7fc5f40afeb080d2",
       "upstreamPr": null,
       "files": ["src/acp-agent.ts", "src/async-tasks.ts"],
       "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
-      "classification": "unaffected",
+      "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": [],
+      "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
-        "decision": "retain",
-        "rationale": "No equivalent upstream patch or overlapping path was detected.",
-        "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
-        "automatic": true
+        "decision": "adapt",
+        "commit": "6abc8af1b36375344c682a34b18995054f82c9fe",
+        "rationale": "Upstream async tasks remain AIR-only in v0.97.0, so the patch is not absorbed. clientSupportsAsyncTasks keeps the same three callers, and none of the v0.97.0 source changes reads the async task capability. The v0.97.0 src/acp-agent.ts edits add the ultracode session config option (#1438), let a result that names only a steer's uuid answer the live turn that owns the steer (#1185), route advisor_tool_result through the tool result path (#1247), keep a foreground fork's placeholder launch result out of its own transcript (#1431), keep the usage-limit error when it arrives after compaction (#1377) and pass --settings before the auth status subcommand (#1392). #1431 hands a filtered tool_use_result to backgroundBashTaskFromToolResult, which serves AIR and opted-in clients alike. #1438 adds an Ultracode line to the README feature list right above the line this patch adds, so 1f57f966a6baaba1fa7285fb7fc5f40afeb080d2 replays with a new stable patch-id, git cherry no longer recognises its alas copy f1aaf1721d8d8ae154187024a948549a8da8ac2d, and that copy conflicts against itself. 6abc8af1b36375344c682a34b18995054f82c9fe reapplies exactly the same added and removed lines on v0.97.0 (sorted +/- line diff empty). Its stable patch-id 0badd361 differs from every retired ledger commit.",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-agent.test.ts src/tests/async-tasks.test.ts src/tests/create-session-options.test.ts",
+          "diff <(git show --pretty=format: 1f57f966a6baaba1fa7285fb7fc5f40afeb080d2 | grep -E '^[+-]' | grep -vE '^(\\+\\+\\+|---) ' | sort) <(git show --pretty=format: 6abc8af1b36375344c682a34b18995054f82c9fe | grep -E '^[+-]' | grep -vE '^(\\+\\+\\+|---) ' | sort)",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "advisor-tool-results",
+      "commit": "590b7ed9e90414124c60eb0b853ad6ed4575a24c",
+      "upstreamPr": 1247,
+      "files": ["src/acp-agent.ts"],
+      "tests": ["src/tests/incomplete-tools.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "drop",
+        "rationale": "Upstream absorbed the patch: v0.97.0 merges #1247 as bed795d261620e6d5113e427a7196d94e66e7034, the upstream PR of this patch. Its src/acp-agent.ts added and removed lines are identical to those of 590b7ed9e90414124c60eb0b853ad6ed4575a24c: an advisor_tool_result case that releases the hook callback and resolves the server tool through the tool_result path, showing plaintext advice, a fixed message for redacted advice and the error code for an error, and the removal of advisor_tool_result from the ignored blocks. The upstream tests equal the fork's advisor tests except one fork-only case, closes a streamed-only advisor call as abandoned. The incomplete-tools suite of 0.96.0-alas.1 (61 tests, including that case) passes on the v0.97.0 exploration candidate 82d7a56aa0b787577288189bc86ac7c14b05e810, which carries no fork advisor patch. With bed795d's source change reverted, its three advisor result cases fail. Replaying the fork patch would conflict in src/tests/incomplete-tools.test.ts and duplicate the case. Alas clients see the same advisor behaviour as with 0.96.0-alas.1. The persistent tooling commit bd7e7a0411d3667e29456f6428c776ab5a58ffd6 only edits scripts and docs and keeps replaying.",
+        "tests": [
+          "git show a9582950c988ce691e27c98ad6af296df8e1deb0:src/tests/incomplete-tools.test.ts > src/tests/alas-incomplete-tools.test.ts && npm exec -- vitest run src/tests/alas-incomplete-tools.test.ts",
+          "diff <(git show --pretty=format: 590b7ed9e90414124c60eb0b853ad6ed4575a24c -- src/acp-agent.ts | grep -E '^[+-]' | grep -vE '^(\\+\\+\\+|---) ') <(git show --pretty=format: bed795d261620e6d5113e427a7196d94e66e7034 -- src/acp-agent.ts | grep -E '^[+-]' | grep -vE '^(\\+\\+\\+|---) ')",
+          "npm exec -- vitest run src/tests/incomplete-tools.test.ts"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "context-usage-extension",
+      "commit": "eebbea33e42160f5e2b4d700539476086c9c41f1",
+      "upstreamPr": null,
+      "files": ["src/acp-agent.ts"],
+      "tests": ["src/tests/acp-agent.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "adapt",
+        "commit": "f6e9e43e0018babdc7063f50b6a45cf1b585f396",
+        "rationale": "Upstream v0.97.0 has no _alas/context_usage request and no contextUsage advertisement, so the patch is not absorbed, and it keeps @anthropic-ai/claude-agent-sdk 0.3.310 with Query.getContextUsage({ detail }). The v0.97.0 src/acp-agent.ts edits add the ultracode session config option (#1438), let a result that names only a steer's uuid answer the live turn that owns the steer (#1185), route advisor_tool_result through the tool result path (#1247), keep a foreground fork's placeholder launch result out of its own transcript (#1431), keep the usage-limit error when it arrives after compaction (#1377) and pass --settings before the auth status subcommand (#1392). None of them touches the request handler or the initialize _meta entry this patch adds. The patch is stacked on the async task opt-in, which is adapted. The sync replays original downstream commits before adaptation commits, so an original commit stacked on an adapted patch conflicts and must be adapted too. f6e9e43e0018babdc7063f50b6a45cf1b585f396 reapplies the unchanged added and removed lines of eebbea33e42160f5e2b4d700539476086c9c41f1 on the async task adaptation and adds one test of the ACP SDK v1 app contract that the request relies on: without detail the SDK is asked for the full breakdown, the session id is trimmed, a blank session id or a non-object is invalid params (-32602) and does not reach the SDK, and an unknown session is resourceNotFound (-32002). The test fails if the default detail changes, if the session id is not trimmed, or if an unknown session throws a plain error. It gives the replacement a stable patch-id (c10c0dd1) distinct from every retired ledger commit, so the next sync does not skip it as retired.",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-agent.test.ts src/tests/acp-v2.test.ts src/tests/create-session-options.test.ts",
+          "diff <(git show --pretty=format: eebbea33e42160f5e2b4d700539476086c9c41f1 | grep -E '^[+-]' | grep -vE '^(\\+\\+\\+|---) ' | sort) <(git show --pretty=format: f6e9e43e0018babdc7063f50b6a45cf1b585f396 | grep -E '^[+-]' | grep -vE '^(\\+\\+\\+|---) ' | sort)",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "neutral-session-index",
+      "commit": "9c4ddd79b8dfb480a72cf4e1071615c383cee84e",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/acp-agent.ts",
+        "src/session-index/connection.ts",
+        "src/session-index/list-subscriptions.ts",
+        "src/session-index/meta.ts",
+        "src/session-index/service.ts",
+        "src/session-index/session-info.ts"
+      ],
+      "tests": ["src/tests/acp-scenarios.test.ts", "src/tests/session-index.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["docs/air-extensions.md", "src/acp-agent.ts"],
+      "resolution": {
+        "decision": "adapt",
+        "commit": "64b276888e9af32072cd960e86927f61a6c85e6f",
+        "rationale": "Upstream v0.97.0 does not touch src/session-index/, adds no _meta.jetbrains.air field to rows, updates or list parameters, and adds no provider-neutral session index, so the patch is not absorbed and its neutral meta path stays complete. The v0.97.0 src/acp-agent.ts edits add the ultracode session config option (#1438), let a result that names only a steer's uuid answer the live turn that owns the steer (#1185), route advisor_tool_result through the tool result path (#1247), keep a foreground fork's placeholder launch result out of its own transcript (#1431), keep the usage-limit error when it arrives after compaction (#1377) and pass --settings before the auth status subcommand (#1392). The docs/air-extensions.md overlap is the ultracode word in the clear-context paragraph, outside this patch. The patch wraps the initialize _meta that the context usage patch extends, so it is stacked on the adapted context usage and async task patches. The sync replays original downstream commits before adaptation commits, so an original commit stacked on an adapted patch conflicts and must be adapted too. 64b276888e9af32072cd960e86927f61a6c85e6f reapplies the unchanged added and removed lines of 9c4ddd79b8dfb480a72cf4e1071615c383cee84e and adds one test: a client that opts into the neutral index under ACP v2 gets no _meta.sessionIndex and method-not-found for _session/archive. The v2 surface routes no session index method, and v2InitializeResponse passes the agent's top-level _meta keys through. The test fails without the early v2 return in SessionIndexConnection.negotiate. It gives the replacement a stable patch-id (1eaf3013) distinct from every retired ledger commit.",
+        "tests": [
+          "npm exec -- vitest run src/tests/session-index.test.ts src/tests/acp-scenarios.test.ts",
+          "diff <(git show --pretty=format: 9c4ddd79b8dfb480a72cf4e1071615c383cee84e | grep -E '^[+-]' | grep -vE '^(\\+\\+\\+|---) ' | sort) <(git show --pretty=format: 64b276888e9af32072cd960e86927f61a6c85e6f | grep -E '^[+-]' | grep -vE '^(\\+\\+\\+|---) ' | sort)",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "settle-at-result",
+      "commit": "a90195ee378736d7da5540fbbb1f72f9af6688a2",
+      "upstreamPr": null,
+      "files": ["src/acp-agent.ts"],
+      "tests": ["src/tests/acp-agent.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "adapt",
+        "commit": "6a528efc8f3d208968a72224808fde741027e926",
+        "rationale": "Upstream v0.97.0 does not change endsTurnsWithLiveSubagents, turnAwaitingSubagents or the backgroundSubagents capability that this patch extends to clients opting into settleAtResult, so the patch is not absorbed and its gate still covers every caller, for ACP v1 only. The v0.97.0 src/acp-agent.ts edits add the ultracode session config option (#1438), let a result that names only a steer's uuid answer the live turn that owns the steer (#1185), route advisor_tool_result through the tool result path (#1247), keep a foreground fork's placeholder launch result out of its own transcript (#1431), keep the usage-limit error when it arrives after compaction (#1377) and pass --settings before the auth status subcommand (#1392). #1185 lets a result that names only a steer's uuid answer the live turn that owns the steer when Claude Code folds the steer into an autonomous cycle, and skips a turn held open for its subagents (isHeldOpen). No turn of a settleAtResult client is held, so such a client gets the same answer as an AIR client with backgroundSubagents. The patch adds its opt-in next to the context usage opt-in, so it is stacked on the adapted context usage and async task patches. The sync replays original downstream commits before adaptation commits, so an original commit stacked on an adapted patch conflicts and must be adapted too. 6a528efc8f3d208968a72224808fde741027e926 reapplies the unchanged added and removed lines of a90195ee378736d7da5540fbbb1f72f9af6688a2 and adds one test for the #1185 path: a settleAtResult client steers a turn that started a background subagent, the steer is folded into a task-notification cycle, session/prompt resolves at that cycle's result while the subagent still runs, and the subagent's follow-up reaches the client afterwards. The test fails with the original gate, where the turn is held for the subagent, and with #1185's source change reverted. It gives the replacement a stable patch-id (af998ad4) distinct from every retired ledger commit.",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-agent.test.ts src/tests/folded-steer.test.ts",
+          "diff <(git show --pretty=format: a90195ee378736d7da5540fbbb1f72f9af6688a2 | grep -E '^[+-]' | grep -vE '^(\\+\\+\\+|---) ' | sort) <(git show --pretty=format: 6a528efc8f3d208968a72224808fde741027e926 | grep -E '^[+-]' | grep -vE '^(\\+\\+\\+|---) ' | sort)",
+          "npm run test:run"
+        ],
+        "automatic": false
       }
     }
   ],
   "preservedCommits": [],
+  "retiredCommits": [],
   "resolved": true
 }
