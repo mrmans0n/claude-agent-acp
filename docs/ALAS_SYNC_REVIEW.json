@@ -1,42 +1,136 @@
 {
   "version": 1,
-  "fromTag": "v0.85.1",
-  "toTag": "v0.85.1",
-  "toCommit": "686c0c99b3b89217b74d1f5de8272e7c9ef1aab4",
+  "fromTag": "v0.95.0",
+  "toTag": "v0.96.0",
+  "toCommit": "f6958db1ee8d3e9ead6767a3a294f98b9a21adb9",
   "patches": [
     {
       "name": "goal-capability-opt-in",
-      "commit": "60749d07ff50308ef96c5251152a8d4986fe680f",
+      "commit": "79047b35a8d185d78567d3c6875d1adfb986c8b7",
       "upstreamPr": 1245,
       "files": ["docs/air-extensions.md", "src/acp-agent.ts", "src/goal-extension.ts"],
       "tests": ["src/tests/acp-agent.test.ts"],
-      "classification": "unaffected",
+      "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": [],
+      "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
-        "decision": "retain",
-        "rationale": "No equivalent upstream patch or overlapping path was detected.",
-        "tests": ["src/tests/acp-agent.test.ts"],
-        "automatic": true
+        "decision": "adapt",
+        "commit": "22067f19cc8c3adc4367f023d534542fd69eaf78",
+        "rationale": "Upstream v0.96.0 does not touch goal negotiation: goalMeta, the GOAL_* constants and src/goal-extension.ts are unchanged, and goals stay AIR-only upstream, so the patch is not absorbed. The v0.96.0 src/acp-agent.ts edits report each native subagent's model (#1432, #1434), send the current subagent states after a load response (#1423), stop holding an AIR load replay until the CLI starts (#1433), report SendMessage delegations as linked session messages (#1424) and run the subagent configuration hook for both subagent forms. None of them is in the lines this patch adds or removes. The adaptation only rebinds the patch identity; it changes no code. Protected alas history carries two copies of the v0.94 goal adaptation with identical added and removed lines: 3408f6ae41760b08cb9a2a96f5660d51c6295f82 (stable patch-id 14e887792182a3958f8403b76758143f0d6b1500, equal to the ledger commit 79047b35a8d185d78567d3c6875d1adfb986c8b7) and 22067f19cc8c3adc4367f023d534542fd69eaf78 (patch-id eb660c29f25f5893fb2199b4604b5c4fd7a9f8b5). They differ only in a context line that v0.95.0 added to the AIR capability list (#1262, `...(this.v2 ? [] : [AIR_BACKGROUND_SUBAGENTS_CAPABILITY])`). The candidate replays 22067f19cc8c3adc4367f023d534542fd69eaf78 first, cleanly and with an unchanged patch-id on v0.96.0. git cherry then does not recognise 3408f6a as applied, and its replay conflicts against the patch it already holds. Recording 22067f19cc8c3adc4367f023d534542fd69eaf78 as the patch commit retires 79047b35 and, through its patch-id, every copy of 3408f6a. Every older copy (patch-ids 3241135e, 7e9fc1c0, 421a3ffe) is already retired, and the replacement patch-id differs from all of them. The integration ships the same goal opt-in lines as 0.95.0-alas.1.",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-agent.test.ts",
+          "diff <(git show --pretty=format: 3408f6ae41760b08cb9a2a96f5660d51c6295f82 | grep -E '^[+-]' | grep -vE '^(\\+\\+\\+|---) ') <(git show --pretty=format: 22067f19cc8c3adc4367f023d534542fd69eaf78 | grep -E '^[+-]' | grep -vE '^(\\+\\+\\+|---) ')",
+          "npm run test:run"
+        ],
+        "automatic": false
       }
     },
     {
       "name": "async-tasks-opt-in",
-      "commit": "3e098c71628cc7d5927ee8a3d794faa433dce12d",
+      "commit": "d98fd9e5abf588d7c4d703245e129ada6a8c5182",
       "upstreamPr": null,
       "files": ["src/acp-agent.ts", "src/async-tasks.ts"],
       "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
-      "classification": "unaffected",
+      "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": [],
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "adapt",
+        "commit": "1f57f966a6baaba1fa7285fb7fc5f40afeb080d2",
+        "rationale": "Upstream async tasks remain AIR-only in v0.96.0, so the patch is not absorbed. clientSupportsAsyncTasks keeps the same three callers as in v0.95.0: the live and the history-replay AsyncTaskRuntime, and the stopsWorkflowsOnCancel choice. The v0.96.0 src/acp-agent.ts edits report each native subagent's model (#1432, #1434), send the current subagent states after a load response (#1423), stop holding an AIR load replay until the CLI starts (#1433), report SendMessage delegations as linked session messages (#1424) and run the subagent configuration hook for both subagent forms. None of them reads the async task capability. The adaptation only rebinds the patch identity; it changes no code. The patch is stacked on the goal opt-in, and alas history carries two copies of its v0.94 adaptation with identical added and removed lines: 1b4c5382f2acb45442a17207e21f4761fa99422c (patch-id 7c947e73bb905619c1365b197bd64b8d50ca075c, equal to the ledger commit d98fd9e5abf588d7c4d703245e129ada6a8c5182) and 1f57f966a6baaba1fa7285fb7fc5f40afeb080d2 (patch-id 2bd3269a4be1f9d141eb05d331f0f3c97149e3d8). They differ only in the v0.95.0 context line `import { randomUUID } from \"node:crypto\";`. As for the goal opt-in, 1f57f966a6baaba1fa7285fb7fc5f40afeb080d2 replays cleanly on v0.96.0 and 1b4c538 then conflicts against it. Recording 1f57f966a6baaba1fa7285fb7fc5f40afeb080d2 as the patch commit retires d98fd9e5 and every copy of 1b4c538. The older copies (patch-ids a5c06276, 437223cf, 8f8468dd, 1aca6d86, 46eb90e1) are already retired, and the replacement patch-id differs from all of them.",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-agent.test.ts src/tests/async-tasks.test.ts src/tests/create-session-options.test.ts",
+          "diff <(git show --pretty=format: 1b4c5382f2acb45442a17207e21f4761fa99422c | grep -E '^[+-]' | grep -vE '^(\\+\\+\\+|---) ') <(git show --pretty=format: 1f57f966a6baaba1fa7285fb7fc5f40afeb080d2 | grep -E '^[+-]' | grep -vE '^(\\+\\+\\+|---) ')",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "advisor-tool-results",
+      "commit": "590b7ed9e90414124c60eb0b853ad6ed4575a24c",
+      "upstreamPr": 1247,
+      "files": ["src/acp-agent.ts"],
+      "tests": ["src/tests/incomplete-tools.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
         "decision": "retain",
-        "rationale": "No equivalent upstream patch or overlapping path was detected.",
-        "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
-        "automatic": true
+        "rationale": "Upstream v0.96.0 still lists advisor_tool_result among the ignored content blocks of toAcpNotifications, so the patch is not absorbed. The v0.96.0 src/acp-agent.ts edits report each native subagent's model (#1432, #1434), send the current subagent states after a load response (#1423), stop holding an AIR load replay until the CLI starts (#1433), report SendMessage delegations as linked session messages (#1424) and run the subagent configuration hook for both subagent forms. None of them touches the advisor path. The @anthropic-ai/sdk dev dependency moves from 1.1.0 to 1.3.0 and still typechecks the patch. 590b7ed9e90414124c60eb0b853ad6ed4575a24c replays cleanly with an unchanged stable patch-id (a90eae2a), and the incomplete-tool suite passes with it.",
+        "tests": [
+          "npm exec -- vitest run src/tests/incomplete-tools.test.ts",
+          "npm run build",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "context-usage-extension",
+      "commit": "eebbea33e42160f5e2b4d700539476086c9c41f1",
+      "upstreamPr": null,
+      "files": ["src/acp-agent.ts"],
+      "tests": ["src/tests/acp-agent.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "retain",
+        "rationale": "Upstream v0.96.0 has no _alas/context_usage request and no contextUsage advertisement, so the patch is not absorbed. Claude Agent SDK 0.3.310 (#1435) keeps Query.getContextUsage({ detail }) and SDKControlGetContextUsageResponse unchanged from 0.3.309: their sdk.d.ts declarations only move by one line. The v0.96.0 src/acp-agent.ts edits report each native subagent's model (#1432, #1434), send the current subagent states after a load response (#1423), stop holding an AIR load replay until the CLI starts (#1433), report SendMessage delegations as linked session messages (#1424) and run the subagent configuration hook for both subagent forms. None of them touches the request handler or the initialize _meta entry this patch adds. eebbea33e42160f5e2b4d700539476086c9c41f1 replays cleanly with an unchanged stable patch-id (89f88e98).",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-agent.test.ts",
+          "npm run build",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "neutral-session-index",
+      "commit": "9c4ddd79b8dfb480a72cf4e1071615c383cee84e",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/acp-agent.ts",
+        "src/session-index/connection.ts",
+        "src/session-index/list-subscriptions.ts",
+        "src/session-index/meta.ts",
+        "src/session-index/service.ts",
+        "src/session-index/session-info.ts"
+      ],
+      "tests": ["src/tests/acp-scenarios.test.ts", "src/tests/session-index.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "retain",
+        "rationale": "Upstream v0.96.0 does not touch src/session-index/ or docs/air-extensions.md and adds no provider-neutral session index, so the patch is not absorbed. The v0.96.0 src/acp-agent.ts edits report each native subagent's model (#1432, #1434), send the current subagent states after a load response (#1423), stop holding an AIR load replay until the CLI starts (#1433), report SendMessage delegations as linked session messages (#1424) and run the subagent configuration hook for both subagent forms. None of them touches sessionIndex.withNeutralCapabilities, the session index capabilities or the session index teardown. 9c4ddd79b8dfb480a72cf4e1071615c383cee84e replays cleanly with an unchanged stable patch-id (0845c492), and the session index and scenario suites pass.",
+        "tests": [
+          "npm exec -- vitest run src/tests/session-index.test.ts src/tests/acp-scenarios.test.ts",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "settle-at-result",
+      "commit": "a90195ee378736d7da5540fbbb1f72f9af6688a2",
+      "upstreamPr": null,
+      "files": ["src/acp-agent.ts"],
+      "tests": ["src/tests/acp-agent.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "retain",
+        "rationale": "Upstream v0.96.0 does not change endsTurnsWithLiveSubagents, turnAwaitingSubagents or the backgroundSubagents capability that this patch extends to clients opting into settleAtResult, so the patch is not absorbed and its gate still covers every caller. The new publishCurrentSubagentStates runs after a load response; it only sends child states and models and does not change when session/prompt resolves. The v0.96.0 src/acp-agent.ts edits report each native subagent's model (#1432, #1434), send the current subagent states after a load response (#1423), stop holding an AIR load replay until the CLI starts (#1433), report SendMessage delegations as linked session messages (#1424) and run the subagent configuration hook for both subagent forms. a90195ee378736d7da5540fbbb1f72f9af6688a2 replays cleanly with an unchanged stable patch-id (37aa56bf), and the settleAtResult cases of the agent suite pass.",
+        "tests": ["npm exec -- vitest run src/tests/acp-agent.test.ts", "npm run test:run"],
+        "automatic": false
       }
     }
   ],
   "preservedCommits": [],
+  "retiredCommits": [],
   "resolved": true
 }
