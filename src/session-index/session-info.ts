@@ -1,14 +1,15 @@
 /**
  * A session index row as the client sees it: the `SessionInfo` of
  * `session/list` and of `_session/list/changes`, with the flat row fields of
- * the RFDs in `_meta.jetbrains.air`.
+ * the RFDs in `_meta.jetbrains.air`, or `_meta.sessionIndex` for a client
+ * that opted into the client-neutral session index.
  */
 
 import type { SessionInfo } from "@agentclientprotocol/sdk/unstable";
-import { withAirMeta } from "../air-extension.js";
 import { deriveActivity, selectCost, type OwnSessionState } from "./activity.js";
 import type { LiveRecord } from "./live-registry.js";
 import type { IndexRow } from "./session-index.js";
+import { AIR_SESSION_INDEX_META, type SessionIndexMeta } from "./meta.js";
 
 function iso(ms: number | undefined): string | undefined {
   return ms === undefined || !Number.isFinite(ms) ? undefined : new Date(ms).toISOString();
@@ -21,6 +22,7 @@ export function sessionInfoOf(
   own: OwnSessionState | undefined,
   live: LiveRecord | undefined,
   now: number,
+  namespace: SessionIndexMeta = AIR_SESSION_INDEX_META,
 ): SessionInfo {
   const activity = deriveActivity({
     own,
@@ -45,7 +47,7 @@ export function sessionInfoOf(
   };
   let meta: Record<string, unknown> | undefined;
   for (const [key, value] of Object.entries(fields)) {
-    if (value !== undefined) meta = withAirMeta(meta, key, value);
+    if (value !== undefined) meta = namespace.with(meta, key, value);
   }
   return {
     sessionId: row.sessionId,
