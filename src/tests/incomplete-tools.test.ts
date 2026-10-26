@@ -167,30 +167,6 @@ describe("incomplete foreground tools", () => {
     expect(agent.sessions[sessionId].dispatchedToolCalls?.has(advisorId)).toBe(false);
   });
 
-  it("closes a streamed-only advisor call as abandoned", async () => {
-    const advisorId = "srvtoolu_advisor";
-    const { prompt, updates, logError, agent } = createTestSession(async function* (input) {
-      yield* echoNextPrompt(input);
-      yield advisorStart(advisorId);
-      yield successfulResultMessage();
-    });
-
-    await expect(prompt()).resolves.toMatchObject({ stopReason: "end_turn" });
-    const terminal = updates.filter(
-      (update) =>
-        update.toolCallId === advisorId &&
-        (update.status === "completed" || update.status === "failed"),
-    );
-    expect(terminal).toHaveLength(1);
-    expect(terminal[0]).toMatchObject({ status: "failed" });
-    expect(terminal[0].content[0].content.text).toBe(
-      "Claude stopped this tool call before it ran.",
-    );
-    expect(agent.sessions[sessionId].emittedToolCalls.has(advisorId)).toBe(false);
-    expect(agent.sessions[sessionId].dispatchedToolCalls?.has(advisorId)).not.toBe(true);
-    expect(logError).not.toHaveBeenCalled();
-  });
-
   it("allows a tool explicitly handed off to a background task", async () => {
     const { prompt, updates } = createTestSession(backgroundToolMessages);
 

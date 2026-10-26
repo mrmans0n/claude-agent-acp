@@ -325,6 +325,20 @@ describe("sessionIndex negotiation", () => {
     });
   });
 
+  it("is neither advertised nor served under ACP v2 to a client that opts in without AIR", async () => {
+    // The v2 surface routes no session index method, and its initialize
+    // response passes the agent's top-level `_meta` keys through.
+    const { agent } = createAgent({ v2: true });
+    const response = await agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: neutral(),
+    });
+    expect(response._meta).toEqual({ steering: { supported: true } });
+    await expect(agent.archiveSession({ sessionId: randomUUID() })).rejects.toMatchObject({
+      code: -32601,
+    });
+  });
+
   it.each([true, "1", [], null, {}, { version: 0 }, { version: 1.5 }, { version: "1" }])(
     "enables nothing for the malformed opt-in %j",
     async (sessionIndex) => {
