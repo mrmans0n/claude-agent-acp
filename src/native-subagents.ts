@@ -5,6 +5,7 @@ import {
 } from "@agentclientprotocol/sdk/unstable";
 import type { AcpSessionNotification, SubagentForm, SubagentState } from "./acp-subagents.js";
 import { AIR_SUBAGENT_KEY, airExtensionMeta } from "./air-extension.js";
+import { MODEL_CONFIG_ID } from "./session-model.js";
 import { isFinalToolCallStatus } from "./tool-calls/renderer.js";
 
 /** The work state of a child, as the RFD's `subagent_update.state` carries it. */
@@ -68,9 +69,29 @@ export type NativeSubagentSession = {
 type Publish = (notification: AcpSessionNotification) => Promise<void>;
 type Logger = { log(message: string): void };
 
+/** An entry of a session's `model` select option. */
+export type ModelEntry = { value: string; name: string };
+
+/**
+ * The models of the root session. A child's model is an entry of the root
+ * session's `model` option when one matches, so that a client can compare the
+ * two sessions' models.
+ */
+export type SubagentModels = {
+  /**
+   * The entry of the root session's `model` option for `model`, a model id
+   * that a response reported. Undefined when no entry matches.
+   */
+  entry(model: string): ModelEntry | undefined;
+  /** The display name of the model id `model` in the session's model list, if the list has it. */
+  name(model: string): string | undefined;
+};
+
 type ChildConfiguration = {
   options: Map<string, SessionConfigOption>;
   published?: string;
+  /** The `model` option value and name that the client last got. */
+  publishedModel?: ModelEntry;
   publishing: Promise<void>;
 };
 
@@ -165,6 +186,15 @@ export class NativeSubagentRuntime {
    */
   private readonly hiddenLaunches = new Map<string, { background: boolean }>();
   /**
+   * The RFD form: the SendMessage calls that the client is not shown, until
+   * their final update, with their first report and the session that made
+   * them. A message that reaches an announced child replaces its call.
+   */
+  private readonly hiddenSendMessages = new Map<
+    string,
+    { initial: AcpSessionNotification; sender: string; delivered: boolean }
+  >();
+  /**
    * The RFD form: the SubagentHandback calls of announced children that the
    * client is not shown yet, with their first report, the report from their
    * input, and the call that delegated the run.
@@ -195,6 +225,8 @@ export class NativeSubagentRuntime {
    * `form` is undefined for a client without native subagent sessions. The RFD
    * form restores an agent from before a load or resume with `lineage`. The AIR
    * form does too, and `launchedAgent` finds the agent that a launch call made.
+   * `models` maps the model of a child response to the root session's entry
+   * (see {@link reportModel}).
    */
   constructor(
     form: SubagentForm | undefined,
@@ -204,6 +236,7 @@ export class NativeSubagentRuntime {
     private readonly logger: Logger,
     private readonly lineage?: SubagentLineage,
     private readonly launchedAgent?: LaunchedAgent,
+    private readonly models?: SubagentModels,
   ) {
     this.form = form;
     this.enabled = form !== undefined;
@@ -223,62 +256,101 @@ export class NativeSubagentRuntime {
     forcedSessionId?: string,
   ): Promise<AcpSessionNotification | null> {
     const routed = await this.routeUpdate(notification, deliver, forcedSessionId);
-    if (routed) this.rememberSendMessage(routed);
-    return routed;
+    if (!routed) return routed;
+    this.rememberSendMessage(routed);
+    return this.form === "rfd" ? this.routeRfdSendMessage(routed, forcedSessionId) : routed;
   }
 
-  /** Report the model of a child response, not the parent's model or a launch-time alias. */
+  /**
+   * The RFD form: the work state that the client holds for the announced child
+   * `sessionId` of this live session, or undefined when no such child runs here.
+   */
+  liveWorkState(sessionId: string): WorkState["state"] | undefined {
+    if (this.form !== "rfd") return undefined;
+    const child = this.children.get(sessionId);
+    return child?.announced ? child.workState : undefined;
+  }
+
+  /**
+   * Reports the model of a child response, an exact model id, as the entry of
+   * the root session's `model` option that matches it, else as the id (see
+   * {@link responseModelEntry}). The child gets no model before its first
+   * response: the adapter cannot tell the model that Claude Code picks for it.
+   * The client gets a new configuration only when the entry changes.
+   */
   async reportModel(
     parentToolUseId: string | null,
     model: string | undefined,
     deliver: Publish,
   ): Promise<void> {
-    if (this.form !== "rfd" || !parentToolUseId || !model || model === "<synthetic>") {
+    const entry = this.form && parentToolUseId ? responseModelEntry(model, this.models) : undefined;
+    if (!entry) return;
+    // Every response of a child reports its model: most repeat the model that
+    // the client already has, and need no routing.
+    // A publication that failed sent nothing, so only the published model counts.
+    const child = this.childByParentToolUse.get(parentToolUseId!);
+    if (
+      child?.announced &&
+      sameModelEntry(this.configBySession.get(child.sessionId)?.publishedModel, entry)
+    ) {
       return;
     }
     await deliver({
       sessionId: this.rootSessionId,
       update: {
         sessionUpdate: "config_option_update",
-        configOptions: [
-          {
-            id: "model",
-            name: "Model",
-            category: "model",
-            type: "select",
-            currentValue: model,
-            options: [{ value: model, name: model }],
-          },
-        ],
+        configOptions: [childModelOption(entry)],
         _meta: { claudeCode: { parentToolUseId } },
       },
     });
   }
 
-  /** Hook observations can precede the task event that establishes a child's parent. */
+  /** The configuration that the client last got for the announced child `sessionId`, if any. */
+  configurationOf(sessionId: string): SessionConfigOption[] | undefined {
+    const published = this.configBySession.get(sessionId)?.published;
+    if (!this.childOfSession(sessionId)?.announced || !published) return undefined;
+    return JSON.parse(published) as SessionConfigOption[];
+  }
+
+  /**
+   * Takes configuration options of the child `agentId`: an SDK agent id, as a
+   * hook names it, or a child session id. Hook observations can precede the
+   * task event that establishes a child's parent.
+   */
   async reportConfiguration(
     agentId: string,
     options: SessionConfigOption[],
     meta?: SessionNotification["update"]["_meta"],
   ): Promise<void> {
-    if (this.form !== "rfd" || agentId === this.rootSessionId || options.length === 0) return;
-    let config = this.configBySession.get(agentId);
+    if (!this.form || agentId === this.rootSessionId || options.length === 0) return;
+    // In AIR's draft, the session id of a resumed or restored agent is
+    // `<agent id>:generation:<n>`, so the agent id names its current generation.
+    const known = this.children.get(agentId) ?? this.childOfSession(agentId);
+    const sessionId = known?.sessionId ?? agentId;
+    // AIR's draft takes no configuration of an ended child (see `finishTask`).
+    if (
+      this.form === "air" &&
+      known &&
+      (known.terminalState !== undefined || known.terminalPromise)
+    ) {
+      return;
+    }
+    let config = this.configBySession.get(sessionId);
     if (!config) {
       const pending = [...this.configBySession.keys()].filter(
-        (id) => !this.children.has(id),
+        (id) => !this.childOfSession(id),
       ).length;
-      if (!this.children.has(agentId) && pending >= MAX_PENDING_PARENTS) {
+      if (!known && pending >= MAX_PENDING_PARENTS) {
         this.logger.log(
           `Session ${this.rootSessionId}: dropping configuration for unannounced subagent ${agentId}; pending buffer limit reached`,
         );
         return;
       }
       config = { options: new Map(), publishing: Promise.resolve() };
-      this.configBySession.set(agentId, config);
+      this.configBySession.set(sessionId, config);
     }
     for (const option of options) config.options.set(option.id, option);
-    const child = this.children.get(agentId);
-    if (child?.announced) await this.publishConfiguration(child, meta);
+    if (known?.announced) await this.publishConfiguration(known, meta);
   }
 
   private async publishConfiguration(
@@ -286,11 +358,15 @@ export class NativeSubagentRuntime {
     meta?: SessionNotification["update"]["_meta"],
   ): Promise<void> {
     const config = this.configBySession.get(child.sessionId);
-    if (!config) return;
+    // AIR's draft ends a child for good, so it gets no update after its end,
+    // also when the end comes while this publication waits for an earlier one.
+    const ended = () =>
+      this.form === "air" && (child.terminalState !== undefined || !!child.terminalPromise);
+    if (!config || ended()) return;
     // SDK hooks can run concurrently with streamed responses. Serialize snapshots
     // so a delayed publication cannot replace newer settings with older ones.
     const publishing = config.publishing.then(async () => {
-      if (this.configBySession.get(child.sessionId) !== config) return;
+      if (this.configBySession.get(child.sessionId) !== config || ended()) return;
       const priority = ["mode", "model", "thought_level", "model_config"];
       const rank = (option: SessionConfigOption) => {
         const index = priority.indexOf(option.category ?? "");
@@ -310,6 +386,11 @@ export class NativeSubagentRuntime {
         },
       });
       config.published = snapshot;
+      const model = configOptions.find((option) => option.id === MODEL_CONFIG_ID);
+      const shown = model?.type === "select" ? model.options[0] : undefined;
+      if (model && shown && "name" in shown && typeof model.currentValue === "string") {
+        config.publishedModel = { value: model.currentValue, name: shown.name };
+      }
     });
     // The caller receives the error; later observations must still be able to retry.
     config.publishing = publishing.catch(() => {});
@@ -415,15 +496,11 @@ export class NativeSubagentRuntime {
       (claudeMeta?.parentToolUseId
         ? this.childByParentToolUse.get(claudeMeta.parentToolUseId)
         : undefined);
+    if (announcedChild?.announced && update.sessionUpdate === "config_option_update") {
+      await this.reportConfiguration(announcedChild.sessionId, update.configOptions, update._meta);
+      return null;
+    }
     if (this.form === "rfd" && announcedChild?.announced) {
-      if (update.sessionUpdate === "config_option_update") {
-        await this.reportConfiguration(
-          announcedChild.sessionId,
-          update.configOptions,
-          update._meta,
-        );
-        return null;
-      }
       const handback = await this.routeRfdHandback(notification, announcedChild);
       if (handback !== undefined) return handback;
     }
@@ -665,6 +742,8 @@ export class NativeSubagentRuntime {
           if (child.parentToolUseId) (child.endedRuns ??= new Set()).add(child.parentToolUseId);
         } else {
           await finishNativeSubagent(this.session, taskId, state, this.publish);
+          // AIR's draft takes no configuration of an ended child.
+          this.configBySession.delete(child.sessionId);
         }
       } finally {
         if (child.parentToolUseId) {
@@ -997,13 +1076,16 @@ export class NativeSubagentRuntime {
       });
     }
     if (prompt && toolUseId) {
+      const sendMessage = this.hiddenSendMessages.get(toolUseId);
       await publishPrompt(
         child,
         prompt,
         toolUseId,
-        this.senderByToolUse.get(toolUseId),
+        sendMessage?.sender ?? this.senderByToolUse.get(toolUseId),
         this.publish,
+        { replacesCall: sendMessage !== undefined },
       );
+      if (sendMessage) sendMessage.delivered = true;
     }
     for (const pending of toolUseId ? this.takePending(toolUseId) : []) await deliver(pending);
   }
@@ -1039,9 +1121,13 @@ export class NativeSubagentRuntime {
     await this.reportState(child, rfdEndState("failed", { error }));
   }
 
-  /** Announces `child` in the client's form. A runtime without one never does. */
+  /**
+   * Announces `child` in the client's form, then its configuration. A runtime
+   * without a form never does.
+   */
   private async announce(child: NativeSubagent): Promise<void> {
-    if (this.form) await announceNativeSubagent(child, this.publish, this.form);
+    if (!this.form) return;
+    await announceNativeSubagent(child, this.publish, this.form);
     await this.publishConfiguration(child);
   }
 
@@ -1211,6 +1297,44 @@ export class NativeSubagentRuntime {
     return unexposedControlFallback(handback.initial, notification, child.sessionId);
   }
 
+  /**
+   * The RFD form: an update of a SendMessage call, which its message replaces
+   * once it reaches an announced child: the sender's outgoing view and the
+   * child's incoming one, see {@link linkedSessionMessages}. The SDK reports
+   * that delivery before the call's final update. A call whose message reached
+   * no announced child, such as one to the parent, is shown after all, with its
+   * final status. Any other update is returned as is.
+   */
+  private routeRfdSendMessage(
+    notification: AcpSessionNotification,
+    forcedSessionId: string | undefined,
+  ): AcpSessionNotification | null {
+    const { update } = notification;
+    if (update.sessionUpdate !== "tool_call" && update.sessionUpdate !== "tool_call_update") {
+      return notification;
+    }
+    const toolCallId = update.toolCallId;
+    // A permission request already showed the call to the client, so it keeps
+    // getting its updates, and its message goes only to the child.
+    if (forcedSessionId) {
+      this.hiddenSendMessages.delete(toolCallId);
+      return notification;
+    }
+    let sendMessage = this.hiddenSendMessages.get(toolCallId);
+    if (!sendMessage) {
+      const claudeMeta = update._meta?.claudeCode as { toolName?: string } | undefined;
+      if (update.sessionUpdate !== "tool_call" || claudeMeta?.toolName !== "SendMessage") {
+        return notification;
+      }
+      sendMessage = { initial: notification, sender: notification.sessionId, delivered: false };
+      this.hiddenSendMessages.set(toolCallId, sendMessage);
+    }
+    if (!isFinalToolCallStatus(update.status)) return null;
+    this.hiddenSendMessages.delete(toolCallId);
+    if (sendMessage.delivered) return null;
+    return unexposedControlFallback(sendMessage.initial, notification, sendMessage.sender);
+  }
+
   /** Whether `update` is of an Agent/Task call, by its tool name or, in the
    *  RFD form, by the id of a call the client is not shown. */
   private isControlUpdate(
@@ -1273,6 +1397,7 @@ export class NativeSubagentRuntime {
     this.taskFinishPromises.clear();
     this.senderByToolUse.clear();
     this.hiddenLaunches.clear();
+    this.hiddenSendMessages.clear();
     this.handbacks.clear();
     this.generationByTaskId.clear();
     this.pending.clear();
@@ -1300,6 +1425,20 @@ export class NativeSubagentRuntime {
 
   private buffer(parentToolUseId: string, notification: AcpSessionNotification): void {
     const updates = this.pending.get(parentToolUseId);
+    // A child reports its model with each response before its announcement
+    // (see `reportModel`). Only the latest such report waits, so they do not
+    // fill the buffer. Any other configuration update waits as it is.
+    const modelOnly = ({ update }: AcpSessionNotification) =>
+      update.sessionUpdate === "config_option_update" &&
+      update.configOptions.length === 1 &&
+      update.configOptions[0]?.id === MODEL_CONFIG_ID;
+    if (updates && modelOnly(notification)) {
+      const index = updates.findIndex(modelOnly);
+      if (index >= 0) {
+        updates[index] = notification;
+        return;
+      }
+    }
     if (
       this.pendingCount >= MAX_PENDING_UPDATES ||
       (updates === undefined && this.pending.size >= MAX_PENDING_PARENTS) ||
@@ -1414,6 +1553,40 @@ export class NativeSubagentRuntime {
 }
 
 /**
+ * The `model` option of a child session. The client cannot change a child's
+ * configuration, so the select offers only the current model.
+ */
+export function childModelOption(entry: ModelEntry): SessionConfigOption {
+  return {
+    id: MODEL_CONFIG_ID,
+    name: "Model",
+    category: "model",
+    type: "select",
+    currentValue: entry.value,
+    options: [{ value: entry.value, name: entry.name }],
+  };
+}
+
+/** Whether two model entries have the same value and name. */
+export function sameModelEntry(left: ModelEntry | undefined, right: ModelEntry): boolean {
+  return left?.value === right.value && left.name === right.name;
+}
+
+/**
+ * The model entry for `model`, the model id of a child's response: the entry
+ * of the root session's `model` option that matches it, else the id, with its
+ * display name when the session's model list has one. Undefined for no model,
+ * and for `<synthetic>`, which marks a message that no model wrote.
+ */
+export function responseModelEntry(
+  model: unknown,
+  models: SubagentModels | undefined,
+): ModelEntry | undefined {
+  if (typeof model !== "string" || !model || model === "<synthetic>") return undefined;
+  return models?.entry(model) ?? { value: model, name: models?.name(model) ?? model };
+}
+
+/**
  * Announces the child on its parent, once, before any update of the child.
  * The RFD form announces it as running and then sends the prompt as the
  * first message of the child. It grants the child `cancel`: the client may
@@ -1451,7 +1624,7 @@ export async function announceNativeSubagent(
           child.parentToolUseId,
           child.parentSessionId,
           publish,
-          { replacesLaunch: true },
+          { replacesCall: true },
         );
       }
       return;
@@ -1513,9 +1686,9 @@ export async function finishNativeSubagent(
  * transcript is the same delegation and is not sent again. `sender` is the
  * session that made that call, when known.
  *
- * A launch's prompt (`replacesLaunch`) also goes to the parent, see
- * {@link linkedSessionMessages}. A SendMessage call stays a tool call of the
- * sender, so its message has only the incoming view.
+ * When the message replaces its call (`replacesCall`), a launch's or a
+ * SendMessage call the client is not shown, it also goes to the sender, see
+ * {@link linkedSessionMessages}. Otherwise it has only the incoming view.
  */
 async function publishPrompt(
   child: NativeSubagent,
@@ -1523,13 +1696,13 @@ async function publishPrompt(
   toolUseId: string | undefined,
   sender: string | undefined,
   publish: Publish,
-  { replacesLaunch = false }: { replacesLaunch?: boolean } = {},
+  { replacesCall = false }: { replacesCall?: boolean } = {},
 ): Promise<void> {
   child.promptIds ??= new Set();
   const messageId = toolUseId ?? `${child.sessionId}:prompt:${child.promptIds.size + 1}`;
   if (child.promptIds.has(messageId)) return;
   child.promptIds.add(messageId);
-  if (replacesLaunch && sender !== undefined && toolUseId !== undefined) {
+  if (replacesCall && sender !== undefined && toolUseId !== undefined) {
     for (const view of linkedSessionMessages(toolUseId, sender, child.sessionId, prompt)) {
       await publish(view);
     }
@@ -1551,8 +1724,9 @@ async function publishPrompt(
  * The RFD form: a message that a tool call sent, which the client is not
  * shown, as two session messages: the sender's outgoing view, then the
  * recipient's incoming one. That call is a launch's Agent/Task call, whose
- * prompt goes from the parent to the child, or a child's SubagentHandback
- * call, whose report goes from the child to the parent. Both views use the
+ * prompt goes from the parent to the child, a SendMessage call, whose message
+ * goes from its sender to a child, or a child's SubagentHandback call, whose
+ * report goes from the child to the parent. Both views use the
  * call's tool use id, and each names the other with the draft RFD's
  * `recipientMessageId` and `senderMessageId`.
  */
@@ -1822,7 +1996,8 @@ function isFailedToolCallUpdate(update: AcpSessionNotification["update"]): boole
  * A tool call that the client was not shown, as one `tool_call` with its
  * final status, shown after all: an Agent/Task call whose child was never
  * exposed (AIR's draft shows only a failed one, the RFD form also a completed
- * one), or a failed SubagentHandback call.
+ * one), a SendMessage call whose message reached no announced child, or a
+ * failed SubagentHandback call.
  */
 function unexposedControlFallback(
   initial: AcpSessionNotification | undefined,
