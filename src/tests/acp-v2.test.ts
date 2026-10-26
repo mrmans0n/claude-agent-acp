@@ -1156,15 +1156,37 @@ describe("ACP v2 prompts", () => {
         cwd,
         replayFrom: { type: "start" },
       });
+      client.sessionUpdates.push({
+        sessionId: "response",
+        update: { sessionUpdate: "response" },
+      } as never);
+      await vi.waitFor(() =>
+        expect(
+          client.sessionUpdates.filter(
+            ({ sessionId, update }) =>
+              sessionId === "abc123" && update.sessionUpdate === "state_update",
+          ),
+        ).toHaveLength(2),
+      );
       await client.authUpdate(1);
     });
 
     const child = client.sessionUpdates.flatMap(({ sessionId, update }) =>
-      sessionId === "abc123" ? [update] : [],
+      sessionId === "abc123" || sessionId === "response" ? [update] : [],
     );
     // The child's past `running` does not replay; its last state goes once,
-    // after the replay.
+    // after the replay. That state is history to the client, so the child's
+    // current state follows the response: its process is gone, so it is idle.
+    // The child's model, from its transcript, goes right after its
+    // announcement. It does not go again after the response: it is unchanged.
+    const model = expect.objectContaining({
+      sessionUpdate: "config_option_update",
+      configOptions: [
+        expect.objectContaining({ configId: "model", currentValue: "claude-haiku-4-5" }),
+      ],
+    });
     expect(child).toEqual([
+      model,
       expect.objectContaining({ sessionUpdate: "session_message", content: text("Look around") }),
       // The client may still hold the child's message, so the replay clears it.
       { sessionUpdate: "agent_message", messageId: "msg_child", content: [] },
@@ -1174,7 +1196,16 @@ describe("ACP v2 prompts", () => {
         content: text("Child report.")[0],
       }),
       { sessionUpdate: "state_update", state: "idle", stopReason: "end_turn" },
+      { sessionUpdate: "response" },
+      { sessionUpdate: "state_update", state: "idle", stopReason: "end_turn" },
     ]);
+    // The current state on the parent grants nothing: the child cannot run again here.
+    expect(
+      client.sessionUpdates.filter(
+        ({ update }) =>
+          update.sessionUpdate === "subagent_update" && (update as any).capabilities != null,
+      ),
+    ).toEqual([]);
   });
 
   it("ends a resume with replay with one end event for a client with loadReplayEnd", async () => {

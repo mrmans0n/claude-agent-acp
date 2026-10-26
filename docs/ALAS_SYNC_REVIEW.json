@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "fromTag": "v0.94.0",
-  "toTag": "v0.95.0",
-  "toCommit": "ebfbfbdaa9c2a6a8bd9eb0a4965b521009152350",
+  "fromTag": "v0.95.0",
+  "toTag": "v0.96.0",
+  "toCommit": "f6958db1ee8d3e9ead6767a3a294f98b9a21adb9",
   "patches": [
     {
       "name": "goal-capability-opt-in",
@@ -12,13 +12,15 @@
       "tests": ["src/tests/acp-agent.test.ts"],
       "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": ["docs/air-extensions.md", "src/acp-agent.ts"],
+      "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
-        "decision": "retain",
-        "rationale": "Upstream v0.95.0 does not touch goal negotiation: goals stay AIR-only upstream and there is no provider-neutral opt-in, so the patch is not absorbed. Its docs/air-extensions.md edits add the Background subagents (#1262) and Autonomous turn (#1390) sections and the session index status of held sessions with open background tasks (#1399), none of them in the goal sentences the patch adds. Its src/acp-agent.ts edits add the AIR backgroundSubagents capability to the AIR capability list (`...(this.v2 ? [] : [AIR_BACKGROUND_SUBAGENTS_CAPABILITY])`), which is a context line of this patch, plus autonomous turns (#1390, #1413), background task tracking (#1399), Remote Control messages (#1371), RFD delegation messages (#1405), early session titles (#1406) and read-only subagent configuration (#1417); none reads or advertises the goal capability. 79047b35a8d185d78567d3c6875d1adfb986c8b7 replays cleanly onto v0.95.0 with the same added and removed lines; only that context line differs, so its replay has a new stable patch-id, and no other copy of the patch in alas history conflicts. The goal tests pass on the integration.",
+        "decision": "adapt",
+        "commit": "22067f19cc8c3adc4367f023d534542fd69eaf78",
+        "rationale": "Upstream v0.96.0 does not touch goal negotiation: goalMeta, the GOAL_* constants and src/goal-extension.ts are unchanged, and goals stay AIR-only upstream, so the patch is not absorbed. The v0.96.0 src/acp-agent.ts edits report each native subagent's model (#1432, #1434), send the current subagent states after a load response (#1423), stop holding an AIR load replay until the CLI starts (#1433), report SendMessage delegations as linked session messages (#1424) and run the subagent configuration hook for both subagent forms. None of them is in the lines this patch adds or removes. The adaptation only rebinds the patch identity; it changes no code. Protected alas history carries two copies of the v0.94 goal adaptation with identical added and removed lines: 3408f6ae41760b08cb9a2a96f5660d51c6295f82 (stable patch-id 14e887792182a3958f8403b76758143f0d6b1500, equal to the ledger commit 79047b35a8d185d78567d3c6875d1adfb986c8b7) and 22067f19cc8c3adc4367f023d534542fd69eaf78 (patch-id eb660c29f25f5893fb2199b4604b5c4fd7a9f8b5). They differ only in a context line that v0.95.0 added to the AIR capability list (#1262, `...(this.v2 ? [] : [AIR_BACKGROUND_SUBAGENTS_CAPABILITY])`). The candidate replays 22067f19cc8c3adc4367f023d534542fd69eaf78 first, cleanly and with an unchanged patch-id on v0.96.0. git cherry then does not recognise 3408f6a as applied, and its replay conflicts against the patch it already holds. Recording 22067f19cc8c3adc4367f023d534542fd69eaf78 as the patch commit retires 79047b35 and, through its patch-id, every copy of 3408f6a. Every older copy (patch-ids 3241135e, 7e9fc1c0, 421a3ffe) is already retired, and the replacement patch-id differs from all of them. The integration ships the same goal opt-in lines as 0.95.0-alas.1.",
         "tests": [
-          "npm run test:run -- src/tests/acp-agent.test.ts -t \"advertises and publishes goals for an opted-in non-AIR client|publishes active_goal as provider-neutral session state without changing turn settlement|advertises async tasks with steering and goals for an opted-in non-AIR client\"",
-          "npm run build"
+          "npm exec -- vitest run src/tests/acp-agent.test.ts",
+          "diff <(git show --pretty=format: 3408f6ae41760b08cb9a2a96f5660d51c6295f82 | grep -E '^[+-]' | grep -vE '^(\\+\\+\\+|---) ') <(git show --pretty=format: 22067f19cc8c3adc4367f023d534542fd69eaf78 | grep -E '^[+-]' | grep -vE '^(\\+\\+\\+|---) ')",
+          "npm run test:run"
         ],
         "automatic": false
       }
@@ -31,14 +33,15 @@
       "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
       "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": ["src/acp-agent.ts", "src/async-tasks.ts"],
+      "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
-        "decision": "retain",
-        "rationale": "Upstream async tasks remain AIR-only in v0.95.0 and clientSupportsAsyncTasks keeps the same three callers as in v0.94.0 (the live and history-replay AsyncTaskRuntime and the stopsWorkflowsOnCancel choice), so the patch is not absorbed. Upstream #1390 publishes a turn that Claude Code starts after end_turn as the async task autonomous-turn-<uuid>, and _session/async_task/stop on it interrupts that turn (#1413 adds the scheduled wakeup description). That path is gated on AsyncTaskRuntime.enabled, which is clientSupportsAsyncTasks, so an opted-in non-AIR client gets it exactly like an AIR client with asyncTasks. That is the patch's contract: the opt-in only decides which clients get async task updates and _session/async_task/stop, and it is unchanged. #1399 changes the session index activity of held sessions with open background tasks and does not read the async task capability. The `import { randomUUID } from \"node:crypto\"` that #1390 adds to src/async-tasks.ts is a context line of the patch, so d98fd9e5abf588d7c4d703245e129ada6a8c5182 replays cleanly with the same added and removed lines and a new stable patch-id. The async task, create-session-options (including the per-task stop affordance cases), tool call contract and native subagent suites, with the new upstream autonomous-turn tests, pass with it.",
+        "decision": "adapt",
+        "commit": "1f57f966a6baaba1fa7285fb7fc5f40afeb080d2",
+        "rationale": "Upstream async tasks remain AIR-only in v0.96.0, so the patch is not absorbed. clientSupportsAsyncTasks keeps the same three callers as in v0.95.0: the live and the history-replay AsyncTaskRuntime, and the stopsWorkflowsOnCancel choice. The v0.96.0 src/acp-agent.ts edits report each native subagent's model (#1432, #1434), send the current subagent states after a load response (#1423), stop holding an AIR load replay until the CLI starts (#1433), report SendMessage delegations as linked session messages (#1424) and run the subagent configuration hook for both subagent forms. None of them reads the async task capability. The adaptation only rebinds the patch identity; it changes no code. The patch is stacked on the goal opt-in, and alas history carries two copies of its v0.94 adaptation with identical added and removed lines: 1b4c5382f2acb45442a17207e21f4761fa99422c (patch-id 7c947e73bb905619c1365b197bd64b8d50ca075c, equal to the ledger commit d98fd9e5abf588d7c4d703245e129ada6a8c5182) and 1f57f966a6baaba1fa7285fb7fc5f40afeb080d2 (patch-id 2bd3269a4be1f9d141eb05d331f0f3c97149e3d8). They differ only in the v0.95.0 context line `import { randomUUID } from \"node:crypto\";`. As for the goal opt-in, 1f57f966a6baaba1fa7285fb7fc5f40afeb080d2 replays cleanly on v0.96.0 and 1b4c538 then conflicts against it. Recording 1f57f966a6baaba1fa7285fb7fc5f40afeb080d2 as the patch commit retires d98fd9e5 and every copy of 1b4c538. The older copies (patch-ids a5c06276, 437223cf, 8f8468dd, 1aca6d86, 46eb90e1) are already retired, and the replacement patch-id differs from all of them.",
         "tests": [
-          "npm run test:run -- src/tests/async-tasks.test.ts src/tests/acp-agent.test.ts src/tests/create-session-options.test.ts src/tests/tool-call-contract.test.ts src/tests/native-subagents.test.ts",
-          "npm run test:run -- src/tests/create-session-options.test.ts -t \"per-task stop affordance\"",
-          "npm run build"
+          "npm exec -- vitest run src/tests/acp-agent.test.ts src/tests/async-tasks.test.ts src/tests/create-session-options.test.ts",
+          "diff <(git show --pretty=format: 1b4c5382f2acb45442a17207e21f4761fa99422c | grep -E '^[+-]' | grep -vE '^(\\+\\+\\+|---) ') <(git show --pretty=format: 1f57f966a6baaba1fa7285fb7fc5f40afeb080d2 | grep -E '^[+-]' | grep -vE '^(\\+\\+\\+|---) ')",
+          "npm run test:run"
         ],
         "automatic": false
       }
@@ -54,8 +57,12 @@
       "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
         "decision": "retain",
-        "rationale": "Upstream v0.95.0 still lists advisor_tool_result among the ignored content blocks of toAcpNotifications, so the patch is not absorbed. The v0.95.0 src/acp-agent.ts edits (backgroundSubagents, autonomous turns, ACP v2 routing, background task tracking, Remote Control messages, read-only subagent configuration) do not touch the advisor path, and the @anthropic-ai/sdk 1.1.0 dev dependency still typechecks the patch. 590b7ed9e90414124c60eb0b853ad6ed4575a24c replays cleanly with an unchanged stable patch-id, and the incomplete-tool suite passes with it.",
-        "tests": ["npm run test:run -- src/tests/incomplete-tools.test.ts", "npm run build"],
+        "rationale": "Upstream v0.96.0 still lists advisor_tool_result among the ignored content blocks of toAcpNotifications, so the patch is not absorbed. The v0.96.0 src/acp-agent.ts edits report each native subagent's model (#1432, #1434), send the current subagent states after a load response (#1423), stop holding an AIR load replay until the CLI starts (#1433), report SendMessage delegations as linked session messages (#1424) and run the subagent configuration hook for both subagent forms. None of them touches the advisor path. The @anthropic-ai/sdk dev dependency moves from 1.1.0 to 1.3.0 and still typechecks the patch. 590b7ed9e90414124c60eb0b853ad6ed4575a24c replays cleanly with an unchanged stable patch-id (a90eae2a), and the incomplete-tool suite passes with it.",
+        "tests": [
+          "npm exec -- vitest run src/tests/incomplete-tools.test.ts",
+          "npm run build",
+          "npm run test:run"
+        ],
         "automatic": false
       }
     },
@@ -70,19 +77,18 @@
       "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
         "decision": "retain",
-        "rationale": "Upstream v0.95.0 has no _alas/context_usage request or contextUsage advertisement, so the patch is not absorbed. Claude Agent SDK 0.3.309 (#1413) keeps Query.getContextUsage({ detail }) unchanged; SDKControlGetContextUsageResponse only gains optional fields (a category id, mcpInstructions, plugin ids and file paths of agents and skills), which the request passes through unchanged because it returns the SDK result as is. Since #1400 the adapter always connects through acpProtocolRouter: a v1 client still reaches the v1 app that registers the request, as the acp-v2 routing test shows, and a client that asks for protocol version 2 or later gets the v2 app, which serves no Alas extension. The v0.95.0 src/acp-agent.ts edits do not touch the initialize advertisement or the request handler. eebbea33e42160f5e2b4d700539476086c9c41f1 replays cleanly on top of the replayed async task patch with an unchanged stable patch-id, and the context usage tests pass.",
+        "rationale": "Upstream v0.96.0 has no _alas/context_usage request and no contextUsage advertisement, so the patch is not absorbed. Claude Agent SDK 0.3.310 (#1435) keeps Query.getContextUsage({ detail }) and SDKControlGetContextUsageResponse unchanged from 0.3.309: their sdk.d.ts declarations only move by one line. The v0.96.0 src/acp-agent.ts edits report each native subagent's model (#1432, #1434), send the current subagent states after a load response (#1423), stop holding an AIR load replay until the CLI starts (#1433), report SendMessage delegations as linked session messages (#1424) and run the subagent configuration hook for both subagent forms. None of them touches the request handler or the initialize _meta entry this patch adds. eebbea33e42160f5e2b4d700539476086c9c41f1 replays cleanly with an unchanged stable patch-id (89f88e98).",
         "tests": [
-          "npm run test:run -- src/tests/acp-v2.test.ts -t \"routes the Alas context usage request of a v1 client to the v1 app\"",
-          "npm run test:run -- src/tests/acp-agent.test.ts -t \"advertises and serves the context usage breakdown\"",
-          "npm run test:run -- src/tests/create-session-options.test.ts -t \"serves the context usage of the query that a resume recreated\"",
-          "npm run build"
+          "npm exec -- vitest run src/tests/acp-agent.test.ts",
+          "npm run build",
+          "npm run test:run"
         ],
         "automatic": false
       }
     },
     {
       "name": "neutral-session-index",
-      "commit": "4e44af411027d3bf41ce26694f299a058d1f721e",
+      "commit": "9c4ddd79b8dfb480a72cf4e1071615c383cee84e",
       "upstreamPr": null,
       "files": [
         "docs/air-extensions.md",
@@ -96,26 +102,20 @@
       "tests": ["src/tests/acp-scenarios.test.ts", "src/tests/session-index.test.ts"],
       "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": [
-        "docs/air-extensions.md",
-        "src/acp-agent.ts",
-        "src/session-index/service.ts"
-      ],
+      "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
-        "decision": "adapt",
-        "commit": "9c4ddd79b8dfb480a72cf4e1071615c383cee84e",
-        "rationale": "Upstream v0.95.0 (#1262) adds the AIR capability backgroundSubagents to the initialize capability list that this patch wraps in sessionIndex.withNeutralCapabilities, and a Background subagents section in docs/air-extensions.md right after the Session index section, where this patch adds Client-neutral session index. Both hunks conflict when 4e44af411027d3bf41ce26694f299a058d1f721e is replayed. The replacement keeps upstream's capability entry, re-indented inside the neutral wrapper, and keeps the client-neutral section as the last subsection of Session index, followed by upstream's new section; every other added and removed line is unchanged. The capability stays AIR-only because it sits inside the toolCallCapabilities.air.client branch. Upstream v0.95.0 changes session index internals (background task and activity tracking, #1399) but adds no _meta.jetbrains.air field to rows, list updates or list parameters, and the session index stays gated on AIR's sessionIndex, so the neutral meta path is complete and the patch is not absorbed. The replacement has a stable patch-id distinct from every ledger and retired commit, and the session index, scenario and prompt suggestion suites pass with it.",
+        "decision": "retain",
+        "rationale": "Upstream v0.96.0 does not touch src/session-index/ or docs/air-extensions.md and adds no provider-neutral session index, so the patch is not absorbed. The v0.96.0 src/acp-agent.ts edits report each native subagent's model (#1432, #1434), send the current subagent states after a load response (#1423), stop holding an AIR load replay until the CLI starts (#1433), report SendMessage delegations as linked session messages (#1424) and run the subagent configuration hook for both subagent forms. None of them touches sessionIndex.withNeutralCapabilities, the session index capabilities or the session index teardown. 9c4ddd79b8dfb480a72cf4e1071615c383cee84e replays cleanly with an unchanged stable patch-id (0845c492), and the session index and scenario suites pass.",
         "tests": [
-          "npm run test:run -- src/tests/session-index.test.ts -t \"sessionIndex negotiation|client-neutral session index|holds a fork back\"",
-          "npm run test:run -- src/tests/session-index.test.ts src/tests/acp-scenarios.test.ts src/tests/prompt-suggestions.test.ts",
-          "npm run build"
+          "npm exec -- vitest run src/tests/session-index.test.ts src/tests/acp-scenarios.test.ts",
+          "npm run test:run"
         ],
         "automatic": false
       }
     },
     {
       "name": "settle-at-result",
-      "commit": "5e5dd2485e577189dee329e860f0f7368bf1de2f",
+      "commit": "a90195ee378736d7da5540fbbb1f72f9af6688a2",
       "upstreamPr": null,
       "files": ["src/acp-agent.ts"],
       "tests": ["src/tests/acp-agent.test.ts"],
@@ -123,48 +123,14 @@
       "equivalent": false,
       "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
-        "decision": "adapt",
-        "commit": "a90195ee378736d7da5540fbbb1f72f9af6688a2",
-        "rationale": "First stable sync of this patch. Upstream v0.95.0 (#1262) adds the AIR capability backgroundSubagents, which ends an ACP v1 prompt turn at its result while background subagents still run, the same purpose as settleAtResult. It gates turnAwaitingSubagents on a new endsTurnsWithLiveSubagents(), the line this patch edits, so 5e5dd2485e577189dee329e860f0f7368bf1de2f conflicts. The same gate also keeps the streamed tool input of live subagents when such a turn ends, and drops the clear-context option from an ExitPlanMode request made out of a turn. The replacement routes settleAtResult through endsTurnsWithLiveSubagents() instead of short-circuiting turnAwaitingSubagents, so an opted-in client also gets upstream's out-of-turn handling. The wire contract is unchanged: the opt-in is clientCapabilities._meta.settleAtResult: true and the answer is _meta.settleAtResult.supported. Like backgroundSubagents it now applies to ACP v1 only: an ACP v2 session keeps the hold and is not advertised the extension. This matters because since #1400 the adapter speaks ACP v2 to any client that asks for protocol version 2 or later; that is recorded, not changed, here. The patch is not absorbed, because backgroundSubagents is read only from the AIR declaration. Three new tests fail with a plain replay of the original gate and pass with the replacement: the streamed input of a running subagent still refines its tool call after the response, an out-of-turn ExitPlanMode request has no clear-context option, and ACP v2 does not advertise the extension. The original test passes with both. The replacement has a stable patch-id distinct from every ledger and retired commit.",
-        "tests": [
-          "npm run test:run -- src/tests/acp-agent.test.ts -t \"settleAtResult\"",
-          "npm run test:run -- src/tests/acp-agent.test.ts src/tests/incomplete-tools.test.ts",
-          "npm run build"
-        ],
-        "automatic": false
-      }
-    }
-  ],
-  "preservedCommits": [
-    {
-      "commit": "673d403a3d1a2589451b2500270fc9506bb21ea8",
-      "subject": "chore: restore the settle-at-result patch identity in the v0.95 sync",
-      "constituentCommits": [],
-      "classification": "preserved-sync-edit",
-      "resolution": {
         "decision": "retain",
-        "rationale": "Retain the canonical restoration of PR #25's non-ledger changes (6b6121d47cbd0cd2810d5df1cd7b455a8a1ae820) on top of the generated v0.95.0 integration: the settle-at-result identity in the audit's CLAUDE_PATCH_IDENTITIES and the maintenance tests, and its docs/ALAS_DOWNSTREAM.md paragraph. With it, scripts/ and docs/ALAS_DOWNSTREAM.md match protected alas exactly, and the audit keeps validating all six known patch identities.",
-        "tests": [
-          "npm exec -- vitest run scripts/alas-maintenance.test.mjs scripts/workflow-hardening.test.mjs scripts/sync-review.test.mjs",
-          "git diff --exit-code refs/remotes/origin/alas HEAD -- scripts docs/ALAS_DOWNSTREAM.md",
-          "npm run test:run"
-        ],
+        "rationale": "Upstream v0.96.0 does not change endsTurnsWithLiveSubagents, turnAwaitingSubagents or the backgroundSubagents capability that this patch extends to clients opting into settleAtResult, so the patch is not absorbed and its gate still covers every caller. The new publishCurrentSubagentStates runs after a load response; it only sends child states and models and does not change when session/prompt resolves. The v0.96.0 src/acp-agent.ts edits report each native subagent's model (#1432, #1434), send the current subagent states after a load response (#1423), stop holding an AIR load replay until the CLI starts (#1433), report SendMessage delegations as linked session messages (#1424) and run the subagent configuration hook for both subagent forms. a90195ee378736d7da5540fbbb1f72f9af6688a2 replays cleanly with an unchanged stable patch-id (37aa56bf), and the settleAtResult cases of the agent suite pass.",
+        "tests": ["npm exec -- vitest run src/tests/acp-agent.test.ts", "npm run test:run"],
         "automatic": false
       }
     }
   ],
-  "retiredCommits": [
-    {
-      "commit": "6b6121d47cbd0cd2810d5df1cd7b455a8a1ae820",
-      "classification": "absorbed",
-      "rationale": "This non-ledger maintenance commit from PR #25 records the settle-at-result patch in the ledger, the audit's CLAUDE_PATCH_IDENTITIES, the maintenance tests and docs/ALAS_DOWNSTREAM.md. The candidate replays it before the persistent preserved transitions, where its ledger and scripts hunks conflict with the older replayed state. Its ledger entry is carried by the protected ledger that the workflow advances, and its scripts and documentation changes are restored unchanged by the canonical preserved commit 673d403a3d1a2589451b2500270fc9506bb21ea8, so it is retired without dropping its behavior.",
-      "tests": [
-        "npm exec -- vitest run scripts/alas-maintenance.test.mjs scripts/workflow-hardening.test.mjs scripts/sync-review.test.mjs",
-        "git diff --exit-code refs/remotes/origin/alas HEAD -- scripts docs/ALAS_DOWNSTREAM.md",
-        "npm run test:run"
-      ],
-      "automatic": false
-    }
-  ],
+  "preservedCommits": [],
+  "retiredCommits": [],
   "resolved": true
 }
