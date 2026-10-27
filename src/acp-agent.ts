@@ -368,6 +368,15 @@ import {
   mergeEffortSettings,
   settingsEffortForModel,
 } from "./session-effort.js";
+import {
+  createUltracodeConfigOption,
+  readUltracodeSettings,
+  resolveUltracodeEnabled,
+  ULTRACODE_CONFIG_ID,
+  ultracodeSupported,
+  ultracodeWorkflowsEnabled,
+  type UltracodeOptionState,
+} from "./session-ultracode.js";
 
 export { EFFORT_CONFIG_ID, settingsEffortForModel } from "./session-effort.js";
 export {
@@ -1243,6 +1252,15 @@ export type Session = {
    *  user's intent so it persists across model switches; the Fast mode config
    *  option is only surfaced while the selected model supports it. */
   fastModeEnabled: boolean;
+  /** Whether ultracode is turned on for this session. Tracked as the user's
+   *  intent, like `fastModeEnabled`: the CLI keeps the request across model
+   *  switches and applies it whenever the model supports ultracode, while the
+   *  config option is only surfaced on supporting models. */
+  ultracodeEnabled: boolean;
+  /** Whether dynamic workflows are enabled, learned from the CLI's
+   *  `get_settings` at session start; undefined when unknown. Combined with
+   *  the model's support to decide whether to show the ultracode option. */
+  ultracodeWorkflowsEnabled?: boolean;
   /** The non-default effort the user picked through the ACP picker this
    *  session. A pin lives at the SDK's flag layer, which overrides the CLI's
    *  persisted effort (including the per-model `modelSettings` entries), so it
@@ -2855,6 +2873,7 @@ export class ClaudeAcpAgent {
         return session;
       },
       applyFastMode: (session, enabled) => this.applyFastMode(session, enabled),
+      applyUltracode: (session, enabled) => this.applyUltracode(session, enabled),
       sessionUpdate: (notification) => this.client.sessionUpdate(notification),
       supportsPlanOperations: () => this.clientCapabilities?.plan != null,
       ensureConsumer: (session, id) => this.ensureConsumer(session, id),
@@ -3491,7 +3510,9 @@ export class ClaudeAcpAgent {
     try {
       const cliPath = await claudeCliPath();
       const args = ["auth", "status", "--json"];
-      if (context?.override) args.push("--settings", JSON.stringify(context.override));
+      // `--settings` is a global CLI option: after the `auth status` subcommand the CLI rejects
+      // it with "unknown option '--settings'", so it has to come first.
+      if (context?.override) args.unshift("--settings", JSON.stringify(context.override));
       ({ stdout } = await execFileAsync(cliPath, args, {
         timeout: AUTH_STATUS_PROBE_TIMEOUT_MS,
         cwd: context?.manager.getCwd() ?? process.cwd(),
@@ -5154,6 +5175,8 @@ export class ClaudeAcpAgent {
      *  marked as a background result, but it lists the uuids of the prompts it
      *  answered.
      *
+     *  A steer belongs to the live active turn even though it has no queued
+     *  Turn of its own. Its stamped result can answer that turn too.
      *  A turn held open for its background subagents already has its result,
      *  so a result that names it does not answer it. */
     const answersPendingPrompt = (message: {
@@ -5169,8 +5192,15 @@ export class ClaudeAcpAgent {
         answeredPromptUuids = [message.user_message_uuid];
       }
 
+      const activeTurn = session.activeTurn;
+      const liveActiveTurn =
+        activeTurn && !activeTurn.settled && !isHeldOpen(activeTurn) ? activeTurn : undefined;
       for (const promptUuid of answeredPromptUuids) {
-        const turn = findUnsettledTurn(promptUuid);
+        // Keep queued prompt matching, including folded sends with no echo.
+        // Steers qualify only through their live active owner.
+        const turn =
+          findUnsettledTurn(promptUuid) ??
+          (liveActiveTurn?.steeredUuids?.has(promptUuid) ? liveActiveTurn : undefined);
         if (turn === undefined) {
           // Not a prompt of this session, or it was answered already.
           continue;
@@ -8112,6 +8142,13 @@ export class ClaudeAcpAgent {
               message.message.model === "<synthetic>" &&
               compaction.hasDeliveredOutput
             ) {
+              if (isSyntheticUsageLimitMessage(message.message)) {
+                lastAssistantWasUsageLimit = true;
+                lastAssistantFailureTitle = assistantMessageText(message.message);
+                if (message.error) {
+                  lastAssistantError = message.error;
+                }
+              }
               break;
             }
 
@@ -8267,6 +8304,7 @@ export class ClaudeAcpAgent {
             }
 
             let content: typeof message.message.content;
+            let toolUseResult = message.type === "user" ? message.tool_use_result : undefined;
             if (
               message.type === "assistant" &&
               (message.parent_tool_use_id === null || forwardsSubagentText())
@@ -8287,6 +8325,20 @@ export class ClaudeAcpAgent {
                 (item) => item.type !== "text" && item.type !== "thinking",
               );
               streamedBlocksOf(message.parent_tool_use_id).length = 0;
+            } else if (
+              message.parent_tool_use_id !== null &&
+              Array.isArray(message.message.content)
+            ) {
+              // A foreground fork inherits a placeholder result for its own
+              // launch. Only the launching side can complete that Agent call
+              // with the fork's actual report.
+              const launchId = message.parent_tool_use_id;
+              content = message.message.content.filter(
+                (block) => block.type !== "tool_result" || block.tool_use_id !== launchId,
+              );
+              // The message-level sidecar cannot describe a remaining result
+              // after its launch result was removed.
+              if (content.length !== message.message.content.length) toolUseResult = undefined;
             } else {
               content = message.message.content;
             }
@@ -8304,7 +8356,7 @@ export class ClaudeAcpAgent {
               );
               const backgroundBashTask = backgroundBashTaskFromToolResult(
                 content,
-                message.tool_use_result,
+                toolUseResult,
                 session.toolUseCache,
               );
               if (backgroundBashTask) await asyncTasks.taskBackgrounded(backgroundBashTask);
@@ -8333,7 +8385,7 @@ export class ClaudeAcpAgent {
                 asyncTasks,
                 backgroundBashTask,
               );
-              const resumedAgentId = resumedNativeSubagentId(message.tool_use_result);
+              const resumedAgentId = resumedNativeSubagentId(toolUseResult);
               if (resumedAgentId) {
                 const resume = sendMessageResume(
                   session.toolUseCache,
@@ -8374,7 +8426,7 @@ export class ClaudeAcpAgent {
                 emittedToolCalls: session.emittedToolCalls,
                 toolCallFields: toolCallFieldsOf(session),
                 messageId: messageIdForGrouping(message),
-                toolUseResult: message.type === "user" ? message.tool_use_result : undefined,
+                toolUseResult,
                 // On the wire since CLI 2.1.216 but not in SDKUserMessage's
                 // type, hence the cast. Validated by parseToolResultMeta.
                 toolResultMeta:
@@ -9240,11 +9292,16 @@ export class ClaudeAcpAgent {
       throw new Error(`Unknown config option: ${params.configId}`);
     }
 
-    // Fast mode carries a boolean value (for Clients that opted into boolean
-    // config options) or the "on"/"off" select fallback, so it bypasses the
+    // Fast mode and ultracode carry a boolean value (for Clients that opted
+    // into boolean config options) or the "on"/"off" select fallback, so they
+    // bypass the
     // string-only validation the select-style options below rely on.
     if (params.configId === FAST_MODE_CONFIG_ID) {
       await this.applyFastMode(session, resolveFastModeEnabled(params));
+      return { configOptions: session.configOptions };
+    }
+    if (params.configId === ULTRACODE_CONFIG_ID) {
+      await this.applyUltracode(session, resolveUltracodeEnabled(params));
       return { configOptions: session.configOptions };
     }
 
@@ -11075,6 +11132,13 @@ export class ClaudeAcpAgent {
         {
           useRecommendedValue,
         },
+        {
+          // Like Fast mode, the toggle hides on models without ultracode
+          // support and comes back with the retained intent on one that has it.
+          supported: ultracodeSupported(session.ultracodeWorkflowsEnabled, newModelInfo),
+          enabled: session.ultracodeEnabled,
+          useBooleanOption: clientSupportsBooleanConfigOptions(this.clientCapabilities),
+        },
       );
 
       // Opted-in clients apply the concrete displayed effort on every switch,
@@ -11101,10 +11165,7 @@ export class ClaudeAcpAgent {
             // deliberately apply their concrete displayed effort.
             effortFlagSettings(
               useRecommendedValue ? newEffort : undefined,
-              mergeEffortSettings(
-                session.settingsManager.getSettings(),
-                session.effortSettingsOverride,
-              ),
+              session.ultracodeEnabled,
             ),
           );
           session.effortPinnedLevel = effortPinnedForNewModel ? pinnedEffort : undefined;
@@ -11173,15 +11234,7 @@ export class ClaudeAcpAgent {
     } else if (configId === EFFORT_CONFIG_ID) {
       // Apply first so a rejected control request cannot leave the displayed
       // value ahead of the SDK flag layer.
-      await session.query.applyFlagSettings(
-        effortFlagSettings(
-          value,
-          mergeEffortSettings(
-            session.settingsManager.getSettings(),
-            session.effortSettingsOverride,
-          ),
-        ),
-      );
+      await session.query.applyFlagSettings(effortFlagSettings(value, session.ultracodeEnabled));
       session.configOptions = session.configOptions.map((o) =>
         o.id === configId && typeof o.currentValue === "string" ? { ...o, currentValue: value } : o,
       );
@@ -11261,6 +11314,22 @@ export class ClaudeAcpAgent {
     await session.query.applyFlagSettings({ fastMode: enabled });
     session.fastModeEnabled = enabled;
     this.refreshFastModeOption(session, enabled);
+  }
+
+  /** Turn ultracode on or off for a session. Sends an explicit boolean, which
+   *  leaves the effort level alone (`null` would reset the flag layer instead).
+   *  The SDK flag is applied first so a rejected request leaves the session
+   *  state and option untouched. */
+  private async applyUltracode(session: Session, enabled: boolean): Promise<void> {
+    await session.query.applyFlagSettings({ ultracode: enabled });
+    session.ultracodeEnabled = enabled;
+    const refreshed = createUltracodeConfigOption(
+      enabled,
+      clientSupportsBooleanConfigOptions(this.clientCapabilities),
+    );
+    session.configOptions = session.configOptions.map((o) =>
+      o.id === ULTRACODE_CONFIG_ID ? refreshed : o,
+    );
   }
 
   /** Reconcile the session's Fast mode toggle with an SDK-reported
@@ -12101,6 +12170,21 @@ export class ClaudeAcpAgent {
         settingsManager.getSettings(),
         configuredSettingsObject,
       );
+
+      // The CLI reports whether ultracode can run (workflows enabled and a
+      // supporting model) and whether the session already requests it (an
+      // `ultracode: true` setting). Without a report, fall back to settings.
+      const ultracodeReport = await readUltracodeSettings(q);
+      timing.phase("ultracode");
+      const ultracodeEnabled = ultracodeReport?.requested ?? effortSettings.ultracode === true;
+      const workflowsEnabled = ultracodeWorkflowsEnabled(ultracodeReport, currentModelInfo);
+      const ultracode: UltracodeOptionState = {
+        supported:
+          ultracodeReport?.available ?? ultracodeSupported(workflowsEnabled, currentModelInfo),
+        enabled: ultracodeEnabled,
+        useBooleanOption: clientSupportsBooleanConfigOptions(this.clientCapabilities),
+      };
+
       const configOptions = buildConfigOptions(
         modes,
         models,
@@ -12112,10 +12196,11 @@ export class ClaudeAcpAgent {
         {
           useRecommendedValue,
         },
+        ultracode,
       );
       const initialEffort = configOptions.find((option) => option.id === EFFORT_CONFIG_ID);
       if (useRecommendedValue && typeof initialEffort?.currentValue === "string") {
-        await q.applyFlagSettings(effortFlagSettings(initialEffort.currentValue, effortSettings));
+        await q.applyFlagSettings(effortFlagSettings(initialEffort.currentValue, ultracodeEnabled));
       }
       // Seed the context window without awaited IPC. The cached authoritative
       // window from a prior turn wins (`result.modelUsage`, cross-session),
@@ -12183,6 +12268,8 @@ export class ClaudeAcpAgent {
         currentAgent,
         fastModeEnabled,
         fastModeDisabledReason,
+        ultracodeEnabled,
+        ultracodeWorkflowsEnabled: workflowsEnabled,
         abortController,
         emitRawSDKMessages: sessionMeta?.claudeCode?.emitRawSDKMessages ?? false,
         forwardSubagentText,
@@ -13012,6 +13099,7 @@ export function buildConfigOptions(
   currentAgent: string = DEFAULT_AGENT_ID,
   fastMode?: FastModeOptionState,
   presentation?: ConfigOptionPresentation,
+  ultracode?: UltracodeOptionState,
 ): SessionConfigOption[] {
   const options: SessionConfigOption[] = [SessionModeManager.configOption(modes)];
   // A gateway that lists none of the SDK's models leaves no model to offer, so
@@ -13040,6 +13128,12 @@ export function buildConfigOptions(
         fastMode.disabledReason,
       ),
     );
+  }
+
+  // Surface the ultracode toggle only while the CLI can run it: dynamic
+  // workflows are enabled and the current model supports it.
+  if (ultracode?.supported) {
+    options.push(createUltracodeConfigOption(ultracode.enabled, ultracode.useBooleanOption));
   }
 
   // Only surface the Agent picker when there's a real choice — i.e. the user

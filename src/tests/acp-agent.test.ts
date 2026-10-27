@@ -12636,6 +12636,56 @@ describe("stop reason propagation", () => {
     expect((err as { data: unknown }).data).toEqual({ errorKind: "rate_limit" });
   });
 
+  it.each(
+    [false, true].flatMap((typedFailures) =>
+      [undefined, "authentication_failed" as const].map((staleError) => ({
+        typedFailures,
+        staleError,
+      })),
+    ),
+  )(
+    "preserves a usage-limit failure after compaction (typed: $typedFailures, stale error: $staleError)",
+    async ({ typedFailures, staleError }) => {
+      const agent = createMockAgent();
+      if (typedFailures) await initializeClient(agent, airSessionFailureCapabilities);
+      const staleFrame = createAssistantError(staleError, "stale compaction output");
+      staleFrame.message.model = "<synthetic>";
+      injectSession(agent, [
+        {
+          type: "system",
+          subtype: "status",
+          status: null,
+          compact_result: "success",
+          uuid: "compact-completed",
+          session_id: "test-session",
+        },
+        createUsageLimitAssistantError(),
+        staleFrame,
+        createResultMessage({
+          subtype: "success",
+          stop_reason: "end_turn",
+          is_error: true,
+          result: "private provider detail",
+        }),
+      ]);
+
+      const prompt = agent.prompt({
+        sessionId: "test-session",
+        prompt: [{ type: "text", text: "test" }],
+      });
+      if (typedFailures) {
+        expect(sessionFailureFromResponse(await prompt)).toMatchObject({
+          category: "limit",
+          actions: [],
+          title:
+            "You've hit your individual spend limit · run /usage-credits to ask your admin for a higher limit",
+        });
+      } else {
+        await expect(prompt).rejects.toMatchObject({ data: { errorKind: "rate_limit" } });
+      }
+    },
+  );
+
   it("omits errorKind data when no SDKAssistantMessage.error was observed", async () => {
     const agent = createMockAgent();
     injectSession(agent, [
@@ -13933,6 +13983,7 @@ describe("session/close", () => {
       agents: [],
       currentAgent: "default",
       fastModeEnabled: false,
+      ultracodeEnabled: false,
       abortController: new AbortController(),
       emitRawSDKMessages: false,
       forwardSubagentText: false,
@@ -14054,6 +14105,7 @@ describe("session/delete", () => {
       agents: [],
       currentAgent: "default",
       fastModeEnabled: false,
+      ultracodeEnabled: false,
       abortController: new AbortController(),
       emitRawSDKMessages: false,
       forwardSubagentText: false,
@@ -14213,6 +14265,7 @@ describe("getOrCreateSession param change detection", () => {
       agents: [],
       currentAgent: "default",
       fastModeEnabled: false,
+      ultracodeEnabled: false,
       abortController: new AbortController(),
       emitRawSDKMessages: false,
       forwardSubagentText: false,
@@ -15967,6 +16020,132 @@ describe("usage_update computation", () => {
     expect(session.contextWindowSize).toBe(555_000);
     expect(session.contextWindowAuthoritative).toBe(true);
   });
+});
+
+describe("foreground fork tool results", () => {
+  it.each([
+    ["plain", {}, null],
+    ["AIR", AIR_CLIENT_CAPABILITIES, null],
+    ["plain nested", {}, "toolu_outer"],
+    ["AIR nested", AIR_CLIENT_CAPABILITIES, "toolu_outer"],
+  ] as const)(
+    "waits for the launching side's result for a %s client",
+    async (_, capabilities, parent) => {
+      const updates: SessionNotification[] = [];
+      const logger = { log: vi.fn(), error: vi.fn() };
+      const agent = new ClaudeAcpAgent(
+        {
+          sessionUpdate: async (notification: SessionNotification) => {
+            updates.push(notification);
+          },
+        } as unknown as AcpClient,
+        logger,
+      );
+      await initializeClient(agent, capabilities);
+      const input = new Pushable<any>();
+      const assistant = (content: unknown[], parentToolUseId: string | null) => ({
+        type: "assistant",
+        parent_tool_use_id: parentToolUseId,
+        uuid: randomUUID(),
+        session_id: "test-session",
+        message: {
+          id: randomUUID(),
+          role: "assistant",
+          model: "claude-sonnet-4-6",
+          content,
+          usage: successfulResultMessage().usage,
+        },
+      });
+      const user = (content: unknown[], parentToolUseId: string | null) => ({
+        type: "user",
+        parent_tool_use_id: parentToolUseId,
+        uuid: randomUUID(),
+        session_id: "test-session",
+        message: { role: "user", content },
+      });
+      const toolResult = (id: string, text: string) => ({
+        type: "tool_result",
+        tool_use_id: id,
+        content: [{ type: "text", text }],
+      });
+      async function* messages() {
+        const { value } = await input[Symbol.asyncIterator]().next();
+        yield userEcho(value);
+        yield assistant(
+          [
+            {
+              type: "tool_use",
+              id: "toolu_fork",
+              name: "Agent",
+              input: {
+                subagent_type: "fork",
+                run_in_background: false,
+                prompt: "Inspect the parser",
+              },
+            },
+          ],
+          parent,
+        );
+        // The fork inherits a result for its own launch. It cannot complete
+        // that call: the launching side sends the actual report later.
+        yield user([toolResult("toolu_fork", "Fork started — that fork is you.")], "toolu_fork");
+        yield assistant(
+          [
+            {
+              type: "tool_use",
+              id: "toolu_child",
+              name: "Agent",
+              input: { subagent_type: "general-purpose", prompt: "Read the parser" },
+            },
+          ],
+          "toolu_fork",
+        );
+        // Keep results of tools the fork itself called, even in a message
+        // that also carries the copied launch result.
+        yield {
+          ...user(
+            [
+              toolResult("toolu_fork", "Fork started — processing in background"),
+              toolResult("toolu_child", "child report"),
+            ],
+            "toolu_fork",
+          ),
+          // Filtering must not attribute the inherited launch sidecar to
+          // the one result that remains in this message.
+          tool_use_result: {
+            status: "completed",
+            content: [{ type: "text", text: "inherited launch report" }],
+          },
+        };
+        yield user([toolResult("toolu_fork", "fork report")], parent);
+        yield successfulResultMessage();
+        yield { type: "system", subtype: "session_state_changed", state: "idle" };
+      }
+      agent.sessions["test-session"] = mockSessionState({ query: wrapQuery(messages()), input });
+
+      await expect(
+        agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "Inspect it" }] }),
+      ).resolves.toMatchObject({ stopReason: "end_turn" });
+
+      const completed = updates.flatMap(({ update }) =>
+        update.sessionUpdate === "tool_call_update" && update.status === "completed"
+          ? [{ id: update.toolCallId, content: update.content, rawOutput: update.rawOutput }]
+          : [],
+      );
+      expect(completed.map(({ id }) => id)).toEqual(["toolu_child", "toolu_fork"]);
+      expect(completed.map(({ content }) => content)).toEqual([
+        [{ type: "content", content: { type: "text", text: "child report" } }],
+        [{ type: "content", content: { type: "text", text: "fork report" } }],
+      ]);
+      if (!("_meta" in capabilities)) {
+        expect(completed.map(({ rawOutput }) => rawOutput)).toEqual([
+          [{ type: "text", text: "child report" }],
+          [{ type: "text", text: "fork report" }],
+        ]);
+      }
+      expect(logger.error.mock.calls.flat().join("\n")).not.toContain("wasn't tracked");
+    },
+  );
 });
 
 describe("assembled assistant text fallback", () => {
@@ -18541,6 +18720,7 @@ describe("post-error recovery", () => {
       agents: [],
       currentAgent: "default",
       fastModeEnabled: false,
+      ultracodeEnabled: false,
       abortController: new AbortController(),
       emitRawSDKMessages: false,
       forwardSubagentText: false,
@@ -21902,6 +22082,84 @@ describe("deferred settlement for live background subagents (issues #864/#866)",
       });
       expect((response._meta as any)?.settleAtResult).toBeUndefined();
       expect((agent as any).endsTurnsWithLiveSubagents()).toBe(false);
+    });
+
+    it("answers a steer folded into an autonomous cycle at that cycle's result while a subagent is live", async () => {
+      // Upstream #1185: Claude Code can fold a steer into an autonomous cycle
+      // whose result names only the steer's uuid. That result answers the live
+      // turn that owns the steer. With settleAtResult the turn is not held for
+      // the subagent that it started, so session/prompt resolves there.
+      const { agent, events } = chunkCapturingAgent();
+      await declareSettleAtResult(agent);
+      let releaseSubagent!: () => void;
+      const subagentDone = new Promise<void>((resolve) => (releaseSubagent = resolve));
+      let markStarted!: () => void;
+      const started = new Promise<void>((resolve) => (markStarted = resolve));
+      injectGeneratorSession(agent, (input) => {
+        async function* messageGenerator() {
+          const iter = input[Symbol.asyncIterator]();
+          const { value: original } = await iter.next();
+          yield userEcho(original);
+          yield running();
+          yield subagentStarted("agent-1");
+          markStarted();
+          const { value: steered } = await iter.next();
+          // The steer interrupts the original cycle.
+          yield resultMessage({
+            origin: { kind: "human" },
+            user_message_uuid: original.uuid,
+            user_message_uuids: [original.uuid],
+            queued_turn_count: 1,
+            stop_reason: "tool_use",
+          });
+          // The steered work runs as an autonomous cycle.
+          yield resultMessage({
+            origin: { kind: "task-notification" },
+            user_message_uuid: steered.uuid,
+            user_message_uuids: [steered.uuid],
+            stop_reason: "max_tokens",
+          });
+          yield idle();
+          await subagentDone;
+          yield taskNotification("agent-1");
+          yield running();
+          yield assistantText("promised summary");
+          yield resultMessage({ origin: { kind: "task-notification" } });
+          yield idle();
+        }
+        return messageGenerator();
+      });
+      const session = agent.sessions["test-session"]!;
+
+      const turn = agent.prompt({
+        sessionId: "test-session",
+        prompt: [{ type: "text", text: "explore" }],
+      });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await started;
+        await expect(
+          agent.steer({ sessionId: "test-session", prompt: [{ type: "text", text: "also X" }] }),
+        ).resolves.toEqual({ outcome: "injected" });
+        const answer = await Promise.race([
+          turn,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error("session/prompt still pending while agent-1 runs")),
+              2000,
+            );
+          }),
+        ]);
+        events.push("resolved");
+        expect(answer.stopReason).toBe("max_tokens");
+        expect(session.liveBackgroundTasks.has("agent-1")).toBe(true);
+      } finally {
+        clearTimeout(timer);
+        releaseSubagent();
+      }
+      await session.consumer;
+      // The follow-up of the subagent still reaches the client, after the answer.
+      expect(events).toEqual(["resolved", "chunk:promised summary"]);
     });
   });
 
@@ -27226,6 +27484,7 @@ describe("session/cancel wedge recovery (issue #680)", () => {
       agents: [],
       currentAgent: "default",
       fastModeEnabled: false,
+      ultracodeEnabled: false,
       abortController: new AbortController(),
       emitRawSDKMessages: false,
       forwardSubagentText: false,
@@ -29133,6 +29392,7 @@ describe("agent selection config option", () => {
         agents,
         currentAgent: "default",
         fastModeEnabled: false,
+        ultracodeEnabled: false,
         abortController: new AbortController(),
         emitRawSDKMessages: false,
         forwardSubagentText: false,

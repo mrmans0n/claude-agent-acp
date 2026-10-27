@@ -153,7 +153,7 @@ afterEach(async () => {
   await Promise.all(agents.splice(0).map((agent) => agent.dispose()));
   execFileSpy.mockReset();
   vi.unstubAllEnvs();
-  await rm(tempDir, { recursive: true, force: true });
+  await rm(tempDir, { recursive: true, force: true, maxRetries: 10 });
 });
 
 /** Connects a fresh router to a client, and returns the client end of the stream. */
@@ -316,6 +316,50 @@ describe("ACP protocol routing", () => {
     expect(getContextUsage).toHaveBeenCalledWith({ detail: "summary" });
     // A bad `detail` is an invalid params error, and does not reach the SDK.
     expect(result.invalid).toMatchObject({ code: -32602 });
+  });
+
+  it("answers the Alas context usage request of a v1 client with the ACP SDK error codes", async () => {
+    // The v1 app parses the params before the handler runs and turns the
+    // RequestError of the parser or the handler into the JSON-RPC error.
+    const getContextUsage = vi.fn(async () => ({ categories: [] }));
+    const failure = (error: unknown) => error;
+    const result = await v1
+      .client({ name: "v1-test-client" })
+      .onNotification(
+        "_auth/status_update",
+        (params) => params,
+        () => {},
+      )
+      .connectWith(connectRouter() as unknown as v1.Stream, async (agent) => {
+        await agent.request(v1.methods.agent.initialize, {
+          protocolVersion: v1.PROTOCOL_VERSION,
+          clientCapabilities: { _meta: { contextUsage: true } },
+        });
+        const { sessionId } = await agent.request(v1.methods.agent.session.new, {
+          cwd,
+          mcpServers: [],
+        });
+        (agents[0].sessions[sessionId].query as any).getContextUsage = getContextUsage;
+        // Without `detail`, the client gets the full breakdown.
+        await agent.request("_alas/context_usage", { sessionId: ` ${sessionId} ` });
+        const blank = await agent
+          .request("_alas/context_usage", { sessionId: "  " })
+          .then(() => undefined, failure);
+        const array = await agent
+          .request("_alas/context_usage", [sessionId])
+          .then(() => undefined, failure);
+        const unknown = await agent
+          .request("_alas/context_usage", { sessionId: "no-such-session" })
+          .then(() => undefined, failure);
+        return { blank, array, unknown };
+      });
+
+    expect(getContextUsage).toHaveBeenCalledTimes(1);
+    expect(getContextUsage).toHaveBeenCalledWith({ detail: "full" });
+    expect(result.blank).toMatchObject({ code: -32602 });
+    expect(result.array).toMatchObject({ code: -32602 });
+    // An unknown session is RequestError.resourceNotFound.
+    expect(result.unknown).toMatchObject({ code: -32002 });
   });
 
   it("serves the v2 handshake to a v2 client", async () => {
