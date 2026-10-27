@@ -494,6 +494,7 @@ describe.skipIf(baselineDir)("ACP scenarios", () => {
           version: 1,
           capabilities: [
             "sessionIndex",
+            "sessionBatchGet",
             "sessionArchive",
             "sessionRename",
             "sessionListSubscribe",
