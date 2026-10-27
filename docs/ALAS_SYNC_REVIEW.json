@@ -1,42 +1,122 @@
 {
   "version": 1,
-  "fromTag": "v0.85.1",
-  "toTag": "v0.85.1",
-  "toCommit": "686c0c99b3b89217b74d1f5de8272e7c9ef1aab4",
+  "fromTag": "v0.97.0",
+  "toTag": "v0.98.0",
+  "toCommit": "c90f856c11b959d40328f86accc48f3a537aae96",
   "patches": [
     {
       "name": "goal-capability-opt-in",
-      "commit": "60749d07ff50308ef96c5251152a8d4986fe680f",
+      "commit": "22067f19cc8c3adc4367f023d534542fd69eaf78",
       "upstreamPr": 1245,
       "files": ["docs/air-extensions.md", "src/acp-agent.ts", "src/goal-extension.ts"],
       "tests": ["src/tests/acp-agent.test.ts"],
-      "classification": "unaffected",
+      "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": [],
+      "overlappingFiles": ["docs/air-extensions.md", "src/acp-agent.ts"],
       "resolution": {
-        "decision": "retain",
-        "rationale": "No equivalent upstream patch or overlapping path was detected.",
-        "tests": ["src/tests/acp-agent.test.ts"],
-        "automatic": true
+        "decision": "adapt",
+        "commit": "72c08026539006157f7cd80b006e5a01262acae8",
+        "rationale": "Upstream v0.98.0 (#1408) adds _session/batch_get and its sessionBatchGet capability and rewrites the two sentences of the docs/air-extensions.md agent declaration section that list the session index capabilities. The patch appends the opted-in non-AIR goal sentence to the third line of that paragraph, so 22067f19cc8c3adc4367f023d534542fd69eaf78 conflicts in docs/air-extensions.md. 72c08026539006157f7cd80b006e5a01262acae8 keeps upstream's wording, sessionBatchGet included, and appends the same goal sentence; its added and removed lines are identical to those of 22067f1 (sorted +/- line diff empty), only context lines differ. Upstream v0.98.0 does not touch src/goal-extension.ts, goalMeta, the GOAL_* constants or any goal call site in src/acp-agent.ts, and goals stay AIR-only upstream, so the patch is not absorbed and ships unchanged. Its stable patch-id (650615ee) differs from every ledger commit.",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-agent.test.ts",
+          "diff <(git show --pretty=format: 22067f19cc8c3adc4367f023d534542fd69eaf78 | grep -E '^[+-]' | grep -vE '^(\\+\\+\\+|---) ' | sort) <(git show --pretty=format: 72c08026539006157f7cd80b006e5a01262acae8 | grep -E '^[+-]' | grep -vE '^(\\+\\+\\+|---) ' | sort)",
+          "npm run test:run"
+        ],
+        "automatic": false
       }
     },
     {
       "name": "async-tasks-opt-in",
-      "commit": "3e098c71628cc7d5927ee8a3d794faa433dce12d",
+      "commit": "6abc8af1b36375344c682a34b18995054f82c9fe",
       "upstreamPr": null,
       "files": ["src/acp-agent.ts", "src/async-tasks.ts"],
       "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
-      "classification": "unaffected",
+      "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": [],
+      "overlappingFiles": ["src/acp-agent.ts", "src/async-tasks.ts"],
       "resolution": {
-        "decision": "retain",
-        "rationale": "No equivalent upstream patch or overlapping path was detected.",
-        "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
-        "automatic": true
+        "decision": "adapt",
+        "commit": "48f6fdcde0ad99ccf65f36e13b94fda8da278357",
+        "rationale": "Upstream async tasks remain AIR-only in v0.98.0, so the patch is not absorbed. Upstream v0.98.0 (#1408) adds _session/batch_get and its sessionBatchGet capability and rewrites the two sentences of the docs/air-extensions.md agent declaration section that list the session index capabilities. This patch extends the third line of that paragraph with the neutral async task capability, so its alas copy b489751dd2c8739043dc74d76fbc610d5600a1d6 conflicts there. Upstream #1452 changes what AsyncTaskRuntime publishes for a Monitor tool call or an SDK local_monitor task (taskType monitor, showInTranscript false, canStop false, stop refused); it reads no capability and adds no AIR-only field. A provider-neutral client still enables the runtime only through clientSupportsAsyncTasks, the gate all three upstream callers use, so an opted-in Alas client gets the same monitor tasks as AIR. 48f6fdcde0ad99ccf65f36e13b94fda8da278357 keeps the added and removed lines of b489751 unchanged and adds a test that an _meta[\"async-tasks\"]: true client gets a Monitor task as a monitor it cannot stop, with no _meta.jetbrains key; the test fails when clientSupportsAsyncTasks is reverted to the AIR-only gate. Its stable patch-id (ede9c20f) differs from every ledger commit.",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-agent.test.ts src/tests/async-tasks.test.ts src/tests/create-session-options.test.ts",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "context-usage-extension",
+      "commit": "f6e9e43e0018babdc7063f50b6a45cf1b585f396",
+      "upstreamPr": null,
+      "files": ["src/acp-agent.ts"],
+      "tests": ["src/tests/acp-agent.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "adapt",
+        "commit": "9f323fa6ec78fc0def9f8ac04089b500060f0181",
+        "rationale": "Upstream v0.98.0 has no _alas/context_usage request and no contextUsage advertisement, so the patch is not absorbed, and its dependency bumps (#1440, #1449) keep @anthropic-ai/claude-agent-sdk, and with it Query.getContextUsage({ detail }), at the same version. The v0.98.0 src/acp-agent.ts edits route _session/batch_get (#1408) and settle the tool call of a SandboxNetworkAccess permission request (#1448); #1447 removes the tool call status from ACP v2 permission subjects and #1452 publishes Monitor async tasks as monitors inside AsyncTaskRuntime. None of them touches the request handler or the initialize _meta entry this patch adds. The patch is stacked on the async task opt-in, which is adapted, and the sync replays original downstream commits before adaptation commits, so its alas copy ce87c84f42667d249a8725a3d64fe390dc7c34f3 conflicts and must be adapted too. 9f323fa6ec78fc0def9f8ac04089b500060f0181 reapplies the unchanged added and removed lines on the async task adaptation. The straight replay would have the stable patch-id of the v0.97 adaptation f6e9e43, which the ledger names, so it adds a test that an AIR client declaring sessionIndex gets _meta.contextUsage as a sibling key with an unchanged _meta.jetbrains.air object (sessionBatchGet included). The test fails without the advertisement and gives the replacement a distinct stable patch-id (1ddb0ffe).",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-agent.test.ts src/tests/acp-v2.test.ts src/tests/create-session-options.test.ts",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "neutral-session-index",
+      "commit": "64b276888e9af32072cd960e86927f61a6c85e6f",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/acp-agent.ts",
+        "src/session-index/connection.ts",
+        "src/session-index/list-subscriptions.ts",
+        "src/session-index/meta.ts",
+        "src/session-index/service.ts",
+        "src/session-index/session-info.ts"
+      ],
+      "tests": ["src/tests/acp-scenarios.test.ts", "src/tests/session-index.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": [
+        "docs/air-extensions.md",
+        "src/acp-agent.ts",
+        "src/session-index/connection.ts",
+        "src/session-index/service.ts"
+      ],
+      "resolution": {
+        "decision": "adapt",
+        "commit": "084636fc202d689909027fc28259bcf0b05f3781",
+        "rationale": "Upstream v0.98.0 (#1408) adds _session/batch_get, metadata for known session ids in the session/list row format, advertised as sessionBatchGet exactly when sessionIndex is: it adds the capability to SessionIndexConnection.capabilities(), routes the method through onSessionIndexRequests and requireService, and builds the rows in SessionIndexService.batchGet with sessionInfoOf. Upstream still has no provider-neutral index, so the patch is not absorbed. The patch splits capabilities() into capabilities(), withNeutralCapabilities() and indexCapabilities(), so its alas copy a14410b5cfaf1f75ed692dbb0925a107ec5a2da8 conflicts in src/session-index/connection.ts, docs/air-extensions.md and src/tests/session-index.test.ts; a straight replay would also drop sessionBatchGet from AIR clients. The neutral index is AIR's index with _meta.sessionIndex in place of _meta.jetbrains.air: one capability list for both clients, every extension method routed for any client whose SessionIndexService exists, and rows built with the client's SessionIndexMeta. 084636fc202d689909027fc28259bcf0b05f3781 applies that design to batch_get: indexCapabilities() lists sessionBatchGet after sessionIndex (AIR keeps its v0.98 list, a neutral client gets the same names), batchGet passes this.deps.meta to sessionInfoOf so neutral rows carry _meta.sessionIndex and equal the client's list rows, and the docs map it in the neutral section. ACP v2 stays out because negotiate returns before creating the service. New tests cover the neutral advertisement and a routed, validated _session/batch_get over a real v1 connection, neutral rows equal to list rows for archived, other-project and worktree sessions in request order, and method-not-found under ACP v2; they fail when the capability or the row namespace is reverted. Otherwise the added and removed lines of a14410b are unchanged. Its stable patch-id (30c267dd) differs from every ledger commit.",
+        "tests": [
+          "npm exec -- vitest run src/tests/session-index.test.ts src/tests/acp-scenarios.test.ts",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "settle-at-result",
+      "commit": "6a528efc8f3d208968a72224808fde741027e926",
+      "upstreamPr": null,
+      "files": ["src/acp-agent.ts"],
+      "tests": ["src/tests/acp-agent.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "adapt",
+        "commit": "9234ca9b1c0ddc47dfdadaa26f1ce30cb7c4b508",
+        "rationale": "settleAtResult adds its opt-in next to the context usage opt-in, so it is stacked on the context usage and async task patches, which are adapted again for v0.98; the sync replays original downstream commits before adaptation commits, so its alas copy 0cf3ddf770b8fe181f9137d57c7a2e3ec0a0ab25 conflicts. Upstream v0.98.0 does not change endsTurnsWithLiveSubagents, turnAwaitingSubagents or the backgroundSubagents capability, so the opt-in still goes through upstream's single gate, for ACP v1 only, and the patch is not absorbed. #1447 only changes ACP v2 permission subjects, which never get settleAtResult. #1448 settles the tool call of a SandboxNetworkAccess request with a tool_call_update that does not depend on an active turn, so a settleAtResult client answering such a request after its turn ended gets it as an AIR client with backgroundSubagents does. 9234ca9b1c0ddc47dfdadaa26f1ce30cb7c4b508 reapplies the unchanged added and removed lines on the neutral session index adaptation. The straight replay would have the stable patch-id of the v0.97 adaptation 6a528ef, which the ledger names, so it adds a test for the out-of-turn path: session/prompt returns at the result while a subagent runs, then an allowed SandboxNetworkAccess request yields the pending tool_call and the completed tool_call_update. The test fails with the original gate and without the #1448 settling call, and gives the replacement a distinct stable patch-id (02124f5d).",
+        "tests": ["npm exec -- vitest run src/tests/acp-agent.test.ts", "npm run test:run"],
+        "automatic": false
       }
     }
   ],
   "preservedCommits": [],
+  "retiredCommits": [],
   "resolved": true
 }
