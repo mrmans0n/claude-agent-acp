@@ -91,6 +91,7 @@ import {
   parseGoalRequest,
   toGoalSnapshot,
 } from "../goal-extension.js";
+import { ASYNC_TASK_CONTROL_METHOD } from "../async-tasks.js";
 
 vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>();
@@ -9637,7 +9638,7 @@ describe("subagent permission attribution (issue #851)", () => {
     );
   });
 
-  it("stops one advertised async task through the SDK without cancelling the prompt", async () => {
+  it("stops one provider-neutral async task through the SDK without cancelling the prompt", async () => {
     const updates: AcpSessionNotification[] = [];
     const agent = new ClaudeAcpAgent(
       {
@@ -9648,7 +9649,7 @@ describe("subagent permission attribution (issue #851)", () => {
     await agent.initialize({
       protocolVersion: 1,
       clientCapabilities: {
-        _meta: { jetbrains: { air: { version: 1, capabilities: ["asyncTasks"] } } },
+        _meta: { "async-tasks": true },
       },
     });
     injectGeneratorSession(
@@ -9700,6 +9701,103 @@ describe("subagent permission attribution (issue #851)", () => {
       sessionUpdate: "agent_message_chunk",
       content: { type: "text" },
     });
+  });
+
+  /**
+   * Scenario:
+   * 1. A client that is not AIR opts into async tasks with `_meta["async-tasks"]: true`.
+   * 2. The model calls Monitor; the SDK reports its task as `local_bash`.
+   * 3. The task completes; the client then asks to stop it.
+   * Expected:
+   * - The task is spawned as a monitor with no transcript card and no Stop, as for AIR.
+   * - The task reaches the completed state and the stop request returns `stopped: false`.
+   * - The Monitor tool call stays in the transcript.
+   * - No task update carries a `_meta.jetbrains` key.
+   */
+  it("publishes a Monitor task as a monitor to a provider-neutral async-task client", async () => {
+    const updates: AcpSessionNotification[] = [];
+    const agent = new ClaudeAcpAgent(
+      {
+        sessionUpdate: async (notification: AcpSessionNotification) => updates.push(notification),
+      } as unknown as AcpClient,
+      { log: () => {}, error: () => {} },
+    );
+    await agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: { _meta: { "async-tasks": true } },
+    });
+    injectGeneratorSession(
+      agent,
+      makeGenerator([
+        {
+          type: "assistant",
+          parent_tool_use_id: null,
+          uuid: randomUUID(),
+          session_id: "test-session",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: "monitor-tool",
+                name: "Monitor",
+                input: { command: "tail -f app.log", description: "Watch app.log" },
+              },
+            ],
+            usage: SUBAGENT_TEST_USAGE,
+          },
+        },
+        {
+          ...taskStarted("mon-1", "monitor-tool"),
+          task_type: "local_bash",
+          description: "Watch app.log",
+          is_backgrounded: true,
+        },
+        {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "mon-1",
+          tool_use_id: "monitor-tool",
+          status: "completed",
+          output_file: "",
+          summary: "done",
+          uuid: randomUUID(),
+          session_id: "test-session",
+        },
+        successResult(),
+      ]),
+    );
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "go" }] });
+
+    const taskUpdates = updates
+      .map(({ update }) => update)
+      .filter((update) => update.sessionUpdate.startsWith("async_task_"));
+    expect(taskUpdates[0]).toMatchObject({
+      sessionUpdate: "async_task_spawned",
+      asyncTaskId: "mon-1",
+      toolCallId: "monitor-tool",
+      taskType: "monitor",
+      showInTranscript: false,
+      canStop: false,
+    });
+    expect(taskUpdates.at(-1)).toMatchObject({
+      sessionUpdate: "async_task_state_update",
+      asyncTaskId: "mon-1",
+      state: "completed",
+    });
+    for (const update of taskUpdates) {
+      expect(update._meta ?? {}).not.toHaveProperty("jetbrains");
+    }
+    await expect(
+      agent.stopAsyncTask({ sessionId: "test-session", asyncTaskId: "mon-1" }),
+    ).resolves.toEqual({ stopped: false });
+    expect(
+      updates.some(
+        ({ update }) =>
+          update.sessionUpdate === "tool_call" && update.toolCallId === "monitor-tool",
+      ),
+    ).toBe(true);
   });
 
   it("takes the output path of a subagent's background Bash from its text in both orders", async () => {
@@ -10002,110 +10100,114 @@ describe("subagent permission attribution (issue #851)", () => {
     }
   });
 
-  it("holds async_task_spawned until the Bash result brings the tool id", async () => {
-    const updates: AcpSessionNotification[] = [];
-    const agent = new ClaudeAcpAgent(
-      {
-        sessionUpdate: async (notification: AcpSessionNotification) => updates.push(notification),
-      } as unknown as AcpClient,
-      { log: () => {}, error: () => {} },
-    );
-    await agent.initialize({
-      protocolVersion: 1,
-      clientCapabilities: {
-        _meta: { jetbrains: { air: { version: 1, capabilities: ["asyncTasks"] } } },
-      },
-    });
-    injectGeneratorSession(
-      agent,
-      makeGenerator([
+  it.each([
+    ["AIR", { jetbrains: { air: { version: 1, capabilities: ["asyncTasks"] } } }, true],
+    ["provider-neutral", { "async-tasks": true }, false],
+  ])(
+    "holds async_task_spawned until the Bash result brings the tool id for %s",
+    async (_, meta, air) => {
+      const updates: AcpSessionNotification[] = [];
+      const agent = new ClaudeAcpAgent(
         {
-          type: "assistant",
-          parent_tool_use_id: null,
-          uuid: randomUUID(),
-          session_id: "test-session",
-          message: {
-            role: "assistant",
-            content: [
-              {
-                type: "tool_use",
-                id: "bash-tool",
-                name: "Bash",
-                input: { command: "npm run build", run_in_background: true },
-              },
-            ],
-            usage: SUBAGENT_TEST_USAGE,
-          },
-        },
-        {
-          type: "system",
-          subtype: "task_started",
-          task_id: "shell-1",
-          task_type: "local_bash",
-          description: "Build",
-          is_backgrounded: true,
-          uuid: randomUUID(),
-          session_id: "test-session",
-        },
-        {
-          type: "user",
-          parent_tool_use_id: null,
-          uuid: randomUUID(),
-          session_id: "test-session",
-          tool_use_result: { backgroundTaskId: "shell-1" },
-          message: {
-            role: "user",
-            content: [
-              {
-                type: "tool_result",
-                tool_use_id: "bash-tool",
-                content:
-                  "Command running in background. Output is being written to: /tmp/tasks/shell-1.output. You will be notified when it completes.",
-              },
-            ],
-          },
-        },
-        successResult(),
-      ]),
-    );
-
-    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "go" }] });
-
-    const lifecycle = updates
-      .map(({ update }) => update)
-      .filter(
-        (update) =>
-          update.sessionUpdate === "async_task_spawned" ||
-          update.sessionUpdate === "async_task_progress",
+          sessionUpdate: async (notification: AcpSessionNotification) => updates.push(notification),
+        } as unknown as AcpClient,
+        { log: () => {}, error: () => {} },
       );
-    // task_started has no tool_use_id, so the spawn waits for the Bash result.
-    expect(lifecycle).toEqual([
-      expect.objectContaining({
-        sessionUpdate: "async_task_spawned",
-        asyncTaskId: "shell-1",
-        toolCallId: "bash-tool",
-        outputFilePath: "/tmp/tasks/shell-1.output",
-      }),
-    ]);
-
-    // The Bash card completes as soon as the command detaches, so this marker is
-    // the only thing telling a client it is backgrounded work, not finished work.
-    const bashUpdate = updates
-      .map(({ update }) => update)
-      .findLast(
-        (update) =>
-          update.sessionUpdate === "tool_call_update" && update.toolCallId === "bash-tool",
+      await agent.initialize({
+        protocolVersion: 1,
+        clientCapabilities: { _meta: meta },
+      });
+      injectGeneratorSession(
+        agent,
+        makeGenerator([
+          {
+            type: "assistant",
+            parent_tool_use_id: null,
+            uuid: randomUUID(),
+            session_id: "test-session",
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "tool_use",
+                  id: "bash-tool",
+                  name: "Bash",
+                  input: { command: "npm run build", run_in_background: true },
+                },
+              ],
+              usage: SUBAGENT_TEST_USAGE,
+            },
+          },
+          {
+            type: "system",
+            subtype: "task_started",
+            task_id: "shell-1",
+            task_type: "local_bash",
+            description: "Build",
+            is_backgrounded: true,
+            uuid: randomUUID(),
+            session_id: "test-session",
+          },
+          {
+            type: "user",
+            parent_tool_use_id: null,
+            uuid: randomUUID(),
+            session_id: "test-session",
+            tool_use_result: { backgroundTaskId: "shell-1" },
+            message: {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "bash-tool",
+                  content:
+                    "Command running in background. Output is being written to: /tmp/tasks/shell-1.output. You will be notified when it completes.",
+                },
+              ],
+            },
+          },
+          successResult(),
+        ]),
       );
-    expect(bashUpdate).toMatchObject({
-      status: "completed",
-      _meta: {
-        jetbrains: { air: { version: 1, asyncTasks: { backgrounded: true } } },
-      },
-    });
-    // Agent-native tool metadata keeps its own namespace alongside it.
-    // The tool_call sent the tool name, so the update does not repeat it.
-    expect((bashUpdate?._meta?.claudeCode as any)?.toolName).toBeUndefined();
-  });
+
+      await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "go" }] });
+
+      const lifecycle = updates
+        .map(({ update }) => update)
+        .filter(
+          (update) =>
+            update.sessionUpdate === "async_task_spawned" ||
+            update.sessionUpdate === "async_task_progress",
+        );
+      // task_started has no tool_use_id, so the spawn waits for the Bash result.
+      expect(lifecycle).toEqual([
+        expect.objectContaining({
+          sessionUpdate: "async_task_spawned",
+          asyncTaskId: "shell-1",
+          toolCallId: "bash-tool",
+          outputFilePath: "/tmp/tasks/shell-1.output",
+        }),
+      ]);
+
+      const bashUpdate = updates
+        .map(({ update }) => update)
+        .findLast(
+          (update) =>
+            update.sessionUpdate === "tool_call_update" && update.toolCallId === "bash-tool",
+        );
+      expect(bashUpdate).toMatchObject({ status: "completed" });
+      if (air) {
+        expect(bashUpdate?._meta).toMatchObject({
+          jetbrains: { air: { version: 1, asyncTasks: { backgrounded: true } } },
+        });
+      } else {
+        expect(bashUpdate?._meta ?? {}).not.toHaveProperty("jetbrains");
+      }
+      // AIR has already seen the tool name on tool_call; neutral clients keep the
+      // upstream name metadata on the completion update.
+      expect((bashUpdate?._meta?.claudeCode as any)?.toolName).toBe(air ? undefined : "Bash");
+    },
+  );
 
   it("omits the background task link for a client without the asyncTasks capability", async () => {
     const updates: AcpSessionNotification[] = [];
@@ -22017,6 +22119,43 @@ describe("terminal of a command in the background", () => {
       { exit: { terminal_id: "toolu_bg", exit_code: 0, signal: null }, afterAnswer: false },
     ]);
   });
+
+  it("keeps a provider-neutral async-task client's terminal running without the AIR marker", async () => {
+    const capabilities = { _meta: { "async-tasks": true, terminal_output: true } };
+    expect(await terminalExits(capabilities)).toEqual([
+      {
+        exit: { terminal_id: "toolu_bg", exit_code: null, signal: null },
+        afterAnswer: true,
+      },
+    ]);
+
+    const updates: SessionNotification[] = [];
+    const agent = new ClaudeAcpAgent(
+      { sessionUpdate: async (n: SessionNotification) => void updates.push(n) } as AcpClient,
+      { log: () => {}, error: () => {} },
+    );
+    await initializeClient(agent, capabilities);
+    const ended = Promise.withResolvers<void>();
+    injectGeneratorSession(agent, backgroundCommand(ended.promise));
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test it" }] });
+    const consumer = agent.sessions["test-session"]!.consumer;
+    ended.resolve();
+    await consumer;
+
+    const kinds = updates.map(({ update }) => update.sessionUpdate as string);
+    expect(kinds).toContain("async_task_spawned");
+    const bashResult = updates
+      .map(({ update }) => update)
+      .find(
+        (update) =>
+          update.sessionUpdate === "tool_call_update" &&
+          update.toolCallId === "toolu_bg" &&
+          update.status === "completed",
+      );
+    expect(bashResult).toBeDefined();
+    expect(bashResult?._meta ?? {}).not.toHaveProperty("jetbrains");
+    expect(bashResult?._meta ?? {}).not.toHaveProperty("terminal_exit");
+  });
 });
 
 describe("deferred settlement for live background subagents (issues #864/#866)", () => {
@@ -25471,6 +25610,29 @@ describe("turn steering (_session/steering)", () => {
       controlMethod: GOAL_CONTROL_METHOD,
       actions: ["set", "clear"],
     });
+  });
+
+  it("advertises async tasks with steering and goals for an opted-in non-AIR client", async () => {
+    const agent = createMockAgent();
+    const response = await agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: { _meta: { goal: {}, "async-tasks": true } },
+    });
+
+    expect(response._meta).toMatchObject({
+      steering: { supported: true },
+      goal: {
+        version: 1,
+        controlMethod: GOAL_CONTROL_METHOD,
+        actions: ["set", "clear"],
+      },
+      "async-tasks": {
+        version: 1,
+        controlMethod: ASYNC_TASK_CONTROL_METHOD,
+        actions: ["stop"],
+      },
+    });
+    expect(response._meta).not.toHaveProperty("jetbrains");
   });
 
   it("advertises and publishes goals for an opted-in non-AIR client", async () => {
