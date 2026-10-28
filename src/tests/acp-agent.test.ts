@@ -25361,6 +25361,60 @@ describe("turn steering (_session/steering)", () => {
     });
   });
 
+  it("advertises and serves the context usage breakdown", async () => {
+    const agent = createMockAgent();
+    const plain = await agent.initialize({ protocolVersion: 1, clientCapabilities: {} });
+    expect(plain._meta).not.toHaveProperty("contextUsage");
+    const response = await agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: { _meta: { contextUsage: true } },
+    });
+    expect((response._meta as any)?.contextUsage).toEqual({ supported: true });
+
+    injectGeneratorSession(agent, async function* () {});
+    const usage = { categories: [{ name: "Messages", tokens: 10, color: "x", kind: "used" }] };
+    const getContextUsage = vi.fn(async () => usage);
+    (agent.sessions["test-session"].query as any).getContextUsage = getContextUsage;
+
+    await expect(
+      agent.contextUsage({ sessionId: "test-session", detail: "summary" }),
+    ).resolves.toBe(usage);
+    expect(getContextUsage).toHaveBeenCalledWith({ detail: "summary" });
+    await expect(agent.contextUsage({ sessionId: "missing", detail: "full" })).rejects.toThrow();
+  });
+
+  /**
+   * Scenario:
+   * 1. An AIR client that declares `sessionIndex` initializes twice: once without
+   *    and once with `_meta.contextUsage: true`.
+   * Expected:
+   * - Only the second response has top-level `_meta.contextUsage`.
+   * - Both responses carry the same `_meta.jetbrains.air` object, whose capability
+   *   list keeps the v0.98 session index capabilities (`sessionBatchGet` included).
+   *   The context usage opt-in is a sibling key and changes nothing under AIR's key.
+   */
+  it("advertises context usage to an AIR client next to its unchanged AIR capabilities", async () => {
+    const agent = createMockAgent();
+    const air = { jetbrains: { air: { version: 1, capabilities: ["sessionIndex"] } } };
+    const without = await agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: { _meta: air },
+    });
+    const withUsage = await agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: { _meta: { ...air, contextUsage: true } },
+    });
+
+    expect(without._meta).not.toHaveProperty("contextUsage");
+    expect((withUsage._meta as any)?.contextUsage).toEqual({ supported: true });
+    expect((withUsage._meta as any)?.jetbrains).toEqual((without._meta as any)?.jetbrains);
+    expect((withUsage._meta as any)?.jetbrains?.air?.capabilities).toEqual(
+      expect.arrayContaining(["sessionIndex", "sessionBatchGet", "sessionListSubscribe"]),
+    );
+    expect(withUsage._meta).not.toHaveProperty("sessionIndex");
+    await agent.dispose();
+  });
+
   it("advertises async tasks with steering and goals for an opted-in non-AIR client", async () => {
     const agent = createMockAgent();
     const response = await agent.initialize({
