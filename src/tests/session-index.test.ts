@@ -69,6 +69,9 @@ const air = (...capabilities: string[]) => ({
   _meta: { jetbrains: { air: { version: 1, capabilities } } },
 });
 const listMeta = (list: object) => ({ jetbrains: { air: { version: 1, list } } });
+/** The client-neutral opt-in: top-level `_meta.sessionIndex`. */
+const neutral = (sessionIndex: unknown = { version: 1 }) => ({ _meta: { sessionIndex } });
+const neutralListMeta = (list: object) => ({ sessionIndex: { list } });
 
 let configDir: string;
 let workspace: string;
@@ -327,12 +330,87 @@ describe("sessionIndex negotiation", () => {
     }
   });
 
+  it("is advertised under top-level _meta.sessionIndex to a client that opts in without AIR", async () => {
+    const response = await createAgent().agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: neutral(),
+    });
+    expect(response._meta).toEqual({
+      steering: { supported: true },
+      sessionIndex: { version: 1, capabilities: indexCapabilities },
+    });
+  });
+
+  it("is neither advertised nor served under ACP v2 to a client that opts in without AIR", async () => {
+    // The v2 surface routes no session index method, and its initialize
+    // response passes the agent's top-level `_meta` keys through.
+    const { agent } = createAgent({ v2: true });
+    const response = await agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: neutral(),
+    });
+    expect(response._meta).toEqual({ steering: { supported: true } });
+    await expect(agent.archiveSession({ sessionId: randomUUID() })).rejects.toMatchObject({
+      code: -32601,
+    });
+  });
+
+  it.each([true, "1", [], null, {}, { version: 0 }, { version: 1.5 }, { version: "1" }])(
+    "enables nothing for the malformed opt-in %j",
+    async (sessionIndex) => {
+      const response = await createAgent().agent.initialize({
+        protocolVersion: 1,
+        clientCapabilities: neutral(sessionIndex),
+      });
+      expect(response._meta).toEqual({ steering: { supported: true } });
+    },
+  );
+
+  it("follows only the AIR capability for an AIR client that also sends the neutral key", async () => {
+    const both = (...capabilities: string[]) => ({
+      _meta: { ...air(...capabilities)._meta, sessionIndex: { version: 1 } },
+    });
+    const withoutIndex = createAgent().agent;
+    const declined = await withoutIndex.initialize({
+      protocolVersion: 1,
+      clientCapabilities: both("diffPatch"),
+    });
+    expect(airCapabilities(declined)).toEqual(baseline);
+    expect(declined._meta).not.toHaveProperty("sessionIndex");
+    await expect(withoutIndex.archiveSession({ sessionId: randomUUID() })).rejects.toMatchObject({
+      code: -32601,
+    });
+
+    await writeTranscript({});
+    const withIndex = createAgent().agent;
+    const accepted = await withIndex.initialize({
+      protocolVersion: 1,
+      clientCapabilities: both("sessionIndex"),
+    });
+    expect(airCapabilities(accepted)).toEqual([...baseline, ...indexCapabilities]);
+    expect(accepted._meta).not.toHaveProperty("sessionIndex");
+    // List params come only from `_meta.jetbrains.air.list`: an invalid
+    // neutral filter is not read.
+    const page = await withIndex.listSessions({
+      cwd: workspace,
+      _meta: neutralListMeta({ archived: "bogus" }),
+    });
+    expect(page.sessions.map((s) => s._meta)).toEqual([
+      { jetbrains: { air: expect.objectContaining({ archived: false }) } },
+    ]);
+  });
+
   it("answers method-not-found to the new methods without the capability", async () => {
     // Declaring sessionArchive or sessionRename without sessionIndex enables
-    // nothing either.
-    for (const capabilities of [[], ["sessionArchive", "sessionRename", "sessionBatchGet"]]) {
+    // nothing either, and neither does a plain client or a malformed opt-in.
+    for (const request of [
+      air(),
+      air("sessionArchive", "sessionRename", "sessionBatchGet"),
+      {},
+      neutral(true),
+    ]) {
       const { agent } = createAgent();
-      await initializeClient(agent, air(...capabilities));
+      await initializeClient(agent, request);
       const sessionId = randomUUID();
       await expect(agent.renameSessionTitle({ sessionId, title: "x" })).rejects.toMatchObject({
         code: -32601,
@@ -753,6 +831,270 @@ describe("_session/batch_get", () => {
       code: -32601,
     });
     await agent.dispose();
+  });
+});
+
+describe("client-neutral session index", () => {
+  const base = Date.parse("2026-03-01T00:00:00Z");
+  const indexRow = (info: { _meta?: Record<string, unknown> | null }) =>
+    (info._meta as any)?.sessionIndex as Record<string, unknown>;
+
+  async function neutralAgent() {
+    const created = createAgent();
+    await initializeClient(created.agent, neutral());
+    return created;
+  }
+
+  it("lists with _meta.sessionIndex.list and annotates rows under _meta.sessionIndex", async () => {
+    const repo = path.join(workspace, "repo");
+    const linked = path.join(workspace, "linked");
+    await linkWorktrees(repo, linked);
+    const newest = await writeTranscript({ cwd: repo, lastMessageAt: base, model: "claude-x" });
+    const archived = await writeTranscript({ cwd: repo, lastMessageAt: base - 1000 });
+    const oldest = await writeTranscript({ cwd: repo, lastMessageAt: base - 2000 });
+    const inLinked = await writeTranscript({ cwd: linked, lastMessageAt: base - 3000 });
+    const { agent } = await neutralAgent();
+    await agent.archiveSession({ sessionId: archived.id });
+    const rows = (page: { sessions: SessionInfo[] }) =>
+      page.sessions.map((s) => [s.sessionId, indexRow(s).archived]);
+
+    const first = await agent.listSessions({ cwd: repo, _meta: neutralListMeta({ limit: 1 }) });
+    expect(first.sessions[0]!._meta).toEqual({
+      sessionIndex: {
+        archived: false,
+        lastPromptAt: new Date(base - 1000).toISOString(),
+        model: "claude-x",
+        state: "idle",
+        lastTurnEndedAt: new Date(base).toISOString(),
+      },
+    });
+    const rest = await agent.listSessions({
+      cwd: repo,
+      cursor: first.nextCursor,
+      _meta: neutralListMeta({ limit: 1 }),
+    });
+    expect(rows(rest)).toEqual([[oldest.id, false]]);
+    expect(rest.nextCursor).toBeUndefined();
+
+    const all = await agent.listSessions({
+      cwd: repo,
+      _meta: neutralListMeta({ archived: "all", includeWorktrees: true }),
+    });
+    expect(rows(all)).toEqual([
+      [newest.id, false],
+      [archived.id, true],
+      [oldest.id, false],
+      [inLinked.id, false],
+    ]);
+    // AIR list params are not read for this client.
+    const ignored = await agent.listSessions({ cwd: repo, _meta: listMeta({ archived: "all" }) });
+    expect(rows(ignored)).toEqual([
+      [newest.id, false],
+      [oldest.id, false],
+    ]);
+    await expect(
+      agent.listSessions({ cwd: repo, _meta: neutralListMeta({ limit: 0 }) }),
+    ).rejects.toMatchObject({
+      code: -32602,
+      message: expect.stringContaining("`_meta.sessionIndex.list.limit`"),
+    });
+  });
+
+  it("renames, archives and unarchives, and reports the archive state under _meta.sessionIndex", async () => {
+    const session = await writeTranscript({});
+    const { agent, updates } = await neutralAgent();
+    await agent.renameSessionTitle({ sessionId: session.id, title: "Named" });
+    expect(await lastRecords(session.file)).toEqual(titleRecords(session.id, "Named"));
+
+    agent.sessions[session.id] = runningSession(
+      { cwd: workspace, query: { renameSession: cliRename(session.file, session.id) } },
+      agent,
+      session.id,
+    );
+    await agent.unarchiveSession({ sessionId: session.id });
+    await agent.archiveSession({ sessionId: session.id });
+    const archivedUpdates = updates.filter(
+      (update: any) => update.update.sessionUpdate === "session_info_update",
+    );
+    expect(archivedUpdates).toEqual([
+      {
+        sessionId: session.id,
+        update: {
+          sessionUpdate: "session_info_update",
+          _meta: { sessionIndex: { archived: false } },
+        },
+      },
+      {
+        sessionId: session.id,
+        update: {
+          sessionUpdate: "session_info_update",
+          _meta: { sessionIndex: { archived: true } },
+        },
+      },
+    ]);
+    const listed = await agent.listSessions({
+      cwd: workspace,
+      _meta: neutralListMeta({ archived: "archived" }),
+    });
+    expect(listed.sessions.map((s) => [s.title, indexRow(s).archived])).toEqual([["Named", true]]);
+  });
+
+  it("sends _session/list/changes rows under _meta.sessionIndex", async () => {
+    const { agent, notifications } = await neutralAgent();
+    const { subscriptionId } = await agent.subscribeSessionList({ cwd: workspace });
+    await settle();
+    const session = await writeTranscript({ prompt: "First", lastMessageAt: Date.now() - 5000 });
+    const rows = () =>
+      notifications
+        .filter((n) => n.method === "_session/list/changes")
+        .flatMap((n) => (n.params as unknown as ListChanges).sessions);
+    expect(await waitFor(() => rows().some((row) => row.sessionId === session.id))).toBe(true);
+    expect(notifications[0]!.params).toMatchObject({ subscriptionId, removed: [] });
+    const row = rows().find((r) => r.sessionId === session.id)!;
+    expect(row).toMatchObject({ title: "First", cwd: workspace });
+    expect(row._meta).toEqual({ sessionIndex: expect.objectContaining({ archived: false }) });
+    await agent.dispose();
+  });
+
+  it("holds a fork back from session/list and list changes until its session/fork response is out", async () => {
+    const { agent, notifications } = await neutralAgent();
+    await agent.subscribeSessionList({ cwd: workspace });
+    await settle();
+    const rowsOf = (sessionId: string) =>
+      notifications
+        .filter((n) => n.method === "_session/list/changes")
+        .flatMap((n) => (n.params as unknown as ListChanges).sessions)
+        .filter((row) => row.sessionId === sessionId);
+    const parent = await writeTranscript({ prompt: "Parent" });
+    expect(await waitFor(() => rowsOf(parent.id).length > 0)).toBe(true);
+    let answer!: () => void;
+    const responded = new Promise<void>((resolve) => (answer = resolve));
+    const forkWritten = writeTranscript({ prompt: "Parent", forkedFrom: parent.id });
+    const forked = agent.forking(parent.id, async () => {
+      (agent as any).sessionIndex.onForkCreated(parent.id, (await forkWritten).id);
+      await responded;
+    });
+    const fork = await forkWritten;
+    // A session that is no fork of the parent goes out meanwhile.
+    const other = await writeTranscript({ prompt: "Other" });
+    expect(await waitFor(() => rowsOf(other.id).length > 0)).toBe(true);
+    expect(rowsOf(fork.id)).toEqual([]);
+    const held = await agent.listSessions({ cwd: workspace });
+    expect(held.sessions.map((s) => s.sessionId)).not.toContain(fork.id);
+
+    answer();
+    await forked;
+    expect(await waitFor(() => rowsOf(fork.id).length > 0)).toBe(true);
+    expect(rowsOf(fork.id)[0]!._meta).toEqual({
+      sessionIndex: expect.objectContaining({ forkedFrom: parent.id }),
+    });
+    const listed = await agent.listSessions({ cwd: workspace });
+    const row = listed.sessions.find((s) => s.sessionId === fork.id);
+    expect(row?._meta).toEqual({
+      sessionIndex: expect.objectContaining({ forkedFrom: parent.id }),
+    });
+    await agent.dispose();
+  });
+
+  /**
+   * Scenario:
+   * 1. A client that is not AIR opts in with `_meta.sessionIndex: { version: 1 }`
+   *    over a real ACP v1 connection.
+   * 2. It calls `_session/batch_get` with no ids, then with an extra field.
+   * Expected:
+   * - `initialize` advertises `sessionBatchGet` in `_meta.sessionIndex.capabilities`,
+   *   as AIR gets it in `_meta.jetbrains.air.capabilities`.
+   * - The request is routed: `{ sessions: [] }`, then invalid params (-32602).
+   */
+  it("advertises and routes _session/batch_get for a client that opts in without AIR", async () => {
+    let agent!: ClaudeAcpAgent;
+    const connection = acpClient({ name: "neutral-batch-get-test" }).connect(
+      v1AgentApp({ log: () => {}, error: () => {} }, (created) => {
+        agent = created;
+      }),
+    );
+    try {
+      const response = await connection.agent.request<InitializeResponse>("initialize", {
+        protocolVersion: 1,
+        clientCapabilities: neutral(),
+      });
+      expect((response._meta as any)?.sessionIndex?.capabilities).toContain("sessionBatchGet");
+      expect(response._meta).not.toHaveProperty("jetbrains");
+      expect(await connection.agent.request("_session/batch_get", { sessionIds: [] })).toEqual({
+        sessions: [],
+      });
+      await expect(
+        connection.agent.request("_session/batch_get", { sessionIds: [], cwd: "/repo" }),
+      ).rejects.toMatchObject({ code: -32602 });
+    } finally {
+      connection.close();
+      await agent.dispose();
+    }
+  });
+
+  /**
+   * Scenario:
+   * 1. The store has an archived session, a session in another project and a
+   *    session in a linked worktree.
+   * 2. A client with the client-neutral index batch-gets them, plus an unknown id.
+   * Expected:
+   * - The rows come in request order, the unknown id is omitted, and each row
+   *   equals its row in the unscoped `session/list` with `archived: "all"`.
+   * - Rows carry the index fields under `_meta.sessionIndex` and no
+   *   `_meta.jetbrains` key, as the neutral list rows do.
+   */
+  it("returns batch_get rows under _meta.sessionIndex, equal to the neutral list rows", async () => {
+    const repo = path.join(workspace, "repo");
+    const worktree = path.join(workspace, "worktree");
+    await linkWorktrees(repo, worktree);
+    const archived = await writeTranscript({ cwd: repo, lastMessageAt: base });
+    const other = await writeTranscript({
+      cwd: path.join(workspace, "other"),
+      lastMessageAt: base - 1000,
+    });
+    const worktreeId = randomUUID();
+    await writeTranscript({
+      sessionId: worktreeId,
+      cwd: worktree,
+      lastMessageAt: base - 2000,
+      trailer: [worktreeState(worktreeId, { path: worktree })],
+    });
+    const { agent } = await neutralAgent();
+    await agent.archiveSession({ sessionId: archived.id });
+    try {
+      const requested = [worktreeId, randomUUID(), archived.id, other.id];
+      const result = await agent.batchGetSessions({ sessionIds: requested });
+      const listed = await agent.listSessions({ _meta: neutralListMeta({ archived: "all" }) });
+
+      expect(result.sessions.map((s) => s.sessionId)).toEqual([worktreeId, archived.id, other.id]);
+      expect(result.sessions).toEqual(
+        result.sessions.map((row) => listed.sessions.find((s) => s.sessionId === row.sessionId)),
+      );
+      for (const row of result.sessions) {
+        expect(Object.keys(row._meta ?? {})).toEqual(["sessionIndex"]);
+      }
+      expect(indexRow(result.sessions[0]!).agentWorktree).toBe(true);
+      expect(indexRow(result.sessions[1]!).archived).toBe(true);
+      expect(indexRow(result.sessions[2]!)).toMatchObject({ archived: false });
+    } finally {
+      await agent.dispose();
+    }
+  });
+
+  it("rejects _session/batch_get under ACP v2 for a client that opts in without AIR", async () => {
+    const { agent } = createAgent({ v2: true });
+    await initializeClient(agent, neutral());
+    await expect(agent.batchGetSessions({ sessionIds: [] })).rejects.toMatchObject({
+      code: -32601,
+    });
+    await agent.dispose();
+  });
+
+  it("deletes for real", async () => {
+    const session = await writeTranscript({});
+    const { agent } = await neutralAgent();
+    await agent.deleteSession({ sessionId: session.id });
+    await expect(fs.stat(session.file)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 
@@ -3123,10 +3465,12 @@ describe("rename of a running session with several transcripts", () => {
 });
 
 describe("the stored title of an archived session at turn end", () => {
-  it("is published without the prefix to an AIR client only", async () => {
+  it("is published without the prefix to an AIR client or a client with the session index", async () => {
     for (const [request, expected] of [
       [air("sessionIndex"), "Done"],
       [air(), "Done"],
+      [neutral(), "Done"],
+      [neutral({ version: 0 }), "[archived] Done"],
       [{}, "[archived] Done"],
     ] as const) {
       const { agent, updates } = createAgent();

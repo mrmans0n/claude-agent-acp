@@ -450,6 +450,63 @@ describe.skipIf(baselineDir)("ACP scenarios", () => {
       });
     });
 
+    describe("with the client-neutral session index", () => {
+      /** A plain client, with `extra` capabilities, run with and without
+       *  `_meta.sessionIndex`. */
+      async function runBoth(scenarioName: string, extra: Record<string, unknown> = {}) {
+        const scenario = SCENARIOS.find((s) => s.name === scenarioName)!;
+        const runAs = async (meta?: Record<string, unknown>) => {
+          resetIds();
+          const capabilities = {
+            ...PROFILES.plain.capabilities,
+            ...extra,
+            ...(meta && { _meta: meta }),
+          };
+          return (await runScenario(Agent, { name: "plain", capabilities }, scenario)).normalized;
+        };
+        return { plain: await runAs(), indexed: await runAs({ sessionIndex: { version: 1 } }) };
+      }
+
+      it.each(["bash-foreground", "edit-with-permission", "write-new", "subagent-task-legacy"])(
+        "gets the plain client's traffic for %s",
+        async (scenario) => {
+          const { plain, indexed } = await runBoth(scenario);
+          expect(toJsonLines(indexed)).toBe(toJsonLines(plain));
+        },
+      );
+
+      it.each(["subagent-native-sessions", "subagent-nested"])(
+        "gets the subagents RFD traffic of a plain client for %s",
+        async (scenario) => {
+          const { plain, indexed } = await runBoth(scenario, { subagents: {} });
+          expect(updates(indexed).some((u) => u.sessionUpdate === "subagent_update")).toBe(true);
+          expect(toJsonLines(indexed)).toBe(toJsonLines(plain));
+        },
+      );
+
+      it("differs only by _meta.sessionIndex in the initialize response", async () => {
+        const { plain, indexed } = await runBoth("session-setup");
+        expect(metaObjects(indexed).filter(({ meta }) => "jetbrains" in meta)).toEqual([]);
+        const initialize = (recorded: Recorded[]) =>
+          recorded.find((record) => record.kind === "initialize")!.payload as Record<string, any>;
+        const { sessionIndex, ...rest } = initialize(indexed)._meta;
+        expect(sessionIndex).toEqual({
+          version: 1,
+          capabilities: [
+            "sessionIndex",
+            "sessionBatchGet",
+            "sessionArchive",
+            "sessionRename",
+            "sessionListSubscribe",
+            "sessionWorktrees",
+          ],
+        });
+        expect(rest).toEqual(initialize(plain)._meta);
+        const others = (recorded: Recorded[]) => recorded.filter((r) => r.kind !== "initialize");
+        expect(toJsonLines(others(indexed))).toBe(toJsonLines(others(plain)));
+      });
+    });
+
     it("gets every Task* plan, also a repeated one", () => {
       const plans = updates(run("plain", "task-create-update").raw).filter(
         (update) => update.sessionUpdate === "plan",
