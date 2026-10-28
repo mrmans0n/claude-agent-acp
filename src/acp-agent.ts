@@ -86,6 +86,7 @@ import {
   SDKMessage,
   SDKMessageOrigin,
   SDKPartialAssistantMessage,
+  SDKSystemMessage,
   SessionMessage,
   SDKUserMessage,
   SDKUserMessageReplay,
@@ -106,6 +107,7 @@ import {
   parseGoalRequest,
   toGoalSnapshot,
 } from "./goal-extension.js";
+import { blobResourceToClaude } from "./blob-resources.js";
 import { promptSuggestionsMeta, promptSuggestionText } from "./prompt-suggestions.js";
 import { sanitizeTitle, SessionTitles } from "./session-titles.js";
 import {
@@ -279,6 +281,7 @@ import {
   normalizeNoticeText,
   noticeOrTranscriptUpdate,
   sentenceCase,
+  type SessionNotice,
   splitNoticeText,
 } from "./session-notices.js";
 import {
@@ -1172,6 +1175,11 @@ export type Session = {
    *  `user_message_uuids`, and leaves the field out for a request that serves
    *  none, such as a cycle that Claude Code started on its own. */
   requestMarkerListsV1?: boolean;
+  /** True once a `system`/init advertised the ask_user_question_unanswered_v1
+   *  capability, so an AskUserQuestion answer may set
+   *  `annotations[question].unanswered`. An older CLI can refuse the whole
+   *  answer when that field is present. */
+  askUserQuestionUnansweredV1?: boolean;
   /** A main-thread model request started (`status: requesting`) since the
    *  last result, so a model cycle runs. Read only with
    *  {@link Session.requestMarkerListsV1}. */
@@ -1195,6 +1203,10 @@ export type Session = {
   /** Serialized `system`/init `plugin_errors` last logged, so the per-turn
    *  init re-emit logs a plugin load failure once, not every turn. */
   loggedPluginErrors?: string;
+  /** Names of client-provided MCP servers already reported as failed or
+   *  needing authentication. `system`/init re-emits on every turn with the
+   *  same statuses, and each server is reported once per session. */
+  reportedMcpServers?: Set<string>;
   /** The long-lived consumer task. Lazily started on the first `prompt()` and
    *  kept alive for the session so between-turn/background messages are still
    *  drained and forwarded. */
@@ -3894,7 +3906,7 @@ export class ClaudeAcpAgent {
     while (this.providerUpdate) await this.providerUpdate;
     let session = this.sessions[params.sessionId];
     if (!session) {
-      throw new Error("Session not found");
+      throw RequestError.sessionNotFound(params.sessionId);
     }
     // The one re-read per user prompt, fired here and never awaited: a prompt
     // must not wait on a CLI process, and its result is pushed on change
@@ -4207,9 +4219,59 @@ export class ClaudeAcpAgent {
     await respawn;
     const respawned = this.sessions[sessionId];
     if (!respawned) {
-      throw new Error("Session not found");
+      throw RequestError.sessionNotFound(sessionId);
     }
     return respawned;
+  }
+
+  /** Tells the user about client-provided MCP servers that `system`/init
+   *  reports as `failed` or `needs-auth`, once per server per session. Servers
+   *  from the user's Claude Code settings are left to `/mcp`: they are the same
+   *  in every session, so a broken one would be reported in every session. A
+   *  `needs-auth` server is reported only when the OAuth flow can't run (no
+   *  URL elicitation on the client, or no `mcpAuthenticate` on the query);
+   *  otherwise `startMcpAuthentication` asks the user to sign in. */
+  private async reportMcpServerStartupFailures(
+    session: Session,
+    servers: SDKSystemMessage["mcp_servers"] | undefined,
+    supportsNotices: boolean,
+    sendUpdate: (notification: AcpSessionNotification) => Promise<void>,
+    sessionId: string,
+  ): Promise<void> {
+    if (!servers?.length) return;
+    const clientServers = new Set(
+      (session.creationParams?.mcpServers ?? []).map((server) => server.name),
+    );
+    const oauthAvailable =
+      !!this.clientCapabilities?.elicitation?.url && supportsMcpOAuth(session.query);
+    for (const server of servers) {
+      if (!clientServers.has(server.name) || session.reportedMcpServers?.has(server.name)) {
+        continue;
+      }
+      let notice: SessionNotice;
+      if (server.status === "failed") {
+        notice = {
+          severity: "warning",
+          title: `MCP server "${server.name}" failed to start`,
+          description: "Its tools are unavailable in this session. Run /mcp for the error.",
+        };
+      } else if (server.status === "needs-auth" && !oauthAvailable) {
+        notice = {
+          severity: "info",
+          title: `MCP server "${server.name}" needs authentication`,
+          description: "Its tools are unavailable until the server is authenticated.",
+        };
+      } else {
+        continue;
+      }
+      (session.reportedMcpServers ??= new Set()).add(server.name);
+      await sendUpdate({
+        sessionId,
+        update: noticeOrTranscriptUpdate(notice, supportsNotices, undefined, {
+          claudeCode: { kind: "mcpServerStatus", server: server.name, status: server.status },
+        }),
+      });
+    }
   }
 
   private async recreateSignedOutQuery(sessionId: string, session: Session): Promise<void> {
@@ -4227,6 +4289,12 @@ export class ClaudeAcpAgent {
       await this.recreateLiveSession(creationParams, sessionId, {
         permissionMode: session.modes.currentModeId as PermissionMode,
       });
+      // The new Session has the same MCP servers; keep the ones already
+      // reported so its first `system`/init doesn't repeat their notices.
+      const recreated = this.sessions[sessionId];
+      if (recreated && session.reportedMcpServers) {
+        recreated.reportedMcpServers = new Set(session.reportedMcpServers);
+      }
     } catch (error) {
       // Keep the husk addressable: the client answers the refusal with its own
       // auth flow and then retries this session.
@@ -4243,7 +4311,7 @@ export class ClaudeAcpAgent {
    * `resume` names the Claude session, which shares the ACP session id, so the
    * new query continues the same conversation under the same id. Claude Code
    * writes the conversation at the first prompt, so resuming a session that was
-   * never prompted fails with `resourceNotFound`, and keeps failing. Such a
+   * never prompted fails with `sessionNotFound`, and keeps failing. Such a
    * session starts a fresh query under the same id instead: it has no history
    * to lose, and the client keeps a session it can use.
    */
@@ -4258,7 +4326,9 @@ export class ClaudeAcpAgent {
     try {
       return await this.createSession(params, { resume: sessionId, ...options });
     } catch (error) {
-      if (!(error instanceof RequestError && error.code === RequestError.resourceNotFound().code)) {
+      if (!(
+        error instanceof RequestError && error.code === RequestError.sessionNotFound(sessionId).code
+      )) {
         throw error;
       }
       this.logger.log(
@@ -4436,7 +4506,7 @@ export class ClaudeAcpAgent {
     const sessionId = params.sessionId;
     let session = this.sessions[sessionId];
     if (!session) {
-      throw new Error("Session not found");
+      throw RequestError.sessionNotFound(sessionId);
     }
     const signOutRespawn = this.respawnSignedOutSession(sessionId, session);
     if (signOutRespawn) session = await signOutRespawn;
@@ -6163,6 +6233,9 @@ export class ClaudeAcpAgent {
                 if (message.capabilities?.includes("request_marker_lists_v1")) {
                   session.requestMarkerListsV1 = true;
                 }
+                if (message.capabilities?.includes("ask_user_question_unanswered_v1")) {
+                  session.askUserQuestionUnansweredV1 = true;
+                }
                 // A fresh `system`/init (e.g. after reinitialize) can carry an
                 // updated Fast mode state; reconcile it with what we seeded at
                 // session creation.
@@ -6204,6 +6277,13 @@ export class ClaudeAcpAgent {
                     }
                   }
                 }
+                await this.reportMcpServerStartupFailures(
+                  session,
+                  message.mcp_servers,
+                  supportsNotices,
+                  sendUpdate,
+                  params.sessionId,
+                );
                 break;
               case "status": {
                 // A model request that serves none of the prompts a cancel
@@ -9284,7 +9364,7 @@ export class ClaudeAcpAgent {
   ): Promise<SetSessionConfigOptionResponse> {
     const session = this.sessions[params.sessionId];
     if (!session) {
-      throw new Error("Session not found");
+      throw RequestError.sessionNotFound(params.sessionId);
     }
     // The SDK query stream already ended (see closeQueryStream); the session is
     // a husk and the `query.setModel`/`setPermissionMode`/`applyFlagSettings`
@@ -9296,7 +9376,7 @@ export class ClaudeAcpAgent {
 
     const option = session.configOptions.find((o) => o.id === params.configId);
     if (!option) {
-      throw new Error(`Unknown config option: ${params.configId}`);
+      throw RequestError.invalidParams(undefined, `Unknown config option: ${params.configId}`);
     }
 
     // Fast mode and ultracode carry a boolean value (for Clients that opted
@@ -9313,7 +9393,10 @@ export class ClaudeAcpAgent {
     }
 
     if (typeof params.value !== "string") {
-      throw new Error(`Invalid value for config option ${params.configId}: ${params.value}`);
+      throw RequestError.invalidParams(
+        undefined,
+        `Invalid value for config option ${params.configId}: ${params.value}`,
+      );
     }
 
     const allValues =
@@ -9321,17 +9404,6 @@ export class ClaudeAcpAgent {
         ? option.options.flatMap((o) => ("options" in o ? o.options : [o]))
         : [];
     let validValue = allValues.find((o) => o.value === params.value);
-
-    // The option's reported currentValue is always a valid target, even when
-    // it has no options entry: a session running an out-of-picker model
-    // (resumed onto an allowlist-excluded model, or a refusal fallback)
-    // reports a currentValue that isn't selectable, and a client
-    // round-tripping it must not get "Invalid value". It flows through the
-    // normal apply path below — re-asserting an already-current value is
-    // harmless and can repair SDK drift.
-    if (!validValue && option.currentValue === params.value) {
-      validValue = { value: params.value, name: params.value };
-    }
 
     // For model options, fall back to resolveModelPreference when the exact
     // value doesn't match.  This lets callers use human-friendly aliases like
@@ -9358,7 +9430,10 @@ export class ClaudeAcpAgent {
     }
 
     if (!validValue) {
-      throw new Error(`Invalid value for config option ${params.configId}: ${params.value}`);
+      throw RequestError.invalidParams(
+        undefined,
+        `Invalid value for config option ${params.configId}: ${params.value}`,
+      );
     }
 
     // Use the canonical option value so downstream code always receives the
@@ -10018,6 +10093,19 @@ export class ClaudeAcpAgent {
     work.awaitingUser = waiting;
     if (waiting) work.events.awaitingUser();
     else if (!withdrawnByCancel) work.events.running();
+  }
+
+  /** Sends the current title and `updatedAt` of the session `sessionId` as a
+   *  `session_info_update` (see {@link SessionTitles.publishCurrent}). A
+   *  failure is logged: the info is optional, so it does not fail a resume. */
+  async publishCurrentSessionInfo(sessionId: string): Promise<void> {
+    const session = this.sessions[sessionId];
+    if (!session) return;
+    try {
+      await session.titles.publishCurrent(session);
+    } catch (error) {
+      this.logger.error(`Session ${sessionId}: failed to send the session info:`, error);
+    }
   }
 
   /** The foreground state of the session `sessionId` now, as v2's
@@ -10725,6 +10813,23 @@ export class ClaudeAcpAgent {
         previewContent,
       );
       if (signal.aborted) throw new Error("Tool use aborted");
+      // On `session/cancel` the client answers every open permission request
+      // `cancelled`, including those of a background subagent, which the
+      // cancel does not stop. Answer such a request with a denial so the
+      // subagent reads "the user refused" and goes on. Throwing instead makes
+      // Claude Code deny it as "Tool permission request failed".
+      if (
+        response.outcome?.outcome === "cancelled" &&
+        this.sessions[sessionId] === session &&
+        !blocksForeground(session, agentID)
+      ) {
+        return {
+          behavior: "deny",
+          message: "User refused permission to run tool",
+          toolUseID,
+          decisionClassification: "user_reject",
+        };
+      }
       const decodedPermission = decodeClaudePermissionResponse(
         response,
         toolName,
@@ -10790,19 +10895,21 @@ export class ClaudeAcpAgent {
 
   /**
    * Handle elicitation requests that originate from MCP servers by forwarding
-   * them to the client over ACP. Modes the client did not advertise (or
-   * requests we can't represent) are declined.
+   * them to the client over ACP. Only the user's own decline reaches the MCP
+   * server as `decline`. A request the user never saw, because the client did
+   * not advertise its mode, we can't represent it, or the client answered with
+   * an error, is a `cancel`.
    */
   private handleMcpElicitation(sessionId: string, support: ElicitationSupport): OnElicitation {
     return async (request, { signal }) => {
       const isUrl = request.mode === "url";
       if ((isUrl && !support.url) || (!isUrl && !support.form)) {
-        return { action: "decline" };
+        return { action: "cancel" };
       }
 
       const createRequest = mcpElicitationToCreateRequest(request, sessionId);
       if (!createRequest) {
-        return { action: "decline" };
+        return { action: "cancel" };
       }
 
       try {
@@ -10819,8 +10926,11 @@ export class ClaudeAcpAgent {
         if (signal.aborted) {
           return { action: "cancel" };
         }
+        // The client answered with an error, e.g. -32602 for a form it cannot
+        // render, so the user never saw the request. MCP's `decline` means the
+        // user refused; `cancel` means they made no explicit choice.
         this.logger.error(`Failed to forward MCP elicitation: ${error}`);
-        return { action: "decline" };
+        return { action: "cancel" };
       }
     };
   }
@@ -10874,7 +10984,9 @@ export class ClaudeAcpAgent {
       throw new Error("Tool use aborted");
     }
 
-    const outcome = applyAskElicitationResponse(response, toolInput, questions);
+    const outcome = applyAskElicitationResponse(response, toolInput, questions, {
+      reportUnanswered: this.sessions[sessionId]?.askUserQuestionUnansweredV1 === true,
+    });
     if (outcome.action === "cancel") {
       throw new Error("Tool use aborted");
     }
@@ -11310,9 +11422,9 @@ export class ClaudeAcpAgent {
     // Map the SDK-reported model onto one of the session's model options
     // (handles display names and `resolvedModel` ids). The switched-to model
     // may not be among the options — e.g. excluded by the user's
-    // `availableModels` allowlist — in which case we track the raw id: the
-    // picker shows no selection, but the model-dependent bookkeeping and any
-    // later `setModel` round-trip stay truthful to what the SDK is running.
+    // `availableModels` allowlist — in which case we track the raw id.
+    // `buildModelConfigOption` then lists that id as an extra entry, so the
+    // picker shows what the SDK is running and a client can send it back.
     const resolved = resolveModelPreference(session.modelInfos, switchedModel);
     const value = resolved?.value ?? switchedModel;
     if (session.models.currentModelId === value) return;
@@ -11700,8 +11812,12 @@ export class ClaudeAcpAgent {
     const userProvidedOptions = sessionMeta?.claudeCode?.options;
     const forwardSubagentText = this.forwardsSubagentText(params._meta);
 
-    // Configure thinking behavior from environment variable
-    const thinking = resolveThinkingConfig(process.env.MAX_THINKING_TOKENS, this.logger);
+    // Configure thinking behavior from environment variables
+    const thinking = resolveThinkingConfig(
+      process.env.MAX_THINKING_TOKENS,
+      process.env.CLAUDE_CODE_THINKING_DISPLAY,
+      this.logger,
+    );
 
     // Parse model configuration from environment (e.g. Bedrock model overrides)
     const modelConfig = parseModelConfig(process.env.CLAUDE_MODEL_CONFIG);
@@ -12050,7 +12166,7 @@ export class ClaudeAcpAgent {
           (error.message === "Query closed before response received" ||
             error.message.includes("No conversation found with session ID"))
         ) {
-          throw RequestError.resourceNotFound(sessionId);
+          throw RequestError.sessionNotFound(sessionId);
         }
         throw error;
       }
@@ -12142,9 +12258,10 @@ export class ClaudeAcpAgent {
       const currentModelInfo = allowlistedModelInfo ?? fallbackModelInfo;
       // Register the fallback-resolved capabilities under the verbatim live id
       // so every modelInfos consumer (buildConfigOptions' effort lookup, later
-      // rebuilds via session.modelInfos) agrees with the gating below. The
-      // picker options themselves come from `models.availableModels`, so this
-      // adds no selectable entry. The spread keeps every capability flag
+      // rebuilds via session.modelInfos) agrees with the gating below.
+      // `buildModelConfigOption` lists this model as its own entry while it is
+      // current and drops it once the user switches to a listed model; it is
+      // never added to `models.availableModels`. The spread keeps every capability flag
       // (current and future); the identity fields are overridden because the
       // fuzzy-matched sibling's resolvedModel/displayName/description can
       // describe a different context lane and would poison later resolvedModel
@@ -13113,7 +13230,10 @@ export function resolveFastModeEnabled(params: SetSessionConfigOptionRequest): b
   if (value === FAST_MODE_OFF) {
     return false;
   }
-  throw new Error(`Invalid value for config option ${FAST_MODE_CONFIG_ID}: ${value}`);
+  throw RequestError.invalidParams(
+    undefined,
+    `Invalid value for config option ${FAST_MODE_CONFIG_ID}: ${value}`,
+  );
 }
 
 /** Per-model Fast mode state threaded into {@link buildConfigOptions}. The
@@ -13341,18 +13461,26 @@ export function promptToClaude(prompt: PromptRequest): SDKUserMessage {
         break;
       }
       case "resource": {
-        if ("text" in chunk.resource) {
-          const formattedUri = formatUriAsLink(chunk.resource.uri);
-          content.push({
-            type: "text",
-            text: formattedUri,
-          });
+        const { uri } = chunk.resource;
+        // A blob resource becomes an image or document block, or its decoded
+        // text. A v1 prompt skips a blob of any other type, e.g.
+        // `application/zip`; a v2 prompt rejects it (see `v1PromptRequest`).
+        const blob = "blob" in chunk.resource ? blobResourceToClaude(chunk.resource) : undefined;
+        const text =
+          "text" in chunk.resource
+            ? chunk.resource.text
+            : blob?.kind === "text"
+              ? blob.text
+              : undefined;
+        if (blob?.kind === "image" || blob?.kind === "document") {
+          content.push({ type: "text", text: formatUriAsLink(uri) }, blob.block);
+        } else if (text !== undefined) {
+          content.push({ type: "text", text: formatUriAsLink(uri) });
           context.push({
             type: "text",
-            text: `\n<context ref="${chunk.resource.uri}">\n${chunk.resource.text}\n</context>`,
+            text: `\n<context ref="${uri}">\n${text}\n</context>`,
           });
         }
-        // Ignore blob resources (unsupported)
         break;
       }
       case "image":
@@ -14431,23 +14559,45 @@ function immediateContextWindow(
   };
 }
 
-/** Translate the legacy `MAX_THINKING_TOKENS` env var into the SDK's `thinking`
- *  option. The `maxThinkingTokens` option it used to feed is deprecated and
- *  reduced to on/off on current models, so map the value to explicit thinking
- *  config instead: unset → `undefined` (SDK default, adaptive on models that
- *  support it); `0` → disabled; a positive integer → a fixed token budget.
- *  Anything else is ignored with a warning. */
+/** Translate the legacy `MAX_THINKING_TOKENS` env var, plus the optional
+ *  `CLAUDE_CODE_THINKING_DISPLAY` env var, into the SDK's `thinking` option.
+ *  The `maxThinkingTokens` option it used to feed is deprecated and reduced
+ *  to on/off on current models, so map the value to explicit thinking config
+ *  instead: unset → `undefined` (SDK default, adaptive on models that support
+ *  it) unless a display mode is requested, in which case it becomes explicit
+ *  `adaptive`; `0` → disabled; a positive integer → a fixed token budget.
+ *  Anything else is ignored with a warning. `CLAUDE_CODE_THINKING_DISPLAY`
+ *  must be `summarized` or `omitted`; it has no effect when thinking is
+ *  disabled. */
 function resolveThinkingConfig(
-  raw: string | undefined,
+  rawTokens: string | undefined,
+  rawDisplay: string | undefined,
   logger: Logger,
 ): ThinkingConfig | undefined {
-  if (raw === undefined) return undefined;
-  const parsed = Number.parseInt(raw, 10);
-  if (Number.isNaN(parsed) || parsed < 0) {
-    logger.error(`Ignoring MAX_THINKING_TOKENS: expected a non-negative integer, got '${raw}'.`);
-    return undefined;
+  let display: "summarized" | "omitted" | undefined;
+  if (rawDisplay !== undefined) {
+    if (rawDisplay === "summarized" || rawDisplay === "omitted") {
+      display = rawDisplay;
+    } else {
+      logger.error(
+        `Ignoring CLAUDE_CODE_THINKING_DISPLAY: expected 'summarized' or 'omitted', got '${rawDisplay}'.`,
+      );
+    }
   }
-  return parsed === 0 ? { type: "disabled" } : { type: "enabled", budgetTokens: parsed };
+
+  if (rawTokens === undefined) {
+    return display ? { type: "adaptive", display } : undefined;
+  }
+  const parsed = Number.parseInt(rawTokens, 10);
+  if (Number.isNaN(parsed) || parsed < 0) {
+    logger.error(
+      `Ignoring MAX_THINKING_TOKENS: expected a non-negative integer, got '${rawTokens}'.`,
+    );
+    return display ? { type: "adaptive", display } : undefined;
+  }
+  return parsed === 0
+    ? { type: "disabled" }
+    : { type: "enabled", budgetTokens: parsed, ...(display && { display }) };
 }
 
 function parseModelConfig(

@@ -4731,6 +4731,61 @@ describe("prompt conversion", () => {
       },
     ]);
   });
+
+  it("sends image, PDF and text blob resources to Claude, and skips other blobs", () => {
+    const blob = (uri: string, mimeType: string, data: string) => ({
+      type: "resource" as const,
+      resource: { uri, mimeType, blob: data },
+    });
+    const message = promptToClaude({
+      sessionId: "test",
+      prompt: [
+        blob("file:///work/shot.png", "image/png", "iVBORw0K"),
+        blob("file:///work/spec.pdf", "application/pdf", "JVBERi0x"),
+        blob("file:///work/notes.md", "text/markdown; charset=utf-8", "IyBOb3Rlcw=="),
+        blob("file:///work/data.json", "application/json", "eyJhIjoxfQ=="),
+        blob("file:///work/archive.zip", "application/zip", "UEsDBA=="),
+      ],
+    });
+    expect(message.message.content).toEqual([
+      { type: "text", text: "[@shot.png](file:///work/shot.png)" },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0K" } },
+      { type: "text", text: "[@spec.pdf](file:///work/spec.pdf)" },
+      {
+        type: "document",
+        source: { type: "base64", media_type: "application/pdf", data: "JVBERi0x" },
+      },
+      { type: "text", text: "[@notes.md](file:///work/notes.md)" },
+      { type: "text", text: "[@data.json](file:///work/data.json)" },
+      { type: "text", text: '\n<context ref="file:///work/notes.md">\n# Notes\n</context>' },
+      { type: "text", text: '\n<context ref="file:///work/data.json">\n{"a":1}\n</context>' },
+    ]);
+  });
+
+  it("reads image/jpg as JPEG and decodes text blobs with their charset", () => {
+    const blob = (uri: string, mimeType: string, data: string) => ({
+      type: "resource" as const,
+      resource: { uri, mimeType, blob: data },
+    });
+    const message = promptToClaude({
+      sessionId: "test",
+      prompt: [
+        blob("file:///work/shot.jpg", "image/jpg", "/9j/4AAQ"),
+        // "café" in ISO-8859-1: 63 61 66 e9.
+        blob("file:///work/menu.csv", "text/csv; charset=ISO-8859-1", "Y2Fm6Q=="),
+        // "hi" in UTF-8 with a byte order mark: ef bb bf 68 69.
+        blob("file:///work/bom.txt", "text/plain", "77u/aGk="),
+      ],
+    });
+    expect(message.message.content).toEqual([
+      { type: "text", text: "[@shot.jpg](file:///work/shot.jpg)" },
+      { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "/9j/4AAQ" } },
+      { type: "text", text: "[@menu.csv](file:///work/menu.csv)" },
+      { type: "text", text: "[@bom.txt](file:///work/bom.txt)" },
+      { type: "text", text: '\n<context ref="file:///work/menu.csv">\ncafé\n</context>' },
+      { type: "text", text: '\n<context ref="file:///work/bom.txt">\nhi\n</context>' },
+    ]);
+  });
 });
 
 describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("SDK behavior", () => {
@@ -5065,6 +5120,56 @@ describe("permission request cancellation", () => {
     controller.abort();
 
     await expect(pending).rejects.toThrow("Tool use aborted");
+  });
+
+  describe("a cancelled outcome", () => {
+    function setup() {
+      const mockClient = {
+        sessionUpdate: async () => {},
+        requestPermission: async (): Promise<RequestPermissionResponse> => ({
+          outcome: { outcome: "cancelled" },
+        }),
+      } as unknown as AcpClient;
+      const agent = new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
+      const session = injectSession(agent, "session-1");
+      session.emittedToolCalls.add("tool-1");
+      const ask = (agentID?: string) =>
+        agent.canUseTool("session-1")("Bash", { command: "ls" }, {
+          signal: new AbortController().signal,
+          suggestions: [],
+          toolUseID: "tool-1",
+          ...(agentID ? { agentID } : {}),
+        } as any);
+      return { session, ask };
+    }
+
+    it("aborts the tool use of foreground work", async () => {
+      const { session, ask } = setup();
+      // A subagent that runs in the foreground blocks the turn like the main thread.
+      session.liveBackgroundTasks.set("agent-fg", { isSubagent: true });
+
+      await expect(ask()).rejects.toThrow("Tool use aborted");
+      await expect(ask("agent-fg")).rejects.toThrow("Tool use aborted");
+    });
+
+    it("denies the tool use of a background subagent", async () => {
+      const { session, ask } = setup();
+      session.liveBackgroundTasks.set("agent-bg", { isSubagent: true, backgrounded: true });
+      // A subagent that a background subagent started is background work too.
+      session.liveBackgroundTasks.set("agent-nested", {
+        isSubagent: true,
+        parentTaskId: "agent-bg",
+      });
+
+      for (const agentID of ["agent-bg", "agent-nested"]) {
+        await expect(ask(agentID)).resolves.toEqual({
+          behavior: "deny",
+          message: "User refused permission to run tool",
+          toolUseID: "tool-1",
+          decisionClassification: "user_reject",
+        });
+      }
+    });
   });
 
   /** The requests to the client that are elicitations, and how each ends when its signal aborts. */
@@ -7628,7 +7733,7 @@ describe("subagent permission attribution (issue #851)", () => {
           configId: "model",
           value: "fallback-model",
         }),
-      ).rejects.toThrow("Session not found");
+      ).rejects.toMatchObject({ code: -32002, data: { sessionId: "agent-42" } });
     });
 
     it("announces the child as running, then sends it the prompt as a message", async () => {
@@ -13199,7 +13304,13 @@ describe("model refusal fallback handling", () => {
     // model-dependent bookkeeping doesn't keep advertising the refused model.
     expect(session.models.currentModelId).toBe("claude-mystery-9");
     const updates = sessionUpdate.mock.calls.map((c: any[]) => (c[0] as { update: any }).update);
-    expect(updates.some((u) => u.sessionUpdate === "config_option_update")).toBe(true);
+    const configUpdate = updates.find((u) => u.sessionUpdate === "config_option_update");
+    // ACP requires currentValue to be one of the options, so the raw id is listed.
+    const modelOption = configUpdate.configOptions.find((o: any) => o.id === "model");
+    expect(modelOption.currentValue).toBe("claude-mystery-9");
+    expect(modelOption.options).toContainEqual(
+      expect.objectContaining({ value: "claude-mystery-9", name: "claude-mystery-9" }),
+    );
   });
 
   it("skips the config update when the fallback equals the tracked model", async () => {
@@ -13419,6 +13530,146 @@ describe("model refusal fallback handling", () => {
           u.content.text.includes("Background task declined."),
       ),
     ).toBe(false);
+  });
+});
+
+describe("MCP server startup failures", () => {
+  function setup(mcpServersStatus: { name: string; status: string; source?: string }[]) {
+    const sessionUpdate = vi.fn(async () => {});
+    const agent = new ClaudeAcpAgent({ sessionUpdate } as unknown as AcpClient, {
+      log: () => {},
+      error: () => {},
+    });
+    const init = {
+      type: "system",
+      subtype: "init",
+      session_id: "test-session",
+      mcp_servers: mcpServersStatus,
+    };
+    async function* generator(input: Pushable<any>) {
+      const iter = input[Symbol.asyncIterator]();
+      const { value: userMessage } = await iter.next();
+      yield {
+        type: "user",
+        message: userMessage.message,
+        parent_tool_use_id: null,
+        uuid: userMessage.uuid,
+        session_id: "test-session",
+        isReplay: true,
+      };
+      // init re-emits on every turn with the same statuses.
+      yield init;
+      yield init;
+      yield {
+        type: "result",
+        subtype: "success",
+        stop_reason: null,
+        is_error: false,
+        result: "",
+        errors: [],
+        duration_ms: 0,
+        duration_api_ms: 0,
+        num_turns: 1,
+        total_cost_usd: 0,
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+        modelUsage: {},
+        permission_denials: [],
+        uuid: randomUUID(),
+        session_id: "test-session",
+      };
+      yield { type: "system", subtype: "session_state_changed", state: "idle" };
+    }
+    injectGeneratorSession(agent, generator, {
+      creationParams: {
+        cwd: "/tmp",
+        mcpServers: [
+          { name: "client-fs", command: "fs-server", args: [], env: [] },
+          { name: "client-api", type: "http", url: "https://example.com/mcp", headers: [] },
+        ],
+      },
+    });
+    const updates = () =>
+      sessionUpdate.mock.calls.map((c: any[]) => (c[0] as { update: any }).update);
+    return { agent, updates };
+  }
+
+  it("sends one notice per failed client-provided server and ignores settings servers", async () => {
+    const { agent, updates } = setup([
+      { name: "client-fs", status: "failed", source: "dynamic" },
+      { name: "client-api", status: "connected", source: "dynamic" },
+      { name: "from-settings", status: "failed", source: "user" },
+    ]);
+    await agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: { session: { notices: {} } },
+    });
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "hi" }] });
+
+    expect(updates().filter((u) => u.sessionUpdate === "notice")).toEqual([
+      {
+        sessionUpdate: "notice",
+        severity: "warning",
+        title: 'MCP server "client-fs" failed to start',
+        description: "Its tools are unavailable in this session. Run /mcp for the error.",
+      },
+    ]);
+  });
+
+  it("reports a needs-auth server only when the client can't run OAuth", async () => {
+    const withoutUrlElicitation = setup([{ name: "client-api", status: "needs-auth" }]);
+    await withoutUrlElicitation.agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: { session: { notices: {} } },
+    });
+    await withoutUrlElicitation.agent.prompt({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "hi" }],
+    });
+    expect(withoutUrlElicitation.updates().filter((u) => u.sessionUpdate === "notice")).toEqual([
+      {
+        sessionUpdate: "notice",
+        severity: "info",
+        title: 'MCP server "client-api" needs authentication',
+        description: "Its tools are unavailable until the server is authenticated.",
+      },
+    ]);
+
+    const withUrlElicitation = setup([{ name: "client-api", status: "needs-auth" }]);
+    // The OAuth flow also needs the query's `mcpAuthenticate`.
+    (withUrlElicitation.agent as any).sessions["test-session"].query.mcpAuthenticate = vi.fn(
+      async () => ({}),
+    );
+    await withUrlElicitation.agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: { session: { notices: {} }, elicitation: { url: {} } },
+    });
+    await withUrlElicitation.agent.prompt({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "hi" }],
+    });
+    expect(withUrlElicitation.updates().filter((u) => u.sessionUpdate === "notice")).toEqual([]);
+  });
+
+  it("falls back to a transcript line without the notices capability", async () => {
+    const { agent, updates } = setup([{ name: "client-fs", status: "failed" }]);
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "hi" }] });
+
+    const lines = updates().filter(
+      (u) =>
+        u.sessionUpdate === "agent_message_chunk" &&
+        u._meta?.claudeCode?.kind === "mcpServerStatus",
+    );
+    expect(lines).toHaveLength(1);
+    expect(lines[0].content.text).toBe(
+      '**MCP server "client-fs" failed to start:** Its tools are unavailable in this session. Run /mcp for the error.',
+    );
   });
 });
 
@@ -14497,7 +14748,7 @@ describe("getOrCreateSession param change detection", () => {
     injectSession(agent, "s1", { cwd: "/project" });
     const createSessionSpy = vi
       .spyOn(agent as any, "createSession")
-      .mockRejectedValueOnce(RequestError.resourceNotFound("s1"))
+      .mockRejectedValueOnce(RequestError.sessionNotFound("s1"))
       .mockResolvedValueOnce({ sessionId: "s1", modes: undefined, configOptions: [] });
 
     await expect(
@@ -14527,11 +14778,11 @@ describe("getOrCreateSession param change detection", () => {
     const agent = createMockAgent();
     const createSessionSpy = vi
       .spyOn(agent as any, "createSession")
-      .mockRejectedValue(RequestError.resourceNotFound("s1"));
+      .mockRejectedValue(RequestError.sessionNotFound("s1"));
 
     await expect(
       agent.resumeSession({ sessionId: "s1", cwd: "/project", mcpServers: [] }),
-    ).rejects.toMatchObject({ code: RequestError.resourceNotFound().code });
+    ).rejects.toMatchObject({ code: -32002, data: { sessionId: "s1" } });
 
     expect(createSessionSpy).toHaveBeenCalledTimes(1);
   });
@@ -25682,7 +25933,7 @@ describe("turn steering (_session/steering)", () => {
     const agent = createMockAgent();
     await expect(
       agent.steer({ sessionId: "missing", prompt: [{ type: "text", text: "hi" }] }),
-    ).rejects.toThrow("Session not found");
+    ).rejects.toMatchObject({ code: -32002, data: { sessionId: "missing" } });
   });
 
   it("rejects when the query stream has already closed", async () => {
