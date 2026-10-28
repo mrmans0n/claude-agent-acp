@@ -1,42 +1,112 @@
 {
   "version": 1,
-  "fromTag": "v0.85.1",
-  "toTag": "v0.85.1",
-  "toCommit": "686c0c99b3b89217b74d1f5de8272e7c9ef1aab4",
+  "fromTag": "v0.98.0",
+  "toTag": "v0.99.0",
+  "toCommit": "106e3031e393daebc7170c3fe9ed46d0e0ee6c40",
   "patches": [
     {
       "name": "goal-capability-opt-in",
-      "commit": "60749d07ff50308ef96c5251152a8d4986fe680f",
+      "commit": "72c08026539006157f7cd80b006e5a01262acae8",
       "upstreamPr": 1245,
       "files": ["docs/air-extensions.md", "src/acp-agent.ts", "src/goal-extension.ts"],
       "tests": ["src/tests/acp-agent.test.ts"],
-      "classification": "unaffected",
+      "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": [],
+      "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
         "decision": "retain",
-        "rationale": "No equivalent upstream patch or overlapping path was detected.",
-        "tests": ["src/tests/acp-agent.test.ts"],
-        "automatic": true
+        "rationale": "Goals stay AIR-only upstream in v0.99.0 and there is still no provider-neutral opt-in, so the patch is not absorbed. The v0.99.0 src/acp-agent.ts edits are: ACP error codes for unknown sessions and invalid config values (#1458), MCP server startup notices (#1464), a deny for a cancelled background permission request (#1466), embedded blob resources in prompts (#1460), the elicitation cancel/decline split (#1465), the current model listed among the model config values (#1463), the AskUserQuestion unanswered capability from the SDK 0.3.312 bump (#1471), CLAUDE_CODE_THINKING_DISPLAY (#1081) and the ACP v2 publishCurrentSessionInfo hook for session/resume (#1462). None of them reads or advertises the goal capability, calls goalMeta or the GOAL_* constants, or touches a goal call site; v0.99.0 does not change src/goal-extension.ts or docs/air-extensions.md. The candidate replays it onto the exact v0.99.0 tag with an unchanged stable patch-id, so its added, removed and context lines are identical to the ledger commit. (650615ee). The goal tests and the full suite pass on the integration.",
+        "tests": ["npm exec -- vitest run src/tests/acp-agent.test.ts -t goal", "npm run test:run"],
+        "automatic": false
       }
     },
     {
       "name": "async-tasks-opt-in",
-      "commit": "3e098c71628cc7d5927ee8a3d794faa433dce12d",
+      "commit": "48f6fdcde0ad99ccf65f36e13b94fda8da278357",
       "upstreamPr": null,
       "files": ["src/acp-agent.ts", "src/async-tasks.ts"],
       "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
-      "classification": "unaffected",
+      "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": [],
+      "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
         "decision": "retain",
-        "rationale": "No equivalent upstream patch or overlapping path was detected.",
-        "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
-        "automatic": true
+        "rationale": "Upstream async tasks remain AIR-only in v0.99.0, so the patch is not absorbed. v0.99.0 does not change src/async-tasks.ts, src/tool-calls/background.ts, README.md or docs/air-extensions.md, and no new upstream code reads the async task capability; the opted-in client still goes through clientSupportsAsyncTasks. The v0.99.0 src/acp-agent.ts edits are: ACP error codes for unknown sessions and invalid config values (#1458), MCP server startup notices (#1464), a deny for a cancelled background permission request (#1466), embedded blob resources in prompts (#1460), the elicitation cancel/decline split (#1465), the current model listed among the model config values (#1463), the AskUserQuestion unanswered capability from the SDK 0.3.312 bump (#1471), CLAUDE_CODE_THINKING_DISPLAY (#1081) and the ACP v2 publishCurrentSessionInfo hook for session/resume (#1462). #1466 decides background work with blocksForeground over session.liveBackgroundTasks, independent of client capabilities, so an opted-in Alas client that answers a background subagent's permission request with cancelled gets the same user_reject deny as AIR. The candidate replays it onto the exact v0.99.0 tag with an unchanged stable patch-id, so its added, removed and context lines are identical to the ledger commit. (ede9c20f).",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-agent.test.ts src/tests/async-tasks.test.ts src/tests/create-session-options.test.ts",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "context-usage-extension",
+      "commit": "9f323fa6ec78fc0def9f8ac04089b500060f0181",
+      "upstreamPr": null,
+      "files": ["src/acp-agent.ts"],
+      "tests": ["src/tests/acp-agent.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "retain",
+        "rationale": "Upstream v0.99.0 has no _alas/context_usage request and no contextUsage advertisement, so the patch is not absorbed. The SDK bump to @anthropic-ai/claude-agent-sdk 0.3.312 (#1471) keeps Query.getContextUsage({ detail }) and the build type-checks the handler against it. #1458 moves upstream's own unknown-session errors to RequestError.sessionNotFound; the extension handler keeps RequestError.resourceNotFound(sessionId), which in @agentclientprotocol/sdk 2.1.0 has the same JSON-RPC code -32002 and differs only in message and data (uri instead of sessionId). The shipped Alas contract therefore stays unchanged, and aligning the data key is left to a separate downstream change rather than a sync. The v0.99.0 src/acp-agent.ts edits are: ACP error codes for unknown sessions and invalid config values (#1458), MCP server startup notices (#1464), a deny for a cancelled background permission request (#1466), embedded blob resources in prompts (#1460), the elicitation cancel/decline split (#1465), the current model listed among the model config values (#1463), the AskUserQuestion unanswered capability from the SDK 0.3.312 bump (#1471), CLAUDE_CODE_THINKING_DISPLAY (#1081) and the ACP v2 publishCurrentSessionInfo hook for session/resume (#1462). None touches the request handler or the initialize _meta.contextUsage entry. The candidate replays it onto the exact v0.99.0 tag with an unchanged stable patch-id, so its added, removed and context lines are identical to the ledger commit. (1ddb0ffe).",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-agent.test.ts src/tests/acp-v2.test.ts src/tests/create-session-options.test.ts",
+          "npm run build",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "neutral-session-index",
+      "commit": "084636fc202d689909027fc28259bcf0b05f3781",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/acp-agent.ts",
+        "src/session-index/connection.ts",
+        "src/session-index/list-subscriptions.ts",
+        "src/session-index/meta.ts",
+        "src/session-index/service.ts",
+        "src/session-index/session-info.ts"
+      ],
+      "tests": ["src/tests/acp-scenarios.test.ts", "src/tests/session-index.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "retain",
+        "rationale": "The session index stays AIR-namespaced upstream in v0.99.0, so the patch is not absorbed. v0.99.0 does not change src/session-index/ or docs/air-extensions.md; its only session-index test edit asserts that a prompt to an archived session rejects with code -32002 and data.sessionId (#1458), which passes with the patch. publishCurrentSessionInfo (#1462) is called only from src/v2/agent.ts on session/resume, and the session index never negotiates for ACP v2 clients, so its session_info_update carries no session index _meta for either namespace. The v0.99.0 src/acp-agent.ts edits are: ACP error codes for unknown sessions and invalid config values (#1458), MCP server startup notices (#1464), a deny for a cancelled background permission request (#1466), embedded blob resources in prompts (#1460), the elicitation cancel/decline split (#1465), the current model listed among the model config values (#1463), the AskUserQuestion unanswered capability from the SDK 0.3.312 bump (#1471), CLAUDE_CODE_THINKING_DISPLAY (#1081) and the ACP v2 publishCurrentSessionInfo hook for session/resume (#1462). None of them builds session list, batch_get or session info rows. The candidate replays it onto the exact v0.99.0 tag with an unchanged stable patch-id, so its added, removed and context lines are identical to the ledger commit. (30c267dd).",
+        "tests": [
+          "npm exec -- vitest run src/tests/session-index.test.ts src/tests/acp-scenarios.test.ts",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "settle-at-result",
+      "commit": "9234ca9b1c0ddc47dfdadaa26f1ce30cb7c4b508",
+      "upstreamPr": null,
+      "files": ["src/acp-agent.ts"],
+      "tests": ["src/tests/acp-agent.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "retain",
+        "rationale": "Upstream v0.99.0 does not change endsTurnsWithLiveSubagents, turnAwaitingSubagents, Turn.deferredSettle or the backgroundSubagents capability, so the opt-in still goes through upstream's single gate, for ACP v1 only, and is not absorbed. #1466 answers a cancelled permission request of background work (decided by blocksForeground, not by a client capability) with a user_reject deny; a settleAtResult client that cancels while a background subagent waits on a permission request gets that deny exactly as an AIR client with backgroundSubagents does. The v0.99.0 src/acp-agent.ts edits are: ACP error codes for unknown sessions and invalid config values (#1458), MCP server startup notices (#1464), a deny for a cancelled background permission request (#1466), embedded blob resources in prompts (#1460), the elicitation cancel/decline split (#1465), the current model listed among the model config values (#1463), the AskUserQuestion unanswered capability from the SDK 0.3.312 bump (#1471), CLAUDE_CODE_THINKING_DISPLAY (#1081) and the ACP v2 publishCurrentSessionInfo hook for session/resume (#1462). The candidate replays it onto the exact v0.99.0 tag with an unchanged stable patch-id, so its added, removed and context lines are identical to the ledger commit. (02124f5d).",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-agent.test.ts -t \"settleAtResult|a cancelled outcome\"",
+          "npm run test:run"
+        ],
+        "automatic": false
       }
     }
   ],
   "preservedCommits": [],
+  "retiredCommits": [],
   "resolved": true
 }
