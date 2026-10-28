@@ -3091,36 +3091,38 @@ export class ClaudeAcpAgent {
       // Top-level `_meta` (sibling of `agentCapabilities`), per the existing ACP
       // steering extension contract: advertises the `_session/steering` request
       // so clients know they may inject a follow-up into a running turn.
-      _meta: asyncTaskCapabilityMeta(this.clientCapabilities, {
-        ...goalMeta(
-          this.clientCapabilities,
-          {
-            version: GOAL_EXTENSION_VERSION,
-            controlMethod: GOAL_CONTROL_METHOD,
-            actions: [...GOAL_ACTIONS],
-          } satisfies GoalCapability,
-          this.toolCallCapabilities.air.client
-            ? airSessionFailureCapabilityMeta(
-                AGENT_FILE_CHANGE_REPORT_CAPABILITY,
-                AIR_NATIVE_SUBAGENT_SESSIONS_CAPABILITY,
-                AIR_ASYNC_TASKS_CAPABILITY,
-                AIR_CUSTOM_INSTRUCTIONS_CAPABILITY,
-                AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY,
-                AIR_DIFF_PATCH_CAPABILITY,
-                AIR_PLAN_FILE_CAPABILITY,
-                // ACP v2 keeps the hold (see `src/v2/prompt.ts`).
-                ...(this.v2 ? [] : [AIR_BACKGROUND_SUBAGENTS_CAPABILITY]),
-                ...this.sessionIndex.capabilities(),
-              )
-            : undefined,
-        ),
-        steering: {
-          supported: true,
-        },
-        ...(clientRequestsContextUsage(this.clientCapabilities)
-          ? { contextUsage: { supported: true } }
-          : {}),
-      }),
+      _meta: this.sessionIndex.withNeutralCapabilities(
+        asyncTaskCapabilityMeta(this.clientCapabilities, {
+          ...goalMeta(
+            this.clientCapabilities,
+            {
+              version: GOAL_EXTENSION_VERSION,
+              controlMethod: GOAL_CONTROL_METHOD,
+              actions: [...GOAL_ACTIONS],
+            } satisfies GoalCapability,
+            this.toolCallCapabilities.air.client
+              ? airSessionFailureCapabilityMeta(
+                  AGENT_FILE_CHANGE_REPORT_CAPABILITY,
+                  AIR_NATIVE_SUBAGENT_SESSIONS_CAPABILITY,
+                  AIR_ASYNC_TASKS_CAPABILITY,
+                  AIR_CUSTOM_INSTRUCTIONS_CAPABILITY,
+                  AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY,
+                  AIR_DIFF_PATCH_CAPABILITY,
+                  AIR_PLAN_FILE_CAPABILITY,
+                  // ACP v2 keeps the hold (see `src/v2/prompt.ts`).
+                  ...(this.v2 ? [] : [AIR_BACKGROUND_SUBAGENTS_CAPABILITY]),
+                  ...this.sessionIndex.capabilities(),
+                )
+              : undefined,
+          ),
+          steering: {
+            supported: true,
+          },
+          ...(clientRequestsContextUsage(this.clientCapabilities)
+            ? { contextUsage: { supported: true } }
+            : {}),
+        }),
+      ),
     };
   }
 
