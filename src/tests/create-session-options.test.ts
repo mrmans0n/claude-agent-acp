@@ -1295,6 +1295,66 @@ describe("createSession options merging", () => {
     });
   });
 
+  describe("thinking display from CLAUDE_CODE_THINKING_DISPLAY", () => {
+    let originalMaxThinking: string | undefined;
+    let originalDisplay: string | undefined;
+
+    beforeEach(() => {
+      originalMaxThinking = process.env.MAX_THINKING_TOKENS;
+      originalDisplay = process.env.CLAUDE_CODE_THINKING_DISPLAY;
+      delete process.env.MAX_THINKING_TOKENS;
+      delete process.env.CLAUDE_CODE_THINKING_DISPLAY;
+    });
+
+    afterEach(() => {
+      if (originalMaxThinking !== undefined) {
+        process.env.MAX_THINKING_TOKENS = originalMaxThinking;
+      } else {
+        delete process.env.MAX_THINKING_TOKENS;
+      }
+      if (originalDisplay !== undefined) {
+        process.env.CLAUDE_CODE_THINKING_DISPLAY = originalDisplay;
+      } else {
+        delete process.env.CLAUDE_CODE_THINKING_DISPLAY;
+      }
+    });
+
+    it("becomes explicit adaptive thinking when only display is set", async () => {
+      process.env.CLAUDE_CODE_THINKING_DISPLAY = "omitted";
+      await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+      expect(capturedOptions!.thinking).toEqual({ type: "adaptive", display: "omitted" });
+    });
+
+    it("attaches display to a fixed thinking budget", async () => {
+      process.env.MAX_THINKING_TOKENS = "12000";
+      process.env.CLAUDE_CODE_THINKING_DISPLAY = "summarized";
+      await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+      expect(capturedOptions!.thinking).toEqual({
+        type: "enabled",
+        budgetTokens: 12000,
+        display: "summarized",
+      });
+    });
+
+    it("has no effect when thinking is disabled", async () => {
+      process.env.MAX_THINKING_TOKENS = "0";
+      process.env.CLAUDE_CODE_THINKING_DISPLAY = "summarized";
+      await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+      expect(capturedOptions!.thinking).toEqual({ type: "disabled" });
+    });
+
+    it("ignores an invalid value", async () => {
+      process.env.CLAUDE_CODE_THINKING_DISPLAY = "verbose";
+      const errorSpy = vi.fn();
+      (agent as any).logger = { log: () => {}, error: errorSpy };
+      await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+      expect(capturedOptions!.thinking).toBeUndefined();
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("CLAUDE_CODE_THINKING_DISPLAY"),
+      );
+    });
+  });
+
   describe("cwd validation", () => {
     it("rejects a relative cwd with invalidParams", async () => {
       await expect(
@@ -2041,7 +2101,7 @@ describe("createSession options merging", () => {
 
       await expect(
         loadAgent.loadSession({ sessionId: "replay-probe", cwd: process.cwd(), mcpServers: [] }),
-      ).rejects.toMatchObject({ code: RequestError.resourceNotFound().code });
+      ).rejects.toMatchObject({ code: -32002, data: { sessionId: "replay-probe" } });
       expect(updates).toEqual([]);
       expect((loadAgent as any).sessions["replay-probe"]).toBeUndefined();
     });
@@ -2063,7 +2123,8 @@ describe("createSession options merging", () => {
         mcpServers: [],
       });
       const failed = expect(loading).rejects.toMatchObject({
-        code: RequestError.resourceNotFound().code,
+        code: -32002,
+        data: { sessionId: "replay-probe" },
       });
 
       failInit();
