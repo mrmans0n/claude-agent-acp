@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "baseTag": "v0.99.0",
+  "baseTag": "v0.99.1",
   "patches": [
     {
       "name": "goal-capability-opt-in",
@@ -11,8 +11,8 @@
       "tests": ["src/tests/acp-agent.test.ts"],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.98.0",
-        "toTag": "v0.99.0",
+        "fromTag": "v0.99.0",
+        "toTag": "v0.99.1",
         "originalCommit": "72c08026539006157f7cd80b006e5a01262acae8",
         "decision": "retain"
       },
@@ -33,8 +33,8 @@
       "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.98.0",
-        "toTag": "v0.99.0",
+        "fromTag": "v0.99.0",
+        "toTag": "v0.99.1",
         "originalCommit": "48f6fdcde0ad99ccf65f36e13b94fda8da278357",
         "decision": "retain"
       },
@@ -85,8 +85,8 @@
         "f6e9e43e0018babdc7063f50b6a45cf1b585f396"
       ],
       "lastResolution": {
-        "fromTag": "v0.98.0",
-        "toTag": "v0.99.0",
+        "fromTag": "v0.99.0",
+        "toTag": "v0.99.1",
         "originalCommit": "9f323fa6ec78fc0def9f8ac04089b500060f0181",
         "decision": "retain"
       }
@@ -108,8 +108,8 @@
       "tests": ["src/tests/acp-scenarios.test.ts", "src/tests/session-index.test.ts"],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.98.0",
-        "toTag": "v0.99.0",
+        "fromTag": "v0.99.0",
+        "toTag": "v0.99.1",
         "originalCommit": "084636fc202d689909027fc28259bcf0b05f3781",
         "decision": "retain"
       },
@@ -135,8 +135,8 @@
         "6a528efc8f3d208968a72224808fde741027e926"
       ],
       "lastResolution": {
-        "fromTag": "v0.98.0",
-        "toTag": "v0.99.0",
+        "fromTag": "v0.99.0",
+        "toTag": "v0.99.1",
         "originalCommit": "9234ca9b1c0ddc47dfdadaa26f1ce30cb7c4b508",
         "decision": "retain"
       }
