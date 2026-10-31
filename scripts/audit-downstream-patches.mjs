@@ -58,6 +58,35 @@ const CLAUDE_PATCH_IDENTITIES = [
     files: ["src/acp-agent.ts"],
     tests: ["src/tests/acp-agent.test.ts"],
   },
+  {
+    name: "acp-sdk-2-2-0",
+    identityCommit: "b464dd4824e8a0716b1948517d1dc6825254ab29",
+    upstreamPr: 1491,
+    files: ["package-lock.json", "package.json", "src/elicitation.ts"],
+    tests: [
+      "src/tests/acp-scenarios/harness.ts",
+      "src/tests/acp-v2.test.ts",
+      "src/tests/elicitation.test.ts",
+    ],
+  },
+  {
+    name: "subagent-cwd",
+    identityCommit: "7f76bbe6b76c7f4c2aef88918536c83d2e0acfd3",
+    upstreamPr: 1496,
+    files: [
+      "README.md",
+      "src/acp-agent.ts",
+      "src/native-subagents.ts",
+      "src/subagent-history.ts",
+      "src/subagent-replay.ts",
+    ],
+    tests: [
+      "src/tests/acp-agent.test.ts",
+      "src/tests/acp-v2.test.ts",
+      "src/tests/create-session-options.test.ts",
+      "src/tests/native-subagents.test.ts",
+    ],
+  },
 ];
 
 function sameJson(left, right) {
