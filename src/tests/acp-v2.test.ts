@@ -162,8 +162,8 @@ afterEach(async () => {
 
 /** Connects a fresh router to a client, and returns the client end of the stream. */
 function connectRouter(protocols?: AcpProtocols): v2.Stream {
-  const toAgent = new TransformStream<v2.AnyWireMessage, v2.AnyWireMessage>();
-  const toClient = new TransformStream<v2.AnyWireMessage, v2.AnyWireMessage>();
+  const toAgent = new TransformStream<v2.AnyMessage, v2.AnyMessage>();
+  const toClient = new TransformStream<v2.AnyMessage, v2.AnyMessage>();
   acpProtocolRouter(undefined, (agent) => agents.push(agent), protocols).connect({
     readable: toAgent.readable,
     writable: toClient.writable,
@@ -417,11 +417,11 @@ describe("ACP protocol routing", () => {
       params: { protocolVersion: v2.PROTOCOL_VERSION, info: V2_CLIENT_INFO, capabilities: {} },
     });
     const reader = stream.readable.getReader();
-    let response: v2.AnyWireMessage | undefined;
+    let response: v2.AnyMessage | undefined;
     while (!response) {
       const { value, done } = await reader.read();
       if (done) break;
-      if (!Array.isArray(value) && "id" in value && value.id === 1) response = value;
+      if ("id" in value && value.id === 1) response = value;
     }
     await writer.close();
 
@@ -5232,9 +5232,12 @@ describe("ACP v2 session translation", () => {
       sessionId: "agent-1",
       title: "Explore",
       description: "Look around",
+      cwd: "/project/.claude/worktrees/agent-1",
       state: { state: "running" as const },
     };
     expect(v2SessionUpdate(announcement)).toEqual(announcement);
+    const cleared = { sessionUpdate: "subagent_update" as const, sessionId: "agent-1", cwd: null };
+    expect(v2SessionUpdate(cleared)).toEqual(cleared);
     const message = {
       sessionUpdate: "session_message" as const,
       messageId: "toolu_agent",
