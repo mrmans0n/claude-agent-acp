@@ -1096,6 +1096,35 @@ describe("client-neutral session index", () => {
     await agent.deleteSession({ sessionId: session.id });
     await expect(fs.stat(session.file)).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  // Since v0.100.0, `session/list` rejects a relative `cwd` first, and a list
+  // without the index asks the SDK with `includeWorktrees: false`. The neutral
+  // index lists from its own index, as for AIR with `sessionIndex`.
+  it("rejects a relative cwd, and lists from the index without the SDK list", async () => {
+    const session = await writeTranscript({ lastMessageAt: base });
+    const { agent } = await neutralAgent();
+    vi.mocked(listSessions).mockClear();
+
+    await expect(agent.listSessions({ cwd: "relative/dir" })).rejects.toMatchObject({
+      code: -32602,
+    });
+    const page = await agent.listSessions({ cwd: workspace });
+    expect(page.sessions.map((s) => s.sessionId)).toEqual([session.id]);
+    expect(indexRow(page.sessions[0]!)).toMatchObject({ archived: false, state: "idle" });
+    expect(listSessions).not.toHaveBeenCalled();
+  });
+
+  // Since v0.100.0, the delete of an unknown session succeeds for an AIR
+  // client without `sessionIndex` and for any client without the index. A
+  // client with the index, AIR or neutral, still gets -32002.
+  it("fails the delete of an unknown session with -32002", async () => {
+    const { agent } = await neutralAgent();
+    vi.mocked(deleteSession).mockClear();
+    await expect(agent.deleteSession({ sessionId: randomUUID() })).rejects.toMatchObject({
+      code: -32002,
+    });
+    expect(deleteSession).not.toHaveBeenCalled();
+  });
 });
 
 describe("session/list of a sessionIndex client", () => {
@@ -1582,7 +1611,7 @@ describe("old session/list path", () => {
     expect(page.sessions.map((s) => s.sessionId)).toEqual([session.id]);
     expect(page.sessions[0]).not.toHaveProperty("_meta");
     expect(vi.mocked(listSessions).mock.calls).toEqual([
-      [{ dir: workspace, limit: 1001, offset: 0 }],
+      [{ dir: workspace, includeWorktrees: false, limit: 1001, offset: 0 }],
     ]);
 
     // AIR without sessionIndex: the same SDK call.
@@ -1593,7 +1622,7 @@ describe("old session/list path", () => {
       (await airAgent.listSessions({ cwd: workspace })).sessions.map((s) => s.sessionId),
     ).toEqual([session.id]);
     expect(vi.mocked(listSessions).mock.calls).toEqual([
-      [{ dir: workspace, limit: 1001, offset: 0 }],
+      [{ dir: workspace, includeWorktrees: false, limit: 1001, offset: 0 }],
     ]);
   });
 
@@ -2989,17 +3018,12 @@ describe("a session that another process holds", () => {
 });
 
 describe("session/delete of an AIR client without sessionIndex", () => {
-  it("fails for an unknown session as the SDK delete did", async () => {
+  it("succeeds for an unknown session, as ACP asks", async () => {
     const { agent } = createAgent();
     await initializeClient(agent, air());
     for (const sessionId of [randomUUID(), "not-a-uuid"]) {
-      const sdkError = await vi.mocked(deleteSession).getMockImplementation()!(sessionId).then(
-        () => undefined,
-        (error: Error) => error,
-      );
-      expect(sdkError).toBeInstanceOf(Error);
       vi.mocked(deleteSession).mockClear();
-      await expect(agent.deleteSession({ sessionId })).rejects.toThrow(sdkError!.message);
+      await expect(agent.deleteSession({ sessionId })).resolves.toEqual({});
       expect(deleteSession).not.toHaveBeenCalled();
     }
   });
@@ -3341,14 +3365,13 @@ describe("empty transcripts on delete", () => {
     const dir = path.join(configDir, "projects", encodeProjectPath(workspace));
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, `${id}.jsonl`), "");
-    const sdkError = await sdkDelete()(id).then(
-      () => undefined,
-      (error: Error) => error,
-    );
+    // The SDK delete does not find an empty transcript, so there is nothing to
+    // archive: the delete succeeds and leaves the file as it is.
+    await expect(sdkDelete()(id)).rejects.toThrow("not found");
     const service = new SessionIndexService({
       logError: () => {},
     });
-    await expect(archiveInsteadOfDelete(id, service)).rejects.toThrow(sdkError!.message);
+    await expect(archiveInsteadOfDelete(id, service)).resolves.toBeUndefined();
     expect(await fs.readFile(path.join(dir, `${id}.jsonl`), "utf8")).toBe("");
   });
 });

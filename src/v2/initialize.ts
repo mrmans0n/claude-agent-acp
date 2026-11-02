@@ -14,6 +14,7 @@ import {
   type InitializeResponse,
 } from "@agentclientprotocol/sdk/unstable";
 import * as v2 from "@agentclientprotocol/sdk/experimental/v2/unstable";
+import { AIR_ASYNC_TASKS_CAPABILITY, AIR_GOAL_KEY } from "../air-extension.js";
 import { SYSTEM_PROMPT_CAPABILITY } from "../client-system-prompt.js";
 
 /** The v1 `initialize` request that a v2 client means. */
@@ -57,23 +58,31 @@ export function v1InitializeRequest(request: v2.InitializeRequest): InitializeRe
 /**
  * The top-level `_meta` keys of the agent's v1 `initialize` response that
  * advertise an extension the v2 surface does not serve yet: `steering`, for
- * `_session/steering`.
+ * `_session/steering`, and the provider-neutral `async-tasks`, for
+ * `_session/async_task/stop` (as the AIR `asyncTasks` capability, see
+ * {@link withoutUnservedAirExtensions}), and the Alas `contextUsage`, for
+ * `_alas/context_usage`.
  */
-const UNSERVED_EXTENSION_KEYS: readonly string[] = ["steering"];
+const UNSERVED_EXTENSION_KEYS: readonly string[] = ["steering", "async-tasks", "contextUsage"];
 
 /**
  * The v2 `initialize` response for the v1 response of the agent.
  *
  * It does not advertise what the v2 surface does not serve yet: the
- * extensions of {@link UNSERVED_EXTENSION_KEYS}.
+ * extensions of {@link UNSERVED_EXTENSION_KEYS}, and the AIR extensions of
+ * {@link withoutUnservedAirExtensions}.
  */
 export function v2InitializeResponse(response: InitializeResponse): v2.InitializeResponse {
   if (!response.agentInfo) {
     throw new Error("ACP v2 requires agentInfo, and the agent reported none");
   }
   const meta = response.agentCapabilities?._meta;
-  const topMeta = Object.fromEntries(
-    Object.entries(response._meta ?? {}).filter(([key]) => !UNSERVED_EXTENSION_KEYS.includes(key)),
+  const topMeta = withoutUnservedAirExtensions(
+    Object.fromEntries(
+      Object.entries(response._meta ?? {}).filter(
+        ([key]) => !UNSERVED_EXTENSION_KEYS.includes(key),
+      ),
+    ),
   );
   return {
     protocolVersion: v2.PROTOCOL_VERSION,
@@ -93,6 +102,30 @@ export function v2InitializeResponse(response: InitializeResponse): v2.Initializ
 }
 
 /**
+ * `meta` without the AIR extensions whose methods the v2 surface does not
+ * register: the `asyncTasks` capability (`_session/async_task/stop`) and the
+ * `goal` entry (`_session/goal`) of `_meta.jetbrains.air`.
+ */
+function withoutUnservedAirExtensions(meta: Record<string, unknown>): Record<string, unknown> {
+  const jetbrains = asRecord(meta.jetbrains);
+  const air = asRecord(jetbrains.air);
+  if (Object.keys(air).length === 0) return meta;
+  const served = Object.fromEntries(Object.entries(air).filter(([key]) => key !== AIR_GOAL_KEY));
+  if (Array.isArray(served.capabilities)) {
+    served.capabilities = served.capabilities.filter(
+      (capability) => capability !== AIR_ASYNC_TASKS_CAPABILITY,
+    );
+  }
+  return { ...meta, jetbrains: { ...jetbrains, air: served } };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+/**
  * The session capabilities of the v2 surface, which serves each through a v1
  * method of the agent.
  *
@@ -105,7 +138,7 @@ export function v2InitializeResponse(response: InitializeResponse): v2.Initializ
  *   v1 baseline; v2 has no SSE transport.
  * - `systemPrompt`, in `append` and `override` mode.
  */
-const V2_SESSION_CAPABILITIES: v2.SessionCapabilities = {
+export const V2_SESSION_CAPABILITIES: v2.SessionCapabilities = {
   prompt: { image: {}, embeddedContext: {} },
   mcp: { stdio: {}, http: {} },
   delete: {},
