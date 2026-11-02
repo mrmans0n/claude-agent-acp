@@ -6,6 +6,7 @@ import {
   clientSupportsAirCapability,
   isAirClient,
 } from "../air-extension.js";
+import type { PatchForm } from "../diff.js";
 
 /**
  * The client choices that decide the shape of a tool call report.
@@ -21,7 +22,10 @@ export class ClientCapabilities {
     readonly terminalOutput: boolean = false,
     /** The client appends `_meta.terminal_output_delta` instead of `terminal_output` chunks. */
     readonly terminalOutputDelta: boolean = false,
-    /** The client accepts an exact git patch in a diff (`jetbrains.air` `diffPatch`). */
+    /**
+     * The client accepts an exact git patch in a diff: AIR's `jetbrains.air`
+     * `diffPatch`, or the client-neutral `diffPatch` (see {@link neutralDiffPatch}).
+     */
     readonly diffPatch: boolean = false,
     /** The capabilities that only JetBrains AIR declares. */
     readonly air: AirCapabilities = NO_AIR,
@@ -33,7 +37,20 @@ export class ClientCapabilities {
      * sends as display terminals.
      */
     readonly v2: boolean = false,
+    /**
+     * The client opted into the client-neutral diff patch
+     * (`clientCapabilities._meta.diffPatch`). Its diffs carry the patch at
+     * top-level `_meta.diffPatch`, also when it declares AIR's `diffPatch` too,
+     * and its `rawInput` leaves out the file text that a diff holds. Only ACP
+     * v1 reads the opt-in.
+     */
+    readonly neutralDiffPatch: boolean = false,
   ) {}
+
+  /** The form of a diff that carries an exact patch, for a client with {@link diffPatch} or {@link v2}. */
+  get patchForm(): PatchForm {
+    return this.v2 ? "v2" : this.neutralDiffPatch ? "neutral" : "air";
+  }
 
   static from(
     capabilities: AcpClientCapabilities | null | undefined,
@@ -41,10 +58,12 @@ export class ClientCapabilities {
   ): ClientCapabilities {
     const meta = capabilities?._meta;
     const terminalOutputDelta = meta?.["terminal_output_delta"] === true;
+    // ACP v2 has its own patch form and ignores the neutral opt-in.
+    const neutralDiffPatch = !v2 && clientOptsIntoNeutralDiffPatch(capabilities);
     return new ClientCapabilities(
       v2 || terminalOutputDelta || meta?.["terminal_output"] === true,
       terminalOutputDelta,
-      clientSupportsAirCapability(capabilities, AIR_DIFF_PATCH_CAPABILITY),
+      neutralDiffPatch || clientSupportsAirCapability(capabilities, AIR_DIFF_PATCH_CAPABILITY),
       {
         client: isAirClient(capabilities),
         rawInputRendering: clientSupportsAirCapability(
@@ -54,8 +73,36 @@ export class ClientCapabilities {
         planFile: clientSupportsAirCapability(capabilities, AIR_PLAN_FILE_CAPABILITY),
       },
       v2,
+      neutralDiffPatch,
     );
   }
+}
+
+/** The top-level `_meta` key of the client-neutral diff patch. */
+export const NEUTRAL_DIFF_PATCH_KEY = "diffPatch";
+const NEUTRAL_DIFF_PATCH_VERSION = 1;
+
+/** Whether `initialize.clientCapabilities._meta.diffPatch` is an object whose
+ *  `version` is an integer of at least 1. */
+export function clientOptsIntoNeutralDiffPatch(capabilities: unknown): boolean {
+  const meta = recordOrUndefined(recordOrUndefined(capabilities)?._meta);
+  const version = recordOrUndefined(meta?.[NEUTRAL_DIFF_PATCH_KEY])?.version;
+  return (
+    typeof version === "number" &&
+    Number.isInteger(version) &&
+    version >= NEUTRAL_DIFF_PATCH_VERSION
+  );
+}
+
+/** The agent side of the client-neutral diff patch, for the initialize `_meta`. */
+export function neutralDiffPatchCapability(): { version: number; format: "git_patch" } {
+  return { version: NEUTRAL_DIFF_PATCH_VERSION, format: "git_patch" };
+}
+
+function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 /** The capabilities of JetBrains AIR, read from `_meta.jetbrains.air`. */

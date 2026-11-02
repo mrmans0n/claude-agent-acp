@@ -143,7 +143,7 @@ async function finalChange(
 ): Promise<ToolResultFacts> {
   if (capabilities.v2) return v2UpdateFromDiffToolResponse(toolResponse);
   if (!capabilities.diffPatch) return toolUpdateFromDiffToolResponse(toolResponse);
-  const patch = await patchUpdateFromDiffToolResponse(toolResponse, "air");
+  const patch = await patchUpdateFromDiffToolResponse(toolResponse, capabilities.patchForm);
   if (patch) return patch;
   const created = createdFileDiff(toolResponse);
   return created ?? toolUpdateFromDiffToolResponse(toolResponse);

@@ -383,6 +383,7 @@ It applies to an ACP `diff` content block.
 
 The adapter uses patch mode only when the client declares `diffPatch`.
 The agent advertises `diffPatch` to an AIR client.
+A client that is not AIR can opt into the same patches, see [Client-neutral diff patch](#client-neutral-diff-patch).
 Without the client declaration, the adapter sends the standard `oldText` and `newText` values.
 
 ### Diff content
@@ -480,6 +481,47 @@ It does not use the SDK `structuredPatch` hunks for a patch.
 Claude converts leading tabs and CRLF line endings in those hunks, so they do not match the file.
 If the written file is too large, binary, or contains a CR or a byte order mark, the adapter sends the standard diff.
 A created file gets a creation patch.
+
+### Client-neutral diff patch
+
+Any client can get the same patches with top-level `_meta.diffPatch` in place of `_meta.jetbrains.air.diffPatch`.
+It opts in at `initialize` with `clientCapabilities._meta.diffPatch: { "version": 1 }`.
+Only an object whose `version` is an integer of at least 1 opts in; `true`, a string, an array, `null`, a missing `version`, `0` or a fraction enables nothing.
+
+The `initialize` response of an opted-in client carries the agent side at top level, under ACP v1 only:
+
+```json
+{
+  "_meta": {
+    "diffPatch": { "version": 1, "format": "git_patch" }
+  }
+}
+```
+
+A diff block then carries the payload of the AIR form at top level:
+
+```json
+{
+  "type": "diff",
+  "path": "/workspace/src/App.ts",
+  "oldText": null,
+  "newText": "",
+  "_meta": {
+    "diffPatch": {
+      "version": 1,
+      "format": "git_patch",
+      "text": "diff --git a/workspace/src/App.ts b/workspace/src/App.ts\n--- a/workspace/src/App.ts\n+++ b/workspace/src/App.ts\n@@ -1 +1 @@\n-old\n+new\n"
+    }
+  }
+}
+```
+
+- The patch rules, the placeholders, the fallback and the Claude behavior are those of the AIR form: the same approval preview, PostToolUse patch, created-file diff and standard diff.
+- The client keeps the other tool call shapes of a client that is not AIR, such as the whole tool call in a permission request.
+  Only the file text goes: as for AIR, `rawInput` leaves out the `Edit` and `Write` file text that a diff holds, also in the permission request and in the reports of a streaming input.
+  The PostToolUse report of an `Edit` or a `Write` keeps `_meta.claudeCode.toolResponse` without `content`, `originalFile`, `oldString`, `newString`, `structuredPatch` and `gitDiff`.
+- A client that declares both the AIR `diffPatch` and the neutral opt-in gets the neutral form only. Its AIR capability list is unchanged.
+- ACP v2 ignores the opt-in: a v2 diff carries its own git patch.
 
 ## Plan file
 

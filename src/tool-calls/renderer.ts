@@ -284,7 +284,8 @@ export class AcpToolCallRenderer {
    * streaming input. It carries no content: content built from partial input
    * is misleading (an Edit without its `new_string` renders as a deletion) or
    * invalid. AIR gets no `rawInput`, which goes out once it is complete. Every
-   * other client gets the partial input as `rawInput`.
+   * other client gets the partial input as `rawInput`, a neutral diffPatch
+   * client without the file text that the diff will hold.
    */
   partialRefinement(toolUse: Pick<ToolUse, "id" | "name">, input: unknown, cwd?: string) {
     const facts = this.facts({ name: toolUse.name, input }, cwd);
@@ -292,7 +293,11 @@ export class AcpToolCallRenderer {
       _meta: this.toolUseMeta({ name: toolUse.name, input }, cwd),
       toolCallId: toolUse.id,
       sessionUpdate: "tool_call_update",
-      ...(this.capabilities.air.client ? {} : { rawInput: input }),
+      ...(this.capabilities.air.client
+        ? {}
+        : {
+            rawInput: this.capabilities.neutralDiffPatch ? this.rawInput(facts, input) : input,
+          }),
       title: facts.title,
       kind: facts.kind,
       ...(facts.locations ? { locations: facts.locations } : {}),
@@ -330,7 +335,10 @@ export class AcpToolCallRenderer {
         toolCallId: toolUse.id,
         name: toolUse.name,
         ...(this.capabilities.v2 ? {} : { status: "pending" as const }),
-        rawInput: toolUse.input,
+        // A neutral diffPatch client gets the diff, so not its file text again.
+        rawInput: this.capabilities.neutralDiffPatch
+          ? this.rawInput(facts, toolUse.input)
+          : toolUse.input,
         title: options.title ?? facts.title,
         kind: facts.kind,
         content:
@@ -553,9 +561,16 @@ export class AcpToolCallRenderer {
       ? await reporter.hookResult(toolResponse, { cwd, capabilities: this.capabilities })
       : {};
     if (!this.keepsMeta) {
-      // The upstream shape: the whole tool_response, on every hook.
+      // The upstream shape: the whole tool_response, on every hook. A neutral
+      // diffPatch client gets the file change from the diff, so not its text again.
+      const response =
+        this.capabilities.neutralDiffPatch && FILE_EDIT_TOOLS.has(toolUse.name)
+          ? withoutFileText(toolResponse)
+          : toolResponse;
       return {
-        _meta: { claudeCode: { toolResponse, toolName: toolUse.name } } satisfies ToolUpdateMeta,
+        _meta: {
+          claudeCode: { toolResponse: response, toolName: toolUse.name },
+        } satisfies ToolUpdateMeta,
         toolCallId: toolUse.id,
         sessionUpdate: "tool_call_update",
         ...(change.content ? { content: change.content } : {}),
@@ -727,13 +742,14 @@ export class AcpToolCallRenderer {
   }
 
   /**
-   * `rawInput`. For AIR, without the file text that a diff holds, and with
-   * the path of the plan file in place of the plan text.
+   * `rawInput`. For AIR and a neutral diffPatch client, without the file text
+   * that a diff holds. For AIR, with the path of the plan file in place of the
+   * plan text.
    */
   rawInput(facts: ToolUseFacts, rawInput: unknown): unknown {
     if (facts.planFilePath) return planFileInput(rawInput, facts.planFilePath);
     if (
-      !this.capabilities.air.client ||
+      !(this.capabilities.air.client || this.capabilities.neutralDiffPatch) ||
       !facts.fileTextKeys ||
       !rawInput ||
       typeof rawInput !== "object" ||
@@ -812,6 +828,33 @@ export function mcpToolName(name: string): { server: string; tool: string } | un
 }
 
 /** The input with the path of the plan file in place of the plan text. */
+/** The tools whose PostToolUse `tool_response` holds the text of a file change. */
+const FILE_EDIT_TOOLS = new Set(["Edit", "Write"]);
+
+/**
+ * The `tool_response` fields of an Edit or a Write that hold file text: the
+ * written text, the previous file, the old and new strings, and the hunks,
+ * which can hold every line of a rewritten file. The diff conveys them all.
+ */
+const FILE_TEXT_RESPONSE_KEYS = [
+  "content",
+  "originalFile",
+  "oldString",
+  "newString",
+  "structuredPatch",
+  "gitDiff",
+];
+
+/** A `tool_response` of an Edit or a Write without its file text. */
+function withoutFileText(toolResponse: unknown): unknown {
+  if (!toolResponse || typeof toolResponse !== "object" || Array.isArray(toolResponse)) {
+    return toolResponse;
+  }
+  const response = { ...(toolResponse as Record<string, unknown>) };
+  for (const key of FILE_TEXT_RESPONSE_KEYS) delete response[key];
+  return response;
+}
+
 function planFileInput(rawInput: unknown, planFilePath: string): Record<string, unknown> {
   const input =
     rawInput && typeof rawInput === "object" && !Array.isArray(rawInput)
