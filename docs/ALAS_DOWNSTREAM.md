@@ -81,6 +81,31 @@ subagents' output, permission requests and the follow-up still reach the
 client, outside the turn. It is advertised as `_meta.settleAtResult` only to
 clients that opt in, so other clients see no change.
 
+The subagent-cwd patch carries upstream PR #1496 ahead of its stable release.
+A client on the RFD subagent form (`clientCapabilities.subagents`, not AIR)
+gets the child's working directory as `subagent_update { sessionId, cwd }`
+when it differs from its parent's, for example for an Agent call with
+`isolation: "worktree"`, and `cwd: null` when the child is back in its
+parent's directory or a replayed child's directory is gone. It needs the
+`subagent_update.cwd` field of ACP schema v1.28.0, so the acp-sdk-2-2-0 patch
+carries its prerequisite, upstream PR #1491, which moves to
+`@agentclientprotocol/sdk` 2.2.0. That carry drops the hunk for
+`src/tests/provider-session-configuration.test.ts`, a suite that v0.99.1 does
+not have, so its patch-id differs from upstream's and the next sync classifies
+it as `overlap`; drop it there once the target tag contains #1491. The
+subagent-cwd carry is an exact cherry-pick and is classified `absorbed`.
+
+The neutral fork point patch lets any client fork a session at one agent
+message, with a client-neutral form of the AIR fork point. It opts in with `clientCapabilities._meta.forkPoint:
+{ "version": 1 }`, gets `_meta.forkPoint { version: 1, boundary: "message" }`
+back under ACP v1 and v2, and sends `session/fork`
+`_meta.forkPoint { messageId, messageFingerprint?, messageOccurrence? }`. The
+lookup is that of the AIR fork point, but a malformed or unmatched fork point
+is `invalidParams` with `data.forkPoint` rather than a fork of the whole
+session, and the response reports the matched message id and whether the id
+or the fingerprint found it. The AIR form is unchanged, and clients that do
+not opt in see no change. Upstream has no equivalent.
+
 For each target release, `scripts/audit-downstream-patches.mjs` classifies every
 patch:
 
