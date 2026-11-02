@@ -58,9 +58,11 @@ export function v1InitializeRequest(request: v2.InitializeRequest): InitializeRe
 /**
  * The top-level `_meta` keys of the agent's v1 `initialize` response that
  * advertise an extension the v2 surface does not serve yet: `steering`, for
- * `_session/steering`.
+ * `_session/steering`, and the provider-neutral `async-tasks`, for
+ * `_session/async_task/stop` (as the AIR `asyncTasks` capability, see
+ * {@link withoutUnservedAirExtensions}).
  */
-const UNSERVED_EXTENSION_KEYS: readonly string[] = ["steering"];
+const UNSERVED_EXTENSION_KEYS: readonly string[] = ["steering", "async-tasks"];
 
 /**
  * The v2 `initialize` response for the v1 response of the agent.
