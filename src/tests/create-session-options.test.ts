@@ -739,6 +739,57 @@ describe("createSession options merging", () => {
     });
   });
 
+  // `session/resume` with changed settings tears the live query down and
+  // starts a new one under the same id (`recreateLiveSession`). The
+  // `_alas/context_usage` request must read the new query, not the closed one.
+  it("serves the context usage of the query that a resume recreated", async () => {
+    const created = await agent.newSession({
+      cwd: process.cwd(),
+      mcpServers: [],
+      _meta: { claudeCode: { options: { skills: ["pdf"] } } },
+    });
+    const initialQuery = agent.sessions[created.sessionId]!.query as any;
+    initialQuery.getContextUsage = () => Promise.reject(new Error("closed query"));
+
+    await agent.resumeSession({
+      sessionId: created.sessionId,
+      cwd: process.cwd(),
+      mcpServers: [],
+      _meta: { claudeCode: { options: { skills: ["docx"] } } },
+    });
+    expect(agent.sessions[created.sessionId]!.query).not.toBe(initialQuery);
+    contextUsageCalls = [];
+
+    await expect(
+      agent.contextUsage({ sessionId: created.sessionId, detail: "summary" }),
+    ).resolves.toEqual({ totalTokens: 0, rawMaxTokens: 200000 });
+    expect(contextUsageCalls).toEqual([{ detail: "summary" }]);
+  });
+
+  // A provider change (`providers/set`) restarts the Claude Code process of
+  // every open session under the same id, and since v0.100.0 (#1474) puts the
+  // session's model and other choices back on the new process. The
+  // `_alas/context_usage` request must read the new process, not the closed one.
+  it("serves the context usage of the query that a provider change restarted", async () => {
+    const created = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+    const initialQuery = agent.sessions[created.sessionId]!.query as any;
+    initialQuery.getContextUsage = () => Promise.reject(new Error("closed query"));
+
+    await agent.unstable_setProvider({
+      providerId: "main",
+      apiType: "anthropic",
+      baseUrl: "https://gw.example",
+      headers: {},
+    });
+    expect(agent.sessions[created.sessionId]!.query).not.toBe(initialQuery);
+    contextUsageCalls = [];
+
+    await expect(
+      agent.contextUsage({ sessionId: created.sessionId, detail: "summary" }),
+    ).resolves.toEqual({ totalTokens: 0, rawMaxTokens: 200000 });
+    expect(contextUsageCalls).toEqual([{ detail: "summary" }]);
+  });
+
   describe("per-task stop affordance", () => {
     function sessionFor(sessionId: string) {
       return (agent as unknown as { sessions: Record<string, any> }).sessions[sessionId];
