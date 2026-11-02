@@ -14952,14 +14952,38 @@ describe("session/fork", () => {
       resolution: "its ACP message id",
       messageId: "persisted-message-id:segment:0",
       messageOccurrence: 1,
+      expectedUuid: "inactive-assistant-uuid",
     },
     {
       resolution: "its fingerprint occurrence",
       messageId: "stale-air-message-id:segment:0",
       messageOccurrence: 2,
+      expectedUuid: "inactive-assistant-uuid",
+    },
+    {
+      resolution: "its client-neutral ACP message id",
+      neutral: true,
+      messageId: "persisted-message-id:segment:0",
+      expectedUuid: "inactive-assistant-uuid",
+      expectedMatch: { messageId: "persisted-message-id", matchedBy: "id" },
+    },
+    {
+      // Without an occurrence, the neutral form takes the first equal message on its branch.
+      resolution: "its client-neutral fingerprint without an occurrence",
+      neutral: true,
+      messageId: "stale-message-id",
+      expectedUuid: "earlier-duplicate-uuid",
+      expectedMatch: { messageId: "earlier-duplicate-message-id", matchedBy: "fingerprint" },
     },
   ])("forks at an inactive persisted branch by $resolution", async (forkPoint) => {
     const { agent } = forkingAgent();
+    if (forkPoint.neutral) {
+      const initialized = await agent.initialize({
+        protocolVersion: 1,
+        clientCapabilities: { _meta: { forkPoint: { version: 1 } } },
+      });
+      expect((initialized._meta as any)?.forkPoint).toEqual({ version: 1, boundary: "message" });
+    }
     const targetText = "Answer from the branch that is no longer active.";
     const targetFingerprint = `sha256:${createHash("sha256").update(targetText).digest("hex")}`;
     vi.mocked(getSessionMessages).mockResolvedValueOnce([
@@ -15051,26 +15075,35 @@ describe("session/fork", () => {
       cwd: "/workspace",
       additionalDirectories: [],
       mcpServers: [],
-      _meta: {
-        jetbrains: {
-          air: {
-            fork: {
-              version: 1,
-              messageId: forkPoint.messageId,
-              messageFingerprint: targetFingerprint,
-              messageOccurrence: forkPoint.messageOccurrence,
+      _meta: forkPoint.neutral
+        ? {
+            forkPoint: { messageId: forkPoint.messageId, messageFingerprint: targetFingerprint },
+          }
+        : {
+            jetbrains: {
+              air: {
+                fork: {
+                  version: 1,
+                  messageId: forkPoint.messageId,
+                  messageFingerprint: targetFingerprint,
+                  messageOccurrence: forkPoint.messageOccurrence,
+                },
+              },
             },
           },
-        },
-      },
     });
 
     expect(response.sessionId).toBe("fork-id");
+    expect(response._meta).toEqual(
+      forkPoint.expectedMatch
+        ? { forkPoint: { boundary: "message", ...forkPoint.expectedMatch } }
+        : undefined,
+    );
     expect(importSessionToStore).toHaveBeenLastCalledWith("source-id", expect.any(Object), {
       includeSubagents: false,
     });
     expect(forkSession).toHaveBeenLastCalledWith("source-id", {
-      upToMessageId: "inactive-assistant-uuid",
+      upToMessageId: forkPoint.expectedUuid,
     });
   });
 });
