@@ -87,6 +87,17 @@ const CLAUDE_PATCH_IDENTITIES = [
       "src/tests/native-subagents.test.ts",
     ],
   },
+  {
+    name: "neutral-fork-point",
+    identityCommit: "57d8f5f9f6f9f1bc29c1e2d1b96b090fb1943759",
+    upstreamPr: null,
+    files: ["docs/air-extensions.md", "src/acp-agent.ts", "src/fork-session.ts"],
+    tests: [
+      "src/tests/acp-agent.test.ts",
+      "src/tests/acp-v2.test.ts",
+      "src/tests/fork-session.test.ts",
+    ],
+  },
 ];
 
 function sameJson(left, right) {
