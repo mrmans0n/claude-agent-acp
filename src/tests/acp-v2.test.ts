@@ -437,6 +437,18 @@ describe("ACP protocol routing", () => {
     expect(response._meta?.forkPoint).toEqual({ version: 1, boundary: "message" });
   });
 
+  it("ignores the client-neutral diff patch opt-in of a v2 client", async () => {
+    const { app, authUpdate } = v2Client();
+    const response = await app.connectWith(connectRouter(), async (agent) => {
+      const response = await initializeV2(agent, { _meta: { diffPatch: { version: 1 } } });
+      await authUpdate(1);
+      return response;
+    });
+
+    // A v2 diff carries its own git patch.
+    expect(response._meta?.diffPatch).toBeUndefined();
+  });
+
   it("does not advertise the AIR async tasks and goal extensions to a v2 AIR client", async () => {
     const { app, authUpdate } = v2Client();
     const response = await app.connectWith(connectRouter(), async (agent) => {
