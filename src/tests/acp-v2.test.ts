@@ -397,12 +397,25 @@ describe("ACP protocol routing", () => {
     expect(response.capabilities?.providers).toEqual({});
     // Not `_session/steering`, which v1 advertises in the top-level `_meta`.
     expect(response._meta?.steering).toBeUndefined();
+    // The neutral fork point only for a client that opts in.
+    expect(response._meta?.forkPoint).toBeUndefined();
     expect(response.authMethods?.length).toBeGreaterThan(0);
     for (const method of response.authMethods ?? []) {
       expect(method).not.toHaveProperty("id");
       expect(method).toMatchObject({ methodId: expect.any(String), type: "terminal" });
       expect((method as v2.AuthMethodTerminal).args?.[0]).toBe("--cli");
     }
+  });
+
+  it("advertises the client-neutral fork point to a v2 client that opts in", async () => {
+    const { app, authUpdate } = v2Client();
+    const response = await app.connectWith(connectRouter(), async (agent) => {
+      const response = await initializeV2(agent, { _meta: { forkPoint: { version: 1 } } });
+      await authUpdate(1);
+      return response;
+    });
+
+    expect(response._meta?.forkPoint).toEqual({ version: 1, boundary: "message" });
   });
 
   it("negotiates a v2 client down to v1 when limited to v1", async () => {

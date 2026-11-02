@@ -95,6 +95,17 @@ not have, so its patch-id differs from upstream's and the next sync classifies
 it as `overlap`; drop it there once the target tag contains #1491. The
 subagent-cwd carry is an exact cherry-pick and is classified `absorbed`.
 
+The neutral fork point patch lets any client fork a session at one agent
+message, with a client-neutral form of the AIR fork point. It opts in with `clientCapabilities._meta.forkPoint:
+{ "version": 1 }`, gets `_meta.forkPoint { version: 1, boundary: "message" }`
+back under ACP v1 and v2, and sends `session/fork`
+`_meta.forkPoint { messageId, messageFingerprint?, messageOccurrence? }`. The
+lookup is that of the AIR fork point, but a malformed or unmatched fork point
+is `invalidParams` with `data.forkPoint` rather than a fork of the whole
+session, and the response reports the matched message id and whether the id
+or the fingerprint found it. The AIR form is unchanged, and clients that do
+not opt in see no change. Upstream has no equivalent.
+
 For each target release, `scripts/audit-downstream-patches.mjs` classifies every
 patch:
 

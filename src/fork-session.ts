@@ -30,6 +30,9 @@ type ForkSessionMeta = {
 
 type ForkSessionDependencies = {
   liveMessageIdToUuid?: ReadonlyMap<string, string>;
+  /** Whether the client opted into the client-neutral fork point at initialize
+   *  (see {@link clientOptsIntoNeutralForkPoint}). */
+  neutralForkPoint?: boolean;
   logger?: { log: (...args: unknown[]) => void };
   messageIdForGrouping: (message: {
     type?: string;
@@ -42,9 +45,109 @@ type ForkPoint = {
   messageId: string;
   messageFingerprint?: string;
   messageOccurrence?: number;
+  /** Whether the point came from the client-neutral `_meta.forkPoint`. */
+  neutral: boolean;
 };
 
-function forkPoint(meta: unknown): ForkPoint | undefined {
+/** The top-level `_meta` key of the client-neutral fork point. */
+export const NEUTRAL_FORK_POINT_KEY = "forkPoint";
+const NEUTRAL_FORK_POINT_VERSION = 1;
+const FINGERPRINT_PATTERN = /^sha256:[0-9a-f]{64}$/;
+
+/** Whether `initialize.clientCapabilities._meta.forkPoint` is an object whose
+ *  `version` is an integer of at least 1. */
+export function clientOptsIntoNeutralForkPoint(capabilities: unknown): boolean {
+  const optIn = recordOrUndefined(asRecord(asRecord(capabilities)._meta)[NEUTRAL_FORK_POINT_KEY]);
+  const version = optIn?.version;
+  return (
+    typeof version === "number" &&
+    Number.isInteger(version) &&
+    version >= NEUTRAL_FORK_POINT_VERSION
+  );
+}
+
+/** The agent side of the client-neutral fork point, for the initialize `_meta`. */
+export function neutralForkPointCapability(): { version: number; boundary: "message" } {
+  return { version: NEUTRAL_FORK_POINT_VERSION, boundary: "message" };
+}
+
+function invalidForkPointField(field: string, message: string): RequestError {
+  return RequestError.invalidParams({ [NEUTRAL_FORK_POINT_KEY]: { field } }, message);
+}
+
+/**
+ * The fork point of a `session/fork` request with `_meta.forkPoint`. Unlike
+ * the AIR form, a request that names a fork point never falls back to a fork
+ * of the whole session: every malformed field is an invalid params error.
+ */
+function neutralForkPoint(value: unknown, optedIn: boolean): ForkPoint {
+  if (!optedIn) {
+    throw invalidForkPointField(
+      NEUTRAL_FORK_POINT_KEY,
+      "_meta.forkPoint needs clientCapabilities._meta.forkPoint at initialize",
+    );
+  }
+  const fork = recordOrUndefined(value);
+  if (!fork) {
+    throw invalidForkPointField(NEUTRAL_FORK_POINT_KEY, "_meta.forkPoint must be an object");
+  }
+  if (fork.version !== undefined && fork.version !== NEUTRAL_FORK_POINT_VERSION) {
+    throw invalidForkPointField("version", "_meta.forkPoint.version must be 1 when present");
+  }
+  const messageId = typeof fork.messageId === "string" ? fork.messageId.trim() : "";
+  if (!messageId) {
+    throw invalidForkPointField(
+      "messageId",
+      "_meta.forkPoint.messageId must be a non-blank string",
+    );
+  }
+  const messageFingerprint = fork.messageFingerprint;
+  if (
+    messageFingerprint !== undefined &&
+    (typeof messageFingerprint !== "string" || !FINGERPRINT_PATTERN.test(messageFingerprint))
+  ) {
+    throw invalidForkPointField(
+      "messageFingerprint",
+      "_meta.forkPoint.messageFingerprint must be sha256: and 64 lowercase hex digits",
+    );
+  }
+  const messageOccurrence = fork.messageOccurrence;
+  if (
+    messageOccurrence !== undefined &&
+    !(
+      typeof messageOccurrence === "number" &&
+      Number.isSafeInteger(messageOccurrence) &&
+      messageOccurrence > 0
+    )
+  ) {
+    throw invalidForkPointField(
+      "messageOccurrence",
+      "_meta.forkPoint.messageOccurrence must be a positive integer",
+    );
+  }
+  return {
+    messageId,
+    neutral: true,
+    ...(messageFingerprint !== undefined
+      ? {
+          messageFingerprint,
+          // Without an occurrence, the fingerprint names its first equal message on the branch.
+          messageOccurrence: (messageOccurrence as number | undefined) ?? 1,
+        }
+      : {}),
+  };
+}
+
+function forkPoint(meta: unknown, optedIntoNeutral: boolean): ForkPoint | undefined {
+  const record = recordOrUndefined(meta);
+  // A request with `_meta.forkPoint` takes the neutral path, whatever else it carries.
+  if (record && record[NEUTRAL_FORK_POINT_KEY] !== undefined) {
+    return neutralForkPoint(record[NEUTRAL_FORK_POINT_KEY], optedIntoNeutral);
+  }
+  return airForkPoint(meta);
+}
+
+function airForkPoint(meta: unknown): ForkPoint | undefined {
   const fork = (meta as ForkSessionMeta | null | undefined)?.jetbrains?.air?.fork;
   if (fork?.version !== 1) return undefined;
   const messageId = fork.messageId?.trim();
@@ -53,6 +156,7 @@ function forkPoint(meta: unknown): ForkPoint | undefined {
   const messageOccurrence = fork.messageOccurrence;
   return {
     messageId,
+    neutral: false,
     ...(messageFingerprint ? { messageFingerprint } : {}),
     // AIR computes this with count(...) over the visible prefix, so it is 1-based.
     ...(typeof messageOccurrence === "number" &&
@@ -144,27 +248,36 @@ function fingerprintOccurrenceOnBranch(
   return occurrence;
 }
 
+/** The message a fork point resolved to: its first entry uuid, its ACP
+ *  message id, and whether the id or the fingerprint found it. */
+type ForkPointMatch = { uuid: string; messageId: string; matchedBy: "id" | "fingerprint" };
+
 function resolveFromFullHistory(
   entries: SessionStoreEntry[],
   candidates: string[],
   point: ForkPoint,
   messageIdForGrouping: ForkSessionDependencies["messageIdForGrouping"],
-): string | undefined {
+): ForkPointMatch | undefined {
   const groups = assistantGroups(entries, messageIdForGrouping);
-  const exact = candidates.map((candidate) => groups.get(candidate)?.uuid).find(Boolean);
-  if (exact) return exact;
+  for (const candidate of candidates) {
+    const uuid = groups.get(candidate)?.uuid;
+    if (uuid) return { uuid, messageId: candidate, matchedBy: "id" };
+  }
   if (!point.messageFingerprint || !point.messageOccurrence) return undefined;
 
-  const fingerprintMatches = [...groups.values()].filter(
-    (group) => group.uuid && fingerprint(group.text) === point.messageFingerprint,
-  );
+  const fingerprintMatches = [...groups.entries()]
+    .filter(([, group]) => group.uuid && fingerprint(group.text) === point.messageFingerprint)
+    .map(([messageId, group]) => ({
+      uuid: group.uuid!,
+      messageId,
+      matchedBy: "fingerprint" as const,
+    }));
   // If only one persisted message has this content, the fingerprint already
   // identifies it even when an older client supplied an incompatible index.
-  if (fingerprintMatches.length === 1) return fingerprintMatches[0]?.uuid;
+  if (fingerprintMatches.length === 1) return fingerprintMatches[0];
 
   const occurrenceMatches = fingerprintMatches.filter(
     (group) =>
-      group.uuid &&
       fingerprintOccurrenceOnBranch(
         group.uuid,
         point.messageFingerprint!,
@@ -173,7 +286,7 @@ function resolveFromFullHistory(
         messageIdForGrouping,
       ) === point.messageOccurrence,
   );
-  return occurrenceMatches.length === 1 ? occurrenceMatches[0]?.uuid : undefined;
+  return occurrenceMatches.length === 1 ? occurrenceMatches[0] : undefined;
 }
 
 export async function forkSession(
@@ -181,7 +294,7 @@ export async function forkSession(
   dependencies: ForkSessionDependencies,
 ): Promise<ForkSessionResponse> {
   const timing = new SessionTiming(dependencies.logger, "fork", params.sessionId);
-  const point = forkPoint(params._meta);
+  const point = forkPoint(params._meta, dependencies.neutralForkPoint === true);
   // SDK `dir` scopes source lookup, not the fork's working directory. Search
   // all projects: params.cwd can name a different workspace for the new session.
   if (!point) {
@@ -191,23 +304,22 @@ export async function forkSession(
   }
 
   const candidateIds = forkPointMessageIdCandidates(point.messageId);
-  const liveUuid = candidateIds
-    .map((candidateId) => dependencies.liveMessageIdToUuid?.get(candidateId))
-    .find(Boolean);
-  const history = liveUuid ? undefined : await getSessionMessages(params.sessionId);
-  timing.phase("active-history", ` resolution=${liveUuid ? "live" : "pending"}`);
-  const messageUuid =
-    liveUuid ??
-    candidateIds
-      .map(
-        (candidateId) =>
-          history
-            ?.slice()
-            .reverse()
-            .find((message) => dependencies.messageIdForGrouping(message) === candidateId)?.uuid,
-      )
-      .find(Boolean);
-  const fullHistoryUuid = messageUuid
+  const liveMatch = matchCandidate(candidateIds, (candidateId) =>
+    dependencies.liveMessageIdToUuid?.get(candidateId),
+  );
+  const history = liveMatch ? undefined : await getSessionMessages(params.sessionId);
+  timing.phase("active-history", ` resolution=${liveMatch ? "live" : "pending"}`);
+  const activeMatch =
+    liveMatch ??
+    matchCandidate(
+      candidateIds,
+      (candidateId) =>
+        history
+          ?.slice()
+          .reverse()
+          .find((message) => dependencies.messageIdForGrouping(message) === candidateId)?.uuid,
+    );
+  const fullHistoryMatch = activeMatch
     ? undefined
     : resolveFromFullHistory(
         await loadFullSessionHistory(params.sessionId),
@@ -217,19 +329,55 @@ export async function forkSession(
       );
   timing.phase(
     "full-history",
-    ` resolution=${liveUuid ? "live" : messageUuid ? "active" : fullHistoryUuid ? "full" : "missing"}`,
+    ` resolution=${liveMatch ? "live" : activeMatch ? "active" : fullHistoryMatch ? "full" : "missing"}`,
   );
 
-  if (!messageUuid && !fullHistoryUuid) {
+  const match = activeMatch ?? fullHistoryMatch;
+  if (!match) {
     throw RequestError.invalidParams(
-      { messageId: point.messageId },
+      point.neutral
+        ? { [NEUTRAL_FORK_POINT_KEY]: { messageId: point.messageId, reason: "notFound" } }
+        : { messageId: point.messageId },
       `Fork point message ${point.messageId} was not found in session ${params.sessionId}`,
     );
   }
 
-  const forked = await forkClaudeSession(params.sessionId, {
-    upToMessageId: messageUuid ?? fullHistoryUuid,
-  });
+  const forked = await forkClaudeSession(params.sessionId, { upToMessageId: match.uuid });
   timing.phase("sdk-fork");
-  return { sessionId: forked.sessionId };
+  return {
+    sessionId: forked.sessionId,
+    ...(point.neutral
+      ? {
+          _meta: {
+            [NEUTRAL_FORK_POINT_KEY]: {
+              boundary: "message",
+              messageId: match.messageId,
+              matchedBy: match.matchedBy,
+            },
+          },
+        }
+      : {}),
+  };
+}
+
+/** The first candidate id that `uuidOf` finds, as an id match. */
+function matchCandidate(
+  candidateIds: string[],
+  uuidOf: (candidateId: string) => string | undefined,
+): ForkPointMatch | undefined {
+  for (const candidateId of candidateIds) {
+    const uuid = uuidOf(candidateId);
+    if (uuid) return { uuid, messageId: candidateId, matchedBy: "id" };
+  }
+  return undefined;
+}
+
+function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return recordOrUndefined(value) ?? {};
 }

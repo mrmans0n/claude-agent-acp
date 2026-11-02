@@ -1850,6 +1850,66 @@ It adds this object to the `session/fork` request:
 - With or without this object, the forked session runs once the response arrives, so the client can prompt it without `session/load` or `session/resume`.
   A later load replays its history into it, and a later resume returns it. A load or resume with other settings (`cwd`, MCP servers, additional directories, or the session options in `_meta`) restarts it, as for any loaded session.
 
+### Client-neutral fork point
+
+Any client can fork at one agent message with top-level `_meta.forkPoint` in place of `_meta.jetbrains.air.fork`.
+It opts in at `initialize` with `clientCapabilities._meta.forkPoint: { "version": 1 }`.
+Only an object whose `version` is an integer of at least 1 opts in; `true`, a string, an array, `null`, a missing `version`, `0` or a fraction enables nothing.
+An AIR client can opt in too: the two forms do not exclude each other.
+
+The `initialize` response of an opted-in client carries the agent side at top level, under ACP v1 and v2:
+
+```json
+{
+  "_meta": {
+    "forkPoint": { "version": 1, "boundary": "message" }
+  }
+}
+```
+
+The `session/fork` request names the message:
+
+```json
+{
+  "_meta": {
+    "forkPoint": {
+      "messageId": "msg_01AbC",
+      "messageFingerprint": "sha256:<64 lowercase hex>",
+      "messageOccurrence": 1
+    }
+  }
+}
+```
+
+The response says where the fork ends:
+
+```json
+{
+  "sessionId": "…",
+  "_meta": {
+    "forkPoint": { "boundary": "message", "messageId": "msg_01AbC", "matchedBy": "id" }
+  }
+}
+```
+
+- The lookup is that of the AIR form: the live session, then the active history, then all stored branches, with the same `:segment:<n>` suffix rule.
+- `messageId` is required and not blank. `version` is optional; when present it must be `1`, as the version is negotiated at `initialize`.
+- `messageFingerprint` is optional. It is `sha256:` and 64 lowercase hex digits: the SHA-256 of the UTF-8 text of the message, with no normalization. The text is the concatenation of the text blocks of the assistant entries with that ACP message id.
+- `messageOccurrence` is optional and a positive integer. A fingerprint without it means occurrence `1`. As in the AIR form, a fingerprint that only one stored message has names that message whatever the occurrence.
+- The response `messageId` is the ACP message id the fork ends at, without a `:segment:<n>` suffix. `matchedBy` is `id` or `fingerprint`.
+- Unlike the AIR form, a request with `_meta.forkPoint` never forks the whole session. Every failure is `invalidParams`:
+
+| Cause                                                      | `data`                                                        |
+| ---------------------------------------------------------- | ------------------------------------------------------------- |
+| The client did not opt in, or `forkPoint` is not an object | `{ "forkPoint": { "field": "forkPoint" } }`                   |
+| `version` other than `1`                                   | `{ "forkPoint": { "field": "version" } }`                     |
+| `messageId` missing, not a string, or blank                | `{ "forkPoint": { "field": "messageId" } }`                   |
+| `messageFingerprint` malformed                             | `{ "forkPoint": { "field": "messageFingerprint" } }`          |
+| `messageOccurrence` not a positive integer                 | `{ "forkPoint": { "field": "messageOccurrence" } }`           |
+| No message matches                                         | `{ "forkPoint": { "messageId": "…", "reason": "notFound" } }` |
+
+- A request with `_meta.forkPoint` takes the neutral path and ignores `_meta.jetbrains.air.fork`. Without `_meta.forkPoint`, the AIR form and its fallback apply unchanged.
+
 ## Presentation hints
 
 Each session mode and each value of the mode config option carries `_meta.jetbrains.air.kind`:

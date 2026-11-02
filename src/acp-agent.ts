@@ -201,7 +201,12 @@ import {
   refusalFallbackResultFromResponse,
   refusalFallbackToCreateRequest,
 } from "./elicitation.js";
-import { forkSession } from "./fork-session.js";
+import {
+  clientOptsIntoNeutralForkPoint,
+  forkSession,
+  NEUTRAL_FORK_POINT_KEY,
+  neutralForkPointCapability,
+} from "./fork-session.js";
 import {
   clientSystemPrompt,
   sdkSystemPrompt,
@@ -3175,6 +3180,10 @@ export class ClaudeAcpAgent {
           ...(!this.v2 && clientRequestsSettleAtResult(this.clientCapabilities)
             ? { settleAtResult: { supported: true } }
             : {}),
+          // Both protocol versions: ACP v2 forks through `unstable_forkSession`.
+          ...(clientOptsIntoNeutralForkPoint(this.clientCapabilities)
+            ? { [NEUTRAL_FORK_POINT_KEY]: neutralForkPointCapability() }
+            : {}),
         }),
       ),
     };
@@ -3265,10 +3274,11 @@ export class ClaudeAcpAgent {
     while (this.providerUpdate) await this.providerUpdate;
     // Reject a prompt the agent cannot apply before copying the transcript.
     clientSystemPrompt(params.systemPrompt);
-    const { sessionId } = await forkSession(params, {
+    const { sessionId, _meta: forkMeta } = await forkSession(params, {
       liveMessageIdToUuid: this.sessions[params.sessionId]?.messageIdToUuid,
       logger: this.logger,
       messageIdForGrouping,
+      neutralForkPoint: clientOptsIntoNeutralForkPoint(this.clientCapabilities),
     });
     // The fork row can lack `forkedFrom`: the scan reads it from the first
     // 64 KB of the transcript only. So the fork is held back by its id too.
@@ -3282,7 +3292,8 @@ export class ClaudeAcpAgent {
       _meta: params._meta,
     });
     this.afterSetupResponse(sessionId, params.mcpServers ?? []);
-    return { sessionId, modes, configOptions };
+    // `_meta.forkPoint` tells a client of the neutral fork point which message the fork ends at.
+    return { sessionId, modes, configOptions, ...(forkMeta ? { _meta: forkMeta } : {}) };
   }
 
   /** Runs `fork`, the handler of a `session/fork` request of `sourceId`,
