@@ -328,6 +328,23 @@ describe("client-neutral fork point", () => {
     ).rejects.toMatchObject({ code: -32602, data: { forkPoint: { field: "forkPoint" } } });
   });
 
+  it("fails a fork point in a session without a transcript as an unknown session", async () => {
+    // v0.100 maps the SDK's "Session <id> not found" to -32002, so a client can
+    // tell a missing session from a fork point that matches no message.
+    const missing = randomUUID();
+    await expect(
+      forkSession(
+        {
+          sessionId: missing,
+          cwd: sourceCwd,
+          mcpServers: [],
+          _meta: { forkPoint: { messageId: "msg_first" } },
+        },
+        { messageIdForGrouping, neutralForkPoint: true },
+      ),
+    ).rejects.toMatchObject({ code: -32002, data: { sessionId: missing } });
+  });
+
   it("takes the neutral fork point over an AIR one in the same request", async () => {
     const result = await forkSession(
       {
