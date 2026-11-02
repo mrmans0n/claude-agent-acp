@@ -786,6 +786,24 @@ describe("createSession options merging", () => {
       expect(sessionFor(air).stopsWorkflowsOnCancel).toBe(false);
     });
 
+    // A non-AIR client that sets `_meta["async-tasks"]: true` receives each
+    // background workflow as an async task and can stop it with
+    // `_session/async_task/stop`, like AIR with `asyncTasks`.
+    it("leaves workflows running for a provider-neutral client that opted into async tasks", async () => {
+      await agent.initialize({
+        protocolVersion: 1,
+        clientCapabilities: { subagents: {}, _meta: { "async-tasks": true } } as ClientCapabilities,
+      });
+      const { sessionId } = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+
+      expect(capturedOptions!.perTaskStopAffordance).toBe(true);
+      expect(sessionFor(sessionId).stopsWorkflowsOnCancel).toBe(false);
+      // Since v0.100.0, a v2 session with this declaration reports background
+      // work, and its Monitor and Workflow calls stay in_progress (#1510,
+      // #1511). This v1 client gets the tasks as async tasks instead.
+      expect(sessionFor(sessionId).reportsBackground).toBe(false);
+    });
+
     it("does not declare it for a client that cannot cancel one subagent", async () => {
       await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
       expect(capturedOptions!.perTaskStopAffordance).toBeUndefined();
