@@ -98,6 +98,24 @@ const CLAUDE_PATCH_IDENTITIES = [
       "src/tests/fork-session.test.ts",
     ],
   },
+  {
+    name: "neutral-diff-patch",
+    identityCommit: "02b732ee3e12c65f702a743401af97a334dfce9f",
+    upstreamPr: null,
+    files: [
+      "docs/air-extensions.md",
+      "src/acp-agent.ts",
+      "src/diff.ts",
+      "src/tool-calls/client-capabilities.ts",
+      "src/tool-calls/renderer.ts",
+      "src/tool-calls/reporters/file-edit.ts",
+    ],
+    tests: [
+      "src/tests/acp-scenarios.test.ts",
+      "src/tests/acp-v2.test.ts",
+      "src/tests/diff-patch.test.ts",
+    ],
+  },
 ];
 
 function sameJson(left, right) {
