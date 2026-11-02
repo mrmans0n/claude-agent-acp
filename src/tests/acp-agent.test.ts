@@ -14856,6 +14856,64 @@ describe("session/fork", () => {
     expect(createSession).not.toHaveBeenCalled();
   });
 
+  /**
+   * Since v0.100.0 (#1495), session/fork checks `cwd` before anything else, and
+   * an unknown source session is -32002. The client-neutral fork point is read
+   * after the `cwd` check and inside the not-found mapping.
+   */
+  describe("with a client-neutral fork point, the v0.100 request checks", () => {
+    async function neutralForkingAgent() {
+      const forking = forkingAgent();
+      await forking.agent.initialize({
+        protocolVersion: 1,
+        clientCapabilities: { _meta: { forkPoint: { version: 1 } } },
+      });
+      return forking;
+    }
+
+    it("rejects a relative cwd before reading the fork point", async () => {
+      const { agent, createSession } = await neutralForkingAgent();
+      (agent as any).validateCwd.mockRestore();
+
+      const error = await agent
+        .unstable_forkSession({
+          sessionId: "source-id",
+          cwd: "workspace",
+          mcpServers: [],
+          // Malformed: the fork point check would fail with data.forkPoint.
+          _meta: { forkPoint: { messageId: " " } },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toMatchObject({ code: -32602 });
+      expect((error as { data?: unknown }).data ?? {}).not.toHaveProperty("forkPoint");
+      expect(getSessionMessages).not.toHaveBeenCalled();
+      expect(forkSession).not.toHaveBeenCalled();
+      expect(createSession).not.toHaveBeenCalled();
+    });
+
+    it("reports an unknown source session as not found instead of an unmatched fork point", async () => {
+      const { agent, createSession } = await neutralForkingAgent();
+      const sessionId = randomUUID();
+      vi.mocked(getSessionMessages).mockResolvedValueOnce([]);
+      // What the Claude SDK `importSessionToStore` throws for a session without a transcript.
+      vi.mocked(importSessionToStore).mockRejectedValueOnce(
+        new Error(`Session ${sessionId} not found`),
+      );
+
+      await expect(
+        agent.unstable_forkSession({
+          sessionId,
+          cwd: "/workspace",
+          mcpServers: [],
+          _meta: { forkPoint: { messageId: "message-id" } },
+        }),
+      ).rejects.toMatchObject({ code: -32002, data: { sessionId } });
+      expect(forkSession).not.toHaveBeenCalled();
+      expect(createSession).not.toHaveBeenCalled();
+    });
+  });
+
   it("forks the latest turn in the requested workspace", async () => {
     const { agent, createSession } = forkingAgent();
     vi.mocked(forkSession).mockResolvedValueOnce({ sessionId: "fork-id" });
@@ -14924,14 +14982,38 @@ describe("session/fork", () => {
       resolution: "its ACP message id",
       messageId: "persisted-message-id:segment:0",
       messageOccurrence: 1,
+      expectedUuid: "inactive-assistant-uuid",
     },
     {
       resolution: "its fingerprint occurrence",
       messageId: "stale-air-message-id:segment:0",
       messageOccurrence: 2,
+      expectedUuid: "inactive-assistant-uuid",
+    },
+    {
+      resolution: "its client-neutral ACP message id",
+      neutral: true,
+      messageId: "persisted-message-id:segment:0",
+      expectedUuid: "inactive-assistant-uuid",
+      expectedMatch: { messageId: "persisted-message-id", matchedBy: "id" },
+    },
+    {
+      // Without an occurrence, the neutral form takes the first equal message on its branch.
+      resolution: "its client-neutral fingerprint without an occurrence",
+      neutral: true,
+      messageId: "stale-message-id",
+      expectedUuid: "earlier-duplicate-uuid",
+      expectedMatch: { messageId: "earlier-duplicate-message-id", matchedBy: "fingerprint" },
     },
   ])("forks at an inactive persisted branch by $resolution", async (forkPoint) => {
     const { agent } = forkingAgent();
+    if (forkPoint.neutral) {
+      const initialized = await agent.initialize({
+        protocolVersion: 1,
+        clientCapabilities: { _meta: { forkPoint: { version: 1 } } },
+      });
+      expect((initialized._meta as any)?.forkPoint).toEqual({ version: 1, boundary: "message" });
+    }
     const targetText = "Answer from the branch that is no longer active.";
     const targetFingerprint = `sha256:${createHash("sha256").update(targetText).digest("hex")}`;
     vi.mocked(getSessionMessages).mockResolvedValueOnce([
@@ -15023,26 +15105,35 @@ describe("session/fork", () => {
       cwd: "/workspace",
       additionalDirectories: [],
       mcpServers: [],
-      _meta: {
-        jetbrains: {
-          air: {
-            fork: {
-              version: 1,
-              messageId: forkPoint.messageId,
-              messageFingerprint: targetFingerprint,
-              messageOccurrence: forkPoint.messageOccurrence,
+      _meta: forkPoint.neutral
+        ? {
+            forkPoint: { messageId: forkPoint.messageId, messageFingerprint: targetFingerprint },
+          }
+        : {
+            jetbrains: {
+              air: {
+                fork: {
+                  version: 1,
+                  messageId: forkPoint.messageId,
+                  messageFingerprint: targetFingerprint,
+                  messageOccurrence: forkPoint.messageOccurrence,
+                },
+              },
             },
           },
-        },
-      },
     });
 
     expect(response.sessionId).toBe("fork-id");
+    expect(response._meta).toEqual(
+      forkPoint.expectedMatch
+        ? { forkPoint: { boundary: "message", ...forkPoint.expectedMatch } }
+        : undefined,
+    );
     expect(importSessionToStore).toHaveBeenLastCalledWith("source-id", expect.any(Object), {
       includeSubagents: false,
     });
     expect(forkSession).toHaveBeenLastCalledWith("source-id", {
-      upToMessageId: "inactive-assistant-uuid",
+      upToMessageId: forkPoint.expectedUuid,
     });
   });
 });
