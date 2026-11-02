@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "fromTag": "v0.99.0",
-  "toTag": "v0.99.1",
-  "toCommit": "0f78dbbdd089e5c64fc908173e8656aa9cc757fb",
+  "fromTag": "v0.99.1",
+  "toTag": "v0.100.0",
+  "toCommit": "981bf9a28ac3afef26e7877a2a638814c34f1679",
   "patches": [
     {
       "name": "goal-capability-opt-in",
@@ -15,8 +15,12 @@
       "overlappingFiles": ["docs/air-extensions.md", "src/acp-agent.ts"],
       "resolution": {
         "decision": "retain",
-        "rationale": "Goals stay AIR-only upstream in v0.99.1 and there is still no provider-neutral opt-in, so the patch is not absorbed. The v0.99.1 src/acp-agent.ts edits are: the isLoginRequiredText helper that treats any CLI 'run /login' text (including 'Login expired · Run /login') as authRequired and excludes usage-limit banners from isSyntheticLoginMessage (#1481); an AIR-only skill-file read through getContextUsage().skills.skillFrontmatter that marks plugin, bundled and nested skills as skills in available_commands (#1473); and an AIR-only approved-plan identity, plan-mode:<tool-call ID>, passed to planModeUpdate and through a new isAirClient() hook of the ExitPlanCoordinator host (#1469). The other v0.99.1 source changes are session/fork searching all projects instead of the target cwd (#1483, src/fork-session.ts) and subagent titles taken from the task (#1479, src/native-subagents.ts); neither touches a patch file. None of them reads or advertises the goal capability, calls goalMeta or the GOAL_* constants, or changes a goal call site; the goal-command failure check now uses isLoginRequiredText, which applies equally to the opted-in non-AIR path. v0.99.1 does not change src/goal-extension.ts. The only v0.99.1 docs/air-extensions.md edit adds the 'Approved plan identity' section for AIR plan operations, which is separate from the sections the patch edits. The candidate replays it onto the exact v0.99.1 tag with an unchanged stable patch-id (650615ee), so its added, removed and context lines are identical to the ledger commit. The full suite passes on the integration.",
-        "tests": ["npm exec -- vitest run src/tests/acp-agent.test.ts -t goal", "npm run test:run"],
+        "rationale": "Goals are still AIR-only upstream in v0.100.0 and there is no provider-neutral opt-in, so the patch is not absorbed. It replays onto v0.100.0 without conflict and with the ledger's stable patch-id (650615ee), so its added, removed and context lines are unchanged. The v0.99.1..v0.100.0 edits of src/acp-agent.ts (#1474, #1493, #1494, #1495, #1496, #1508, #1509, #1510, #1511) do not touch src/goal-extension.ts, goalMeta, the GOAL_* constants, the v1 _session/goal handler or the publishGoal call site. The #1495 request validation covers relative cwd/additionalDirectories, audio or unknown prompt blocks, set_config_option value types, the authenticate methodId and the session/fork error code; none of it touches initialize, clientCapabilities._meta or the goal method, and a /goal prompt is a text block. The only v0.100.0 docs/air-extensions.md edit rewrites the AIR session/delete bullet, outside the sections the patch edits. #1495 now strips the AIR goal entry from the v2 initialize response; the top-level neutral _meta.goal is still advertised to a v2 client that opts in, which predates this release and does not reach Alas (ACP v1). Reverting the patch on the candidate fails 'advertises and publishes goals for an opted-in non-AIR client'.",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-agent.test.ts -t goal",
+          "npm exec -- vitest run src/tests/acp-v2.test.ts -t goal",
+          "npm run test:run"
+        ],
         "automatic": false
       }
     },
@@ -30,11 +34,11 @@
       "equivalent": false,
       "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
-        "decision": "retain",
-        "rationale": "Async tasks remain gated on the AIR capability upstream in v0.99.1, so the provider-neutral opt-in is not absorbed. The v0.99.1 src/acp-agent.ts edits are: the isLoginRequiredText helper that treats any CLI 'run /login' text (including 'Login expired · Run /login') as authRequired and excludes usage-limit banners from isSyntheticLoginMessage (#1481); an AIR-only skill-file read through getContextUsage().skills.skillFrontmatter that marks plugin, bundled and nested skills as skills in available_commands (#1473); and an AIR-only approved-plan identity, plan-mode:<tool-call ID>, passed to planModeUpdate and through a new isAirClient() hook of the ExitPlanCoordinator host (#1469). The other v0.99.1 source changes are session/fork searching all projects instead of the target cwd (#1483, src/fork-session.ts) and subagent titles taken from the task (#1479, src/native-subagents.ts); neither touches a patch file. In the autonomous-result path only a comment changes ('Please run /login' becomes 'run /login'); none of the edits reads the async-task capability, the background tool-call routing or src/async-tasks.ts, which v0.99.1 does not change. The candidate replays it onto the exact v0.99.1 tag with an unchanged stable patch-id (ede9c20f), so its added, removed and context lines are identical to the ledger commit. The full suite passes on the integration.",
+        "decision": "adapt",
+        "commit": "374911daa9a00f103d8d6a16e32a75c639a64724",
+        "rationale": "Upstream #1511 wraps the message-loop tool result update in withRunningToolCall(..., runningToolCalls), which keeps a backgrounded Monitor or Workflow call in_progress for v2 sessions that report background work. The v0.98 adaptation replaced the asyncTasks.enabled argument of backgroundedBashToolCall inside that expression, so it conflicted there. The adaptation keeps upstream's withRunningToolCall wrapper and passes the patch's AIR-only clientSupportsAirCapability(this.clientCapabilities, AIR_ASYNC_TASKS_CAPABILITY), so an opted-in v1 client (_meta[\"async-tasks\"]: true) keeps the task lifecycle without the AIR backgrounded marker and v2 keeps upstream's behaviour. Upstream #1495 stopped advertising the AIR asyncTasks capability to v2 because the v2 app registers no _session/async_task/stop; the neutral _meta[\"async-tasks\"] names the same control method, so it is added to UNSERVED_EXTENSION_KEYS in src/v2/initialize.ts, inheriting upstream's v1-only scope. #1510/#1511 background-work reporting is gated to v2 sessions with perTaskStopAffordance, so it does not reach the v1 opt-in. Resolving to upstream's asyncTasks.enabled fails two provider-neutral async-task tests, dropping withRunningToolCall fails upstream's two v2 background tests, and removing the UNSERVED_EXTENSION_KEYS entry fails the new v2 test.",
         "tests": [
-          "npm exec -- vitest run src/tests/async-tasks.test.ts",
-          "npm exec -- vitest run src/tests/acp-agent.test.ts -t async",
+          "npm exec -- vitest run src/tests/acp-agent.test.ts src/tests/acp-v2.test.ts src/tests/async-tasks.test.ts src/tests/create-session-options.test.ts",
           "npm run test:run"
         ],
         "automatic": false
@@ -50,11 +54,11 @@
       "equivalent": false,
       "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
-        "decision": "retain",
-        "rationale": "Upstream has no client-facing context usage method in v0.99.1, so the _alas/context_usage extension is not absorbed. The v0.99.1 src/acp-agent.ts edits are: the isLoginRequiredText helper that treats any CLI 'run /login' text (including 'Login expired · Run /login') as authRequired and excludes usage-limit banners from isSyntheticLoginMessage (#1481); an AIR-only skill-file read through getContextUsage().skills.skillFrontmatter that marks plugin, bundled and nested skills as skills in available_commands (#1473); and an AIR-only approved-plan identity, plan-mode:<tool-call ID>, passed to planModeUpdate and through a new isAirClient() hook of the ExitPlanCoordinator host (#1469). The other v0.99.1 source changes are session/fork searching all projects instead of the target cwd (#1483, src/fork-session.ts) and subagent titles taken from the task (#1479, src/native-subagents.ts); neither touches a patch file. The new skill-file read also calls query.getContextUsage(), but only for AIR clients and without changing the SDK call the extension makes (getContextUsage({ detail })); the SDK correlates concurrent control requests by request ID, so an AIR client that also opts in keeps independent responses. Non-AIR clients such as Alas never trigger the new read. The candidate replays it onto the exact v0.99.1 tag with an unchanged stable patch-id (1ddb0ffe), so its added, removed and context lines are identical to the ledger commit. The full suite passes on the integration.",
+        "decision": "adapt",
+        "commit": "ae96867b0666c2d6ae29efd05ae60690d9747f57",
+        "rationale": "The patch is stacked on async-tasks-opt-in and its v0.98 copy conflicted only as a cascade of that adaptation. The _alas/context_usage handler, its parameter parsing, the v1 _meta.contextUsage advertisement and the v1 route are unchanged; no v0.100.0 edit touches them (#1484 only adds a usage_update after ExitPlanMode clears context, and the request reads session.query at call time). The adaptation applies #1495's v2 contract to this extension: the v2 app does not register _alas/context_usage, so contextUsage is added to UNSERVED_EXTENSION_KEYS and the v2 initialize response no longer offers a method it cannot serve. Removing that entry fails the new v2 test; disabling the v1 advertisement fails three v1 context-usage tests. Alas uses ACP v1 and is unaffected.",
         "tests": [
-          "npm exec -- vitest run src/tests/acp-agent.test.ts -t 'context usage'",
-          "npm exec -- vitest run src/tests/acp-v2.test.ts",
+          "npm exec -- vitest run src/tests/acp-agent.test.ts src/tests/acp-v2.test.ts src/tests/create-session-options.test.ts",
           "npm run test:run"
         ],
         "automatic": false
@@ -76,13 +80,17 @@
       "tests": ["src/tests/acp-scenarios.test.ts", "src/tests/session-index.test.ts"],
       "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": ["docs/air-extensions.md", "src/acp-agent.ts"],
+      "overlappingFiles": [
+        "docs/air-extensions.md",
+        "src/acp-agent.ts",
+        "src/session-index/service.ts"
+      ],
       "resolution": {
-        "decision": "retain",
-        "rationale": "The session index is still AIR-only upstream in v0.99.1, so the neutral index is not absorbed. The v0.99.1 src/acp-agent.ts edits are: the isLoginRequiredText helper that treats any CLI 'run /login' text (including 'Login expired · Run /login') as authRequired and excludes usage-limit banners from isSyntheticLoginMessage (#1481); an AIR-only skill-file read through getContextUsage().skills.skillFrontmatter that marks plugin, bundled and nested skills as skills in available_commands (#1473); and an AIR-only approved-plan identity, plan-mode:<tool-call ID>, passed to planModeUpdate and through a new isAirClient() hook of the ExitPlanCoordinator host (#1469). The other v0.99.1 source changes are session/fork searching all projects instead of the target cwd (#1483, src/fork-session.ts) and subagent titles taken from the task (#1479, src/native-subagents.ts); neither touches a patch file. None of them changes indexCapabilities(), the session-index connection or its metadata namespace, and v0.99.1 does not change src/session-index/*. Forked sessions in another cwd (#1483) are listed by the index like any other session. The only v0.99.1 docs/air-extensions.md edit adds the 'Approved plan identity' section for AIR plan operations, which is separate from the sections the patch edits. The candidate replays it onto the exact v0.99.1 tag with an unchanged stable patch-id (30c267dd), so its added, removed and context lines are identical to the ledger commit. The full suite passes on the integration.",
+        "decision": "adapt",
+        "commit": "dff2b8b693965471b4e025f6144134dd77c23d40",
+        "rationale": "The v0.98 copy conflicted in docs/air-extensions.md and src/acp-agent.ts only because it wraps and extends the initialize _meta and docs lines of the async-tasks and context-usage patches; onto their adaptations its +/- lines replay unchanged. Upstream v0.100.0 touches the index only through #1495: session/list rejects a relative cwd before anything else, and lists without an index pass includeWorktrees:false. The relative-cwd check runs before SessionIndexConnection.list, so neutral clients get it; the neutral index serves lists itself, so includeWorktrees:false does not apply; and a neutral client takes the service delete path, which keeps answering -32002 for an unknown session, as AIR with sessionIndex does. negotiate still creates no service under v2 and indexCapabilities gained no upstream additions. Two new tests pin these v0.100 contracts; with negotiate ignoring the neutral opt-in, both fail together with eight existing neutral tests.",
         "tests": [
-          "npm exec -- vitest run src/tests/session-index.test.ts",
-          "npm exec -- vitest run src/tests/acp-scenarios.test.ts",
+          "npm exec -- vitest run src/tests/session-index.test.ts src/tests/acp-scenarios.test.ts",
           "npm run test:run"
         ],
         "automatic": false
@@ -98,10 +106,95 @@
       "equivalent": false,
       "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
-        "decision": "retain",
-        "rationale": "Upstream still settles turns at the result only for AIR through endsTurnsWithLiveSubagents() in v0.99.1, so the _meta.settleAtResult opt-in is not absorbed. The v0.99.1 src/acp-agent.ts edits are: the isLoginRequiredText helper that treats any CLI 'run /login' text (including 'Login expired · Run /login') as authRequired and excludes usage-limit banners from isSyntheticLoginMessage (#1481); an AIR-only skill-file read through getContextUsage().skills.skillFrontmatter that marks plugin, bundled and nested skills as skills in available_commands (#1473); and an AIR-only approved-plan identity, plan-mode:<tool-call ID>, passed to planModeUpdate and through a new isAirClient() hook of the ExitPlanCoordinator host (#1469). The other v0.99.1 source changes are session/fork searching all projects instead of the target cwd (#1483, src/fork-session.ts) and subagent titles taken from the task (#1479, src/native-subagents.ts); neither touches a patch file. None of them changes endsTurnsWithLiveSubagents(), the turn settlement with live subagents or the ACP v1 gate; the result-path login check now uses isLoginRequiredText for every client. The candidate replays it onto the exact v0.99.1 tag with an unchanged stable patch-id (02124f5d), so its added, removed and context lines are identical to the ledger commit. The full suite passes on the integration.",
+        "decision": "adapt",
+        "commit": "1dcdf19fb5d792a3d154c8b7a91dca7574de4284",
+        "rationale": "The v0.98 copy conflicted in src/acp-agent.ts only because its opt-in helper sits next to the context-usage helper; onto the adaptation chain its +/- lines replay unchanged. Upstream v0.100.0 does not change endsTurnsWithLiveSubagents, turnAwaitingSubagents or backgroundSubagents, so the opt-in still goes through upstream's single gate, v1 only; #1510/#1511 are v2-only. The adaptation pins a v0.100 contract the patch now relies on, #1494: session/close cancels pending permission requests, elicitations and dialogs before it responds. A settleAtResult client can hold a subagent's permission request outside any turn after its prompt was answered at the result, and that request is now cancelled before close responds. Removing the settleAtResult branch fails the new test and five existing settleAtResult tests; reverting #1494's untilSessionClosed fails the new test and upstream's four close tests.",
         "tests": [
           "npm exec -- vitest run src/tests/acp-agent.test.ts -t settleAtResult",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "acp-sdk-2-2-0",
+      "commit": "b464dd4824e8a0716b1948517d1dc6825254ab29",
+      "upstreamPr": 1491,
+      "files": ["package-lock.json", "package.json", "src/elicitation.ts"],
+      "tests": [
+        "src/tests/acp-scenarios/harness.ts",
+        "src/tests/acp-v2.test.ts",
+        "src/tests/elicitation.test.ts"
+      ],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["package-lock.json", "package.json", "src/elicitation.ts"],
+      "resolution": {
+        "decision": "drop",
+        "rationale": "The carry is a cherry-pick of upstream #1491 (1d2b92fe), which v0.100.0 contains; v0.100.0 then moves to @agentclientprotocol/sdk 2.4.0 (#1509, 720bbb3e). The src +/- lines are identical (normalizeElicitationSchema fills properties: properties ?? {}), as are the harness, elicitation-test and acp-v2-test hunks; the patch-ids differ only because the carry left out upstream's provider-session-configuration.test.ts hunk, whose suite is not in v0.99.1. Every carry hunk in src and tests reverse-applies on the candidate; the only carry lines missing are the 2.2.0 pins, superseded by 2.4.0. The 2.2.0 to 2.4.0 step changes only how cancellation is awaited (stopWaitingOnCancel instead of raceWithAbort, same $/cancel_request wire behaviour). The alas copy of src/tests/elicitation.test.ts passes on the candidate (39 passed), and reverting #1491's src/elicitation.ts hunk fails 'adds an empty properties map when the MCP schema has none'.",
+        "tests": [
+          "npm exec -- vitest run src/tests/elicitation.test.ts src/tests/acp-scenarios-v2.test.ts",
+          "npx tsc --noEmit -p .",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "subagent-cwd",
+      "commit": "7f76bbe6b76c7f4c2aef88918536c83d2e0acfd3",
+      "upstreamPr": 1496,
+      "files": [
+        "README.md",
+        "src/acp-agent.ts",
+        "src/native-subagents.ts",
+        "src/subagent-history.ts",
+        "src/subagent-replay.ts"
+      ],
+      "tests": [
+        "src/tests/acp-agent.test.ts",
+        "src/tests/acp-v2.test.ts",
+        "src/tests/create-session-options.test.ts",
+        "src/tests/native-subagents.test.ts"
+      ],
+      "classification": "absorbed",
+      "equivalent": true,
+      "overlappingFiles": [
+        "README.md",
+        "src/acp-agent.ts",
+        "src/native-subagents.ts",
+        "src/subagent-history.ts",
+        "src/subagent-replay.ts"
+      ],
+      "resolution": {
+        "decision": "drop",
+        "rationale": "The carry 7f76bbe6 is a git cherry-pick -x of upstream eb78afa8 (#1496, report subagent working directories), which v0.100.0 contains. Both commits have the same stable patch-id (63c30961) and identical +/- lines in all nine files, and every hunk of the carry reverse-applies on the candidate. Upstream therefore ships NativeSubagentRuntime.reportCwd, the SubagentStart-hook cwd in subagent_update, cwd: null when a child returns to its parent's directory, the replay cwd from the child's .meta.json and the v2 passthrough; no fork-only behaviour or test remains. The alas copies of the carry's tests pass on the candidate (25 passed), and reverting eb78afa8's source hunks fails six of them.",
+        "tests": [
+          "npm exec -- vitest run src/tests/native-subagents.test.ts src/tests/create-session-options.test.ts src/tests/acp-agent.test.ts -t \"working directory|cwd\"",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "neutral-fork-point",
+      "commit": "57d8f5f9f6f9f1bc29c1e2d1b96b090fb1943759",
+      "upstreamPr": null,
+      "files": ["docs/air-extensions.md", "src/acp-agent.ts", "src/fork-session.ts"],
+      "tests": [
+        "src/tests/acp-agent.test.ts",
+        "src/tests/acp-v2.test.ts",
+        "src/tests/fork-session.test.ts"
+      ],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["docs/air-extensions.md", "src/acp-agent.ts", "src/fork-session.ts"],
+      "resolution": {
+        "decision": "adapt",
+        "commit": "41b37d6df80428f4a9eb9dfa54e5a51c752d4fe4",
+        "rationale": "The patch from PR #35 merges cleanly into the v0.100.0 sources: #1495 moved forkSession's body into forkTranscript behind a mapping of the SDK's 'Session <id> not found' to -32002, and the patch's forkPoint parsing sits inside forkTranscript. Its only conflict was in src/tests/acp-v2.test.ts, where its v2 advertisement test and the v0.100 tests for unserved v2 extensions are added at the same place; both are kept. The fork point stays advertised to v2 because the v2 app serves session/fork through unstable_forkSession, so it is not an unserved extension key. A new test pins the v0.100 contract the strict neutral form relies on: a fork point in a session without a transcript fails with -32002 sessionNotFound, not as a fork point that matches no message; it fails when upstream's mapping is disabled. Without the patch's src/fork-session.ts, 36 fork-session tests fail.",
+        "tests": [
+          "npm exec -- vitest run src/tests/fork-session.test.ts src/tests/acp-v2.test.ts src/tests/acp-agent.test.ts",
           "npm run test:run"
         ],
         "automatic": false
@@ -109,6 +202,29 @@
     }
   ],
   "preservedCommits": [],
-  "retiredCommits": [],
+  "retiredCommits": [
+    {
+      "commit": "7b35b7bb6ea89743cc2b7592403332e29f285945",
+      "classification": "absorbed",
+      "rationale": "This non-ledger maintenance commit from PR #34 records the subagent-cwd and acp-sdk-2-2-0 carries in the ledger, the audit's patch identities, the maintenance tests and docs/ALAS_DOWNSTREAM.md. The candidate replays it before the persistent preserved transitions, where its ledger and scripts hunks conflict with the older replayed state. Its ledger entries are carried by the protected ledger that the workflow advances, and its scripts and documentation changes are restored unchanged by a canonical preserved commit on top of the generated integration, so it is retired without dropping its behavior.",
+      "tests": [
+        "npm exec -- vitest run scripts/alas-maintenance.test.mjs scripts/workflow-hardening.test.mjs scripts/sync-review.test.mjs",
+        "git diff --exit-code refs/remotes/origin/alas HEAD -- scripts docs/ALAS_DOWNSTREAM.md",
+        "npm run test:run"
+      ],
+      "automatic": false
+    },
+    {
+      "commit": "1924bf70460366d29cf87101bdff69f7610453eb",
+      "classification": "absorbed",
+      "rationale": "This non-ledger maintenance commit from PR #35 records the neutral-fork-point patch in the ledger, the audit's patch identities, the maintenance tests and docs/ALAS_DOWNSTREAM.md. The candidate replays it before the persistent preserved transitions, where its ledger and scripts hunks conflict with the older replayed state. Its ledger entry is carried by the protected ledger that the workflow advances, and its scripts and documentation changes are restored unchanged by a canonical preserved commit on top of the generated integration, so it is retired without dropping its behavior.",
+      "tests": [
+        "npm exec -- vitest run scripts/alas-maintenance.test.mjs scripts/workflow-hardening.test.mjs scripts/sync-review.test.mjs",
+        "git diff --exit-code refs/remotes/origin/alas HEAD -- scripts docs/ALAS_DOWNSTREAM.md",
+        "npm run test:run"
+      ],
+      "automatic": false
+    }
+  ],
   "resolved": true
 }
