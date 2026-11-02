@@ -357,6 +357,19 @@ describe("ACP protocol routing", () => {
     expect(air).not.toHaveProperty("goal");
   });
 
+  it("does not advertise the provider-neutral async tasks extension to a v2 client", async () => {
+    const { app, authUpdate } = v2Client();
+    const response = await app.connectWith(connectRouter(), async (agent) => {
+      const response = await initializeV2(agent, { _meta: { "async-tasks": true } });
+      await authUpdate(1);
+      return response;
+    });
+
+    // The v1 response advertises `_meta["async-tasks"]` with
+    // `_session/async_task/stop`, which the v2 app does not register.
+    expect(response._meta ?? {}).not.toHaveProperty("async-tasks");
+  });
+
   it("negotiates a v2 client down to v1 when limited to v1", async () => {
     // On the raw stream, since the v2 client app cannot read the v1 response
     // that a real client would switch to v1 on.
