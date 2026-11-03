@@ -4999,6 +4999,30 @@ describe("toAcpNotifications - the plan of an approved ExitPlanMode", () => {
     ]);
   });
 
+  it.each([
+    { name: "a client-neutral planFile client", meta: { planFile: { version: 1 } } },
+    {
+      name: "a client that declares both plan file forms",
+      meta: {
+        planFile: { version: 1 },
+        jetbrains: { air: { version: 1, capabilities: ["planFile"] } },
+      },
+    },
+  ])("links the plan of $name by ID", ({ meta }) => {
+    const clientCapabilities: ClientCapabilities = { plan: {}, _meta: meta };
+    // The live result, with the plan of the structured result.
+    expect(
+      planUpdates(
+        {},
+        { clientCapabilities, toolUseResult: { plan: "Edited plan", isAgent: false } },
+      ),
+    ).toEqual([markdownPlan("Edited plan", "plan-mode:toolu_plan")]);
+    // History replay, with the plan of the input.
+    expect(planUpdates({}, { clientCapabilities }, { plan: "\nOriginal plan\n" })).toEqual([
+      markdownPlan("Original plan", "plan-mode:toolu_plan"),
+    ]);
+  });
+
   it("shows the plan after the tool call's result", () => {
     const toolUseResult = { plan: "Implement it", isAgent: false };
     const kinds = toAcpNotifications(
