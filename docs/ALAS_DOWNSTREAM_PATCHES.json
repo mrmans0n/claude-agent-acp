@@ -29,7 +29,14 @@
       "identityCommit": "3e098c71628cc7d5927ee8a3d794faa433dce12d",
       "commit": "374911daa9a00f103d8d6a16e32a75c639a64724",
       "upstreamPr": null,
-      "files": ["src/acp-agent.ts", "src/async-tasks.ts"],
+      "files": [
+        "README.md",
+        "docs/air-extensions.md",
+        "src/acp-agent.ts",
+        "src/async-tasks.ts",
+        "src/tool-calls/background.ts",
+        "src/v2/initialize.ts"
+      ],
       "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
       "disposition": "active",
       "lastResolution": {
@@ -76,7 +83,7 @@
       "identityCommit": "5cb2ba332cb3809d52cd8101a8f546d560408ece",
       "commit": "ae96867b0666c2d6ae29efd05ae60690d9747f57",
       "upstreamPr": null,
-      "files": ["src/acp-agent.ts"],
+      "files": ["src/acp-agent.ts", "src/v2/initialize.ts"],
       "tests": ["src/tests/acp-agent.test.ts"],
       "disposition": "active",
       "retiredCommits": [

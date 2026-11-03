@@ -19,7 +19,14 @@ const CLAUDE_PATCH_IDENTITIES = [
     name: "async-tasks-opt-in",
     identityCommit: "3e098c71628cc7d5927ee8a3d794faa433dce12d",
     upstreamPr: null,
-    files: ["src/acp-agent.ts", "src/async-tasks.ts"],
+    files: [
+      "README.md",
+      "docs/air-extensions.md",
+      "src/acp-agent.ts",
+      "src/async-tasks.ts",
+      "src/tool-calls/background.ts",
+      "src/v2/initialize.ts",
+    ],
     tests: ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
   },
   {
@@ -33,7 +40,7 @@ const CLAUDE_PATCH_IDENTITIES = [
     name: "context-usage-extension",
     identityCommit: "5cb2ba332cb3809d52cd8101a8f546d560408ece",
     upstreamPr: null,
-    files: ["src/acp-agent.ts"],
+    files: ["src/acp-agent.ts", "src/v2/initialize.ts"],
     tests: ["src/tests/acp-agent.test.ts"],
   },
   {
