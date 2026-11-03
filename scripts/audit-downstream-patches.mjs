@@ -123,6 +123,26 @@ const CLAUDE_PATCH_IDENTITIES = [
       "src/tests/diff-patch.test.ts",
     ],
   },
+  {
+    name: "neutral-plan-file",
+    identityCommit: "c89808edcdfcddf7fdc6c8a8fd99e6c3532e1c8d",
+    upstreamPr: null,
+    files: [
+      "docs/air-extensions.md",
+      "src/acp-agent.ts",
+      "src/exit-plan.ts",
+      "src/tool-calls/client-capabilities.ts",
+      "src/tool-calls/renderer.ts",
+      "src/tool-calls/reporters/interaction.ts",
+    ],
+    tests: [
+      "src/tests/acp-scenarios.test.ts",
+      "src/tests/acp-v2.test.ts",
+      "src/tests/clear-context-coordinator.test.ts",
+      "src/tests/tool-call-contract.test.ts",
+      "src/tests/tools.test.ts",
+    ],
+  },
 ];
 
 function sameJson(left, right) {

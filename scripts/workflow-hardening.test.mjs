@@ -35,6 +35,7 @@ describe("downstream patch ledger", () => {
       "subagent-cwd",
       "neutral-fork-point",
       "neutral-diff-patch",
+      "neutral-plan-file",
     ]);
     for (const patch of ledger.patches) {
       expect(patch.commit).toMatch(/^[0-9a-f]{40}$/);
