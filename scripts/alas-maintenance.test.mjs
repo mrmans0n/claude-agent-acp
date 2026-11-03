@@ -25,7 +25,14 @@ const CLAUDE_PATCHES = [
     identityCommit: "3e098c71628cc7d5927ee8a3d794faa433dce12d",
     commit: "3e098c71628cc7d5927ee8a3d794faa433dce12d",
     upstreamPr: null,
-    files: ["src/acp-agent.ts", "src/async-tasks.ts", "src/v2/initialize.ts"],
+    files: [
+      "README.md",
+      "docs/air-extensions.md",
+      "src/acp-agent.ts",
+      "src/async-tasks.ts",
+      "src/tool-calls/background.ts",
+      "src/v2/initialize.ts",
+    ],
     tests: ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
   },
   {
