@@ -106,6 +106,20 @@ session, and the response reports the matched message id and whether the id
 or the fingerprint found it. The AIR form is unchanged, and clients that do
 not opt in see no change. Upstream has no equivalent.
 
+The neutral-diff-patch patch sends the exact Git patches of the AIR diff patch
+to a client that is not AIR. It opts in with `clientCapabilities._meta.diffPatch:
+{ "version": 1 }`, gets `_meta.diffPatch { version: 1, format: "git_patch" }`
+back under ACP v1 only, and its `diff` blocks carry
+`_meta.diffPatch { version: 1, format: "git_patch", text }` with the
+placeholders `oldText: null` and `newText: ""`. The approval preview, the
+PostToolUse patch and the fallbacks are those of the AIR form, and `rawInput`
+leaves out the `Edit` and `Write` file text as it does for AIR. The
+PostToolUse `_meta.claudeCode.toolResponse` of an `Edit` or a `Write` also
+leaves out its file text. A client that
+declares both forms gets the neutral one. The AIR form and ACP v2 are
+unchanged, and clients that do not opt in see no change. Upstream has no
+equivalent.
+
 For each target release, `scripts/audit-downstream-patches.mjs` classifies every
 patch:
 
