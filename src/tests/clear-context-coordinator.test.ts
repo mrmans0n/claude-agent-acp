@@ -358,7 +358,7 @@ describe("ExitPlanCoordinator", () => {
       ...baseHost,
       sessionUpdate: vi.fn(async () => {}),
       supportsPlanOperations: () => true,
-      isAirClient: () => false,
+      linksPlanToReview: () => false,
       destroyReplacement,
       settleCancelledTurn,
       settleFailedTurn: vi.fn(),
@@ -404,7 +404,7 @@ describe("ExitPlanCoordinator", () => {
       ...baseHost,
       sessionUpdate: vi.fn(async () => {}),
       supportsPlanOperations: () => true,
-      isAirClient: () => false,
+      linksPlanToReview: () => false,
       destroyReplacement: vi.fn(),
       settleCancelledTurn: vi.fn(),
       settleFailedTurn,
@@ -429,9 +429,10 @@ describe("ExitPlanCoordinator", () => {
       true,
       false,
     ],
-    ["links the approved AIR plan after a context reset", true, true],
+    // AIR and a client-neutral planFile client (ClientCapabilities.linksPlanToReview).
+    ["links the approved plan to its review after a context reset", true, true],
     ["publishes no plan to a client without plan operations", false, false],
-  ])("%s", async (_, supportsPlanOperations, airClient) => {
+  ])("%s", async (_, supportsPlanOperations, linksPlanToReview) => {
     const turn: ClearContextTurn = {
       settled: false,
       promptUuid: "00000000-0000-4000-8000-000000000000",
@@ -450,7 +451,7 @@ describe("ExitPlanCoordinator", () => {
         );
       }),
       supportsPlanOperations: () => supportsPlanOperations,
-      isAirClient: () => airClient,
+      linksPlanToReview: () => linksPlanToReview,
       destroyReplacement: vi.fn(),
       settleCancelledTurn: vi.fn(),
       settleFailedTurn: vi.fn(),
@@ -471,7 +472,7 @@ describe("ExitPlanCoordinator", () => {
             "plan_update " +
               JSON.stringify({
                 type: "markdown",
-                planId: airClient ? "plan-mode:tool-plan" : "plan-mode",
+                planId: linksPlanToReview ? "plan-mode:tool-plan" : "plan-mode",
                 content: "Ship it",
               }),
           ]
@@ -482,7 +483,7 @@ describe("ExitPlanCoordinator", () => {
       sessionId: "public-session",
       update: { sessionUpdate: "usage_update", used: 0, size: 200_000 },
     });
-    if (airClient) {
+    if (linksPlanToReview) {
       expect(host.sessionUpdate).toHaveBeenCalledWith({
         sessionId: "public-session",
         update: {

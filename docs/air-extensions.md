@@ -540,6 +540,7 @@ Claude does not stream a plan, so the adapter never uses the streamed text mode.
 
 The agent advertises `planFile` to an AIR client in the `initialize` response (see [Agent declaration](#agent-declaration)).
 AIR reads `rawInput.planFilePath` only from an agent that advertised `planFile`.
+A client that is not AIR can get the plan file as metadata, see [Client-neutral plan file](#client-neutral-plan-file).
 The adapter sends the path only when the client declares `planFile` too:
 
 ```json
@@ -599,6 +600,7 @@ AIR joins the plan to its review by ID, even when the text includes user edits.
 This link needs no extra metadata.
 The live result, history replay, and clear-context approval use the same identity.
 The identity does not depend on `planFile`: it also applies when the request carries inline plan text.
+A client with the [client-neutral plan file](#client-neutral-plan-file) gets the same identity.
 Other clients keep the `plan-mode` ID.
 
 ### Fallback
@@ -612,6 +614,55 @@ The plan text goes out as before in these cases:
 `rawInput` then is the SDK input with `plan`, and the input `planFilePath` when it is present.
 AIR then shows the in-memory `plan` text.
 A client that is not AIR always gets the whole SDK input, like upstream.
+
+### Client-neutral plan file
+
+Any client can get the plan identity, the plan file, and the digest of the plan as metadata next to the plan text.
+It opts in at `initialize` with `clientCapabilities._meta.planFile: { "version": 1 }`.
+Only an object whose `version` is an integer of at least 1 opts in; `true`, a string, an array, `null`, a missing `version`, `0` or a fraction enables nothing.
+
+The `initialize` response of an opted-in client carries the agent side at top level, under ACP v1 only:
+
+```json
+{
+  "_meta": {
+    "planFile": { "version": 1 }
+  }
+}
+```
+
+Once the input of an ExitPlanMode holds the plan text, its reports carry top-level `_meta.planFile`:
+
+```json
+{
+  "_meta": {
+    "planFile": {
+      "version": 1,
+      "planId": "plan-mode:toolu_01ABC",
+      "path": "/Users/me/.claude/plans/tidy-plan.md",
+      "sha256": "96e7885d43adc3273af3e9831772f0e76a6823a61bf311ce7f2d564cba5757d5"
+    }
+  }
+}
+```
+
+| Field     | Type    | Meaning                                                                                                                          |
+| --------- | ------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `version` | integer | Equals `1`.                                                                                                                      |
+| `planId`  | string  | `plan-mode:<tool-call ID>`, the ID of the approved plan (see [Approved plan identity](#approved-plan-identity)).                 |
+| `path`    | string  | The absolute path of the plan file. Absent when the input names no plan file, or the path is not absolute or not a regular file. |
+| `sha256`  | string  | The lowercase hex SHA-256 of the UTF-8 bytes of the input `plan`, the exact text that the review approves.                       |
+
+- The payload goes on the `tool_call` and its updates, including the result, and on the `toolCall` of the permission request.
+  The streamed input holds no plan, so the first report has no payload, and a report before the input names the file has no `path`.
+- The payload is metadata only. `rawInput` keeps `plan` and `planFilePath`, and `content` keeps the plan text, as for a client without it.
+- The adapter sends no clear call of the plan file.
+- The approved plan has the ID `plan-mode:<tool-call ID>` for the live result, history replay, and the clear-context approval, as for AIR.
+  Its `content` is the approved plan, which includes the user's edits, so its digest can differ from `sha256`.
+- The `path` names a file on the host of the adapter. Claude rewrites the same file in later plan modes of the session, so the file can change after the review.
+  `sha256` tells whether the file still holds the reviewed plan.
+- A client that declares both the AIR `planFile` and the neutral opt-in gets the neutral form only. Its AIR capability list is unchanged.
+- ACP v2 ignores the opt-in.
 
 ## Session hooks
 
