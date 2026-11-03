@@ -120,6 +120,20 @@ declares both forms gets the neutral one. The AIR form and ACP v2 are
 unchanged, and clients that do not opt in see no change. Upstream has no
 equivalent.
 
+The neutral-plan-file patch sends the plan file of an ExitPlanMode to a client
+that is not AIR as metadata. It opts in with `clientCapabilities._meta.planFile:
+{ "version": 1 }` and gets `_meta.planFile { version: 1 }` back under ACP v1
+only. The ExitPlanMode tool call, its updates and the `toolCall` of its
+permission request carry `_meta.planFile { version, planId, path, sha256 }`:
+the `plan-mode:<tool-call ID>` identity, the absolute plan file when the input
+names a regular file, and the SHA-256 of the exact input plan text. `rawInput`
+and `content` keep the plan text, and no plan-file-clear call goes out. The
+approved `plan_update` uses the same `plan-mode:<tool-call ID>` for the live
+result, history replay and the clear-context restart, as upstream #1469 does
+for AIR. A client that declares both forms gets the neutral one. The AIR form
+and ACP v2 are unchanged, and clients that do not opt in see no change.
+Upstream has no equivalent.
+
 For each target release, `scripts/audit-downstream-patches.mjs` classifies every
 patch:
 
