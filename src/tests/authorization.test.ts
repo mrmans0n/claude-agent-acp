@@ -1037,6 +1037,17 @@ describe("authorization", () => {
         return sessionId;
       }
 
+      it("keeps the authRequired rejection for a client on the neutral typed lane", async () => {
+        const [agent, updates] = createRecordingAgent(false);
+        (agent as any).clientCapabilities = { _meta: { sessionFailure: { version: 1 } } };
+        hideClaudeAuth();
+        mockQueries({ account: SIGNED_IN_WITH_KEY, script: [[signOutResult()]] });
+
+        await signOutDuringTurn(agent);
+
+        expect(JSON.stringify(updates)).not.toContain("sessionFailure");
+      });
+
       it("refuses the next turn when the CLI now holds a subscription", async () => {
         const [agent, updates] = createRecordingAgent(true);
         hideClaudeAuth();
