@@ -3254,7 +3254,10 @@ describe("usage-limit failure replay", () => {
     session_id: "s1",
   });
 
-  async function replay(messages: Awaited<ReturnType<typeof getSessionMessages>>, capable = true) {
+  async function replay(
+    messages: Awaited<ReturnType<typeof getSessionMessages>>,
+    capabilities: Record<string, unknown> = airCapabilities,
+  ) {
     const updates: SessionNotification[] = [];
     const agent = new ClaudeAcpAgent(
       {
@@ -3262,7 +3265,7 @@ describe("usage-limit failure replay", () => {
       } as unknown as AcpClient,
       { log: () => {}, error: () => {} },
     );
-    await initializeClient(agent, capable ? airCapabilities : {});
+    await initializeClient(agent, capabilities);
     agent.sessions.s1 = mockSessionState();
     vi.mocked(getSessionMessages).mockResolvedValueOnce(messages);
     await (
@@ -3347,10 +3350,35 @@ describe("usage-limit failure replay", () => {
   });
 
   it("preserves the standard transcript for clients without the extension", async () => {
-    const { updates } = await replay([usageLimitMessage], false);
+    const { updates } = await replay([usageLimitMessage], {});
 
     expect(JSON.stringify(updates)).toContain("individual spend limit");
     expect(JSON.stringify(updates)).not.toContain("sessionFailure");
+  });
+
+  it("replays the usage limit in the neutral form, without the duplicate text", async () => {
+    const { agent, updates } = await replay([usageLimitMessage], {
+      _meta: { sessionFailure: { version: 1 } },
+    });
+
+    expect(updates.map((update) => update.update)).toEqual([
+      {
+        sessionUpdate: "session_info_update",
+        _meta: {
+          sessionFailure: {
+            version: 1,
+            id: "s1:history-error:usage-limit-message",
+            revision: 1,
+            category: "limit",
+            severity: "error",
+            title: usageLimitMessage.message.content[0].text,
+            actions: [],
+            kind: "quota_exhausted",
+          },
+        },
+      },
+    ]);
+    expect(agent.sessions.s1.sessionFailureState.active.size).toBe(1);
   });
 
   it("clears the replayed failure after a successful follow-up", async () => {
@@ -11902,6 +11930,9 @@ describe("stop reason propagation", () => {
         "retryable",
         "retryAfterMs",
         "turnId",
+        // Only the neutral form has these.
+        "version",
+        "kind",
       ]) {
         expect(failure).not.toHaveProperty(removedField);
       }
@@ -12119,6 +12150,298 @@ describe("stop reason propagation", () => {
       agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test" }] }),
     ).rejects.toThrow("provider detail");
     expect(JSON.stringify(updates)).not.toContain("sessionFailure");
+  });
+
+  describe("client-neutral session failure", () => {
+    const neutralCapabilities = { _meta: { sessionFailure: { version: 1 } } };
+    const neutralFromMeta = (meta: unknown) => (meta as any)?.sessionFailure;
+    const promptParams = {
+      sessionId: "test-session",
+      prompt: [{ type: "text" as const, text: "test" }],
+    };
+    const failedResult = (result: string) =>
+      createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: true, result });
+
+    async function neutralAgent(
+      capabilities: Record<string, any> = neutralCapabilities,
+      options: { v2?: boolean } = {},
+    ) {
+      const updates: SessionNotification[] = [];
+      const agent = new ClaudeAcpAgent(
+        {
+          sessionUpdate: async (update: SessionNotification) => {
+            updates.push(update);
+          },
+        } as unknown as AcpClient,
+        { log: () => {}, error: () => {} },
+        options,
+      );
+      const initialized = await agent.initialize({
+        protocolVersion: 1,
+        clientCapabilities: capabilities,
+      });
+      return { agent, updates, initialized };
+    }
+
+    it("ends a failed turn with end_turn and the record, without the assistant text", async () => {
+      const { agent, updates } = await neutralAgent();
+      injectSession(agent, [
+        createAssistantError("server_error", "Claude could not complete the request."),
+        failedResult("Claude could not complete the request."),
+      ]);
+
+      const response = await agent.prompt(promptParams);
+
+      expect(response.stopReason).toBe("end_turn");
+      expect(neutralFromMeta(response._meta)).toEqual({
+        version: 1,
+        id: expect.stringMatching(/:error$/),
+        revision: 1,
+        category: "service",
+        severity: "error",
+        title: "Claude could not complete the request.",
+        actions: ["retry"],
+        kind: "provider_error",
+      });
+      expect(response._meta).not.toHaveProperty("jetbrains");
+      expect(response._meta).toHaveProperty("quota");
+      expect(JSON.stringify(updates)).not.toContain("sessionFailure");
+      expect(JSON.stringify(updates)).not.toContain("could not complete");
+    });
+
+    it("updates a retry warning on session_info_update into the terminal failure", async () => {
+      const { agent, updates } = await neutralAgent();
+      injectSession(agent, [
+        {
+          type: "system",
+          subtype: "api_retry",
+          attempt: 1,
+          max_retries: 5,
+          retry_delay_ms: 100,
+          error_status: 429,
+          error: "rate_limit",
+          uuid: randomUUID(),
+          session_id: "test-session",
+        },
+        createAssistantError("rate_limit", "Rate limit reached."),
+        failedResult("Rate limit reached."),
+      ]);
+
+      const response = await agent.prompt(promptParams);
+      const update = updates.find((candidate) => neutralFromMeta(candidate.update._meta))!;
+      const warning = neutralFromMeta(update.update._meta);
+
+      expect(update.update.sessionUpdate).toBe("session_info_update");
+      expect(update.update._meta).not.toHaveProperty("jetbrains");
+      expect(warning).toEqual({
+        version: 1,
+        id: expect.any(String),
+        revision: 1,
+        category: "limit",
+        severity: "warning",
+        title: "Retrying Claude, attempt 1 of 5.",
+        actions: [],
+        kind: "rate_limited",
+      });
+      expect(neutralFromMeta(response._meta)).toMatchObject({
+        id: warning.id,
+        revision: 2,
+        severity: "error",
+        actions: ["retry"],
+        kind: "rate_limited",
+      });
+    });
+
+    it("keeps a transport loss on end_turn with no raw detail", async () => {
+      const { agent } = await neutralAgent();
+      const input = new Pushable<any>();
+      async function* messageGenerator() {
+        const user = await input[Symbol.asyncIterator]().next();
+        yield {
+          type: "user",
+          message: user.value.message,
+          parent_tool_use_id: null,
+          uuid: user.value.uuid,
+          session_id: "test-session",
+          isReplay: true,
+        };
+        throw new Error("private transport URL and token");
+      }
+      agent.sessions["test-session"] = mockSessionState({
+        query: wrapQuery(messageGenerator()),
+        input,
+      });
+
+      const response = await agent.prompt(promptParams);
+
+      expect(response.stopReason).toBe("end_turn");
+      expect(neutralFromMeta(response._meta)).toMatchObject({
+        category: "connection",
+        title: "The connection to Claude was lost.",
+        actions: ["new_session"],
+        kind: "transport_lost",
+      });
+      expect(JSON.stringify(response)).not.toContain("private transport URL and token");
+    });
+
+    it("rejects a queued turn without the raw detail when the stream dies", async () => {
+      const { agent } = await neutralAgent();
+      const input = new Pushable<any>();
+      async function* messageGenerator() {
+        const iterator = input[Symbol.asyncIterator]();
+        const user = await iterator.next();
+        yield {
+          type: "user",
+          message: user.value.message,
+          parent_tool_use_id: null,
+          uuid: user.value.uuid,
+          session_id: "test-session",
+          isReplay: true,
+        };
+        await iterator.next();
+        throw new Error("private transport URL and token");
+      }
+      agent.sessions["test-session"] = mockSessionState({
+        query: wrapQuery(messageGenerator()),
+        input,
+      });
+
+      const active = agent.prompt(promptParams);
+      const queued = agent.prompt(promptParams);
+
+      await expect(active).resolves.toMatchObject({ stopReason: "end_turn" });
+      const error = await queued.then(
+        () => undefined,
+        (reason) => reason,
+      );
+      expect(error).toBeInstanceOf(RequestError);
+      expect(JSON.stringify(error.data)).toContain("transport_lost");
+      expect(JSON.stringify(error)).not.toContain("private transport URL and token");
+    });
+
+    it("titles a usage limit from the assistant text, not the raw result", async () => {
+      const { agent } = await neutralAgent();
+      injectSession(agent, [createUsageLimitAssistantError(), failedResult("private detail")]);
+
+      const response = await agent.prompt(promptParams);
+
+      expect(neutralFromMeta(response._meta)).toMatchObject({
+        kind: "quota_exhausted",
+        title: expect.stringContaining("individual spend limit"),
+      });
+      expect(JSON.stringify(response)).not.toContain("private detail");
+    });
+
+    it("publishes a provider update failure in the neutral form", async () => {
+      const { agent, updates } = await neutralAgent();
+      injectSession(agent, []);
+
+      (agent as any).reportSessionLostOnProviderUpdate(
+        "test-session",
+        agent.sessions["test-session"],
+        new Error("provider update failed"),
+      );
+      await vi.waitFor(() => expect(updates).toHaveLength(1));
+
+      expect(neutralFromMeta(updates[0].update._meta)).toMatchObject({
+        version: 1,
+        details: "provider update failed",
+        kind: "internal_error",
+      });
+    });
+
+    it("gives a client that declares both forms only the neutral record", async () => {
+      const { agent, updates, initialized } = await neutralAgent({
+        _meta: { ...airSessionFailureCapabilities._meta, ...neutralCapabilities._meta },
+      });
+      injectSession(agent, [
+        {
+          type: "system",
+          subtype: "api_retry",
+          attempt: 1,
+          max_retries: 5,
+          retry_delay_ms: 100,
+          error_status: 429,
+          error: "rate_limit",
+          uuid: randomUUID(),
+          session_id: "test-session",
+        },
+        createAssistantError("rate_limit", "Rate limit reached."),
+        failedResult("Rate limit reached."),
+      ]);
+
+      const response = await agent.prompt(promptParams);
+
+      expect(initialized._meta).toMatchObject({
+        sessionFailure: { version: 1 },
+        jetbrains: { air: { capabilities: expect.arrayContaining(["sessionFailure"]) } },
+      });
+      expect(neutralFromMeta(response._meta)).toMatchObject({ version: 1, kind: "rate_limited" });
+      expect(sessionFailureFromResponse(response)).toBeUndefined();
+      expect(updates.some((update) => neutralFromMeta(update.update._meta))).toBe(true);
+      expect(sessionFailuresFromUpdates(updates)).toEqual([]);
+    });
+
+    it("keeps the AIR form for an ACP v2 client that also opts in", async () => {
+      const { agent, updates, initialized } = await neutralAgent(
+        { _meta: { ...airSessionFailureCapabilities._meta, ...neutralCapabilities._meta } },
+        { v2: true },
+      );
+      injectSession(agent, [
+        {
+          type: "system",
+          subtype: "api_retry",
+          attempt: 1,
+          max_retries: 5,
+          retry_delay_ms: 100,
+          error_status: 429,
+          error: "rate_limit",
+          uuid: randomUUID(),
+          session_id: "test-session",
+        },
+        createAssistantError("rate_limit", "Rate limit reached."),
+        failedResult("Rate limit reached."),
+      ]);
+
+      const response = await agent.prompt(promptParams);
+
+      expect(initialized._meta).not.toHaveProperty("sessionFailure");
+      expect(neutralFromMeta(response._meta)).toBeUndefined();
+      expect(sessionFailureFromResponse(response)).toMatchObject({ severity: "error" });
+      expect(sessionFailureFromResponse(response)).not.toHaveProperty("kind");
+      expect(sessionFailuresFromUpdates(updates)).toHaveLength(1);
+      expect(updates.some((update) => neutralFromMeta(update.update._meta))).toBe(false);
+    });
+
+    it("keeps the JSON-RPC rejection for a plain ACP v2 client that opts in", async () => {
+      const { agent, updates } = await neutralAgent(neutralCapabilities, { v2: true });
+      injectSession(agent, [failedResult("provider detail")]);
+
+      await expect(agent.prompt(promptParams)).rejects.toThrow("provider detail");
+      expect(JSON.stringify(updates)).not.toContain("sessionFailure");
+    });
+
+    it.each([
+      ["boolean", true],
+      ["string", "1"],
+      ["empty object", {}],
+      ["string version", { version: "1" }],
+      ["fractional version", { version: 1.5 }],
+      ["zero version", { version: 0 }],
+      ["negative version", { version: -1 }],
+      ["non-finite version", { version: Number.NaN }],
+      ["null", null],
+      ["array", [{ version: 1 }]],
+    ])("stays on the JSON-RPC lane and sends no advert for %s", async (_label, optIn) => {
+      const { agent, updates, initialized } = await neutralAgent({
+        _meta: { sessionFailure: optIn },
+      });
+      injectSession(agent, [failedResult("provider detail")]);
+
+      expect(initialized._meta).not.toHaveProperty("sessionFailure");
+      await expect(agent.prompt(promptParams)).rejects.toThrow("provider detail");
+      expect(JSON.stringify(updates)).not.toContain("sessionFailure");
+    });
   });
 
   it.each([
@@ -13425,6 +13748,34 @@ describe("model refusal fallback handling", () => {
       (u) => u.sessionUpdate === "agent_message_chunk" && u.content.text.includes("Model fallback"),
     );
     expect(notice.content.text).toContain("This request tripped a safety classifier.");
+  });
+
+  it("publishes the model fallback as a neutral advisory without ACP notices", async () => {
+    const { agent, sessionUpdate } = createCapturingAgent();
+    await agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: { _meta: { sessionFailure: { version: 1 } } },
+    });
+    injectGeneratorSession(
+      agent,
+      makeGenerator([refusalFallbackMessage(), successResult()]),
+      modelStateOverrides,
+    );
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test" }] });
+
+    const updates = sessionUpdate.mock.calls.map((c: any[]) => (c[0] as { update: any }).update);
+    expect(
+      updates.find(
+        (u: any) =>
+          u.sessionUpdate === "agent_message_chunk" && u.content?.text?.includes("Model fallback"),
+      ),
+    ).toBeUndefined();
+    expect(updates.map((u: any) => u._meta?.sessionFailure).find(Boolean)).toMatchObject({
+      version: 1,
+      severity: "warning",
+      kind: "advisory",
+    });
   });
 
   it("publishes the model fallback as a warning advisory for AIR clients", async () => {
