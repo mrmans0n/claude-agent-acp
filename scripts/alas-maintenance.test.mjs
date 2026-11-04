@@ -158,6 +158,24 @@ const CLAUDE_PATCHES = [
       "src/tests/tools.test.ts",
     ],
   },
+  {
+    name: "neutral-session-failure",
+    identityCommit: "11faafe89f8de72118ce60df09e1ae480c4499bc",
+    commit: "11faafe89f8de72118ce60df09e1ae480c4499bc",
+    upstreamPr: null,
+    files: [
+      "docs/air-extensions.md",
+      "src/acp-agent.ts",
+      "src/session-failure-extension.ts",
+      "src/tool-calls/client-capabilities.ts",
+    ],
+    tests: [
+      "src/tests/acp-agent.test.ts",
+      "src/tests/acp-scenarios.test.ts",
+      "src/tests/acp-v2.test.ts",
+      "src/tests/authorization.test.ts",
+    ],
+  },
 ];
 
 afterEach(() => {

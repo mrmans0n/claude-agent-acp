@@ -134,6 +134,22 @@ for AIR. A client that declares both forms gets the neutral one. The AIR form
 and ACP v2 are unchanged, and clients that do not opt in see no change.
 Upstream has no equivalent.
 
+The neutral-session-failure patch sends the typed failure lane of the AIR
+session failure to a client that is not AIR. It opts in with
+`clientCapabilities._meta.sessionFailure: { "version": 1 }` and gets
+`_meta.sessionFailure { version: 1 }` back under ACP v1 only. The opt-in selects
+behavior as well as the payload location: a terminal failure ends the turn with
+`end_turn` and a record instead of a JSON-RPC rejection, raw details are
+stripped, the assistant text of a provider failure is suppressed, a stream death
+settles the turn, `session/load` replays a usage limit as a record, and an
+`api_retry` is a warning record. Authentication failures stay `authRequired`
+JSON-RPC errors. `session_info_update` and `PromptResponse` carry
+`_meta.sessionFailure { version, id, revision, category, severity, title,
+details?, reason?, actions, kind }`, where `kind` is an open string holding the
+adapter's internal failure kind. A client that declares both forms gets the
+neutral one. The AIR form and ACP v2 are unchanged, and clients that do not opt
+in see no change. Upstream has no equivalent.
+
 For each target release, `scripts/audit-downstream-patches.mjs` classifies every
 patch:
 
