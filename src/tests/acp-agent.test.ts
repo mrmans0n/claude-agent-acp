@@ -55,6 +55,7 @@ import {
   type StreamedToolInputCache,
 } from "../acp-agent.js";
 import { SessionTitles } from "../session-titles.js";
+import { SessionBackgroundWork } from "../background-work.js";
 import { formatUsageResponse, isUsageCommandText, parseUsageResponse } from "../usage-markdown.js";
 import { Pushable } from "../utils.js";
 import { heldRequest, initializeClient, makeMockQuery } from "./helpers.js";
@@ -5224,6 +5225,7 @@ describe("permission request cancellation", () => {
       toolUseCache: {},
       emittedToolCalls: new Set(),
       liveBackgroundTasks: new Map(),
+      background: new SessionBackgroundWork(sessionId, false),
       emittedAssistantText: false,
       owedTrailingIdles: 0,
       messageIdToUuid: new Map(),
@@ -15533,6 +15535,7 @@ describe("session/close", () => {
       toolUseCache: {},
       emittedToolCalls: new Set(),
       liveBackgroundTasks: new Map(),
+      background: new SessionBackgroundWork(sessionId, false),
       emittedAssistantText: false,
       owedTrailingIdles: 0,
       messageIdToUuid: new Map(),
@@ -15655,6 +15658,7 @@ describe("session/delete", () => {
       toolUseCache: {},
       emittedToolCalls: new Set(),
       liveBackgroundTasks: new Map(),
+      background: new SessionBackgroundWork(sessionId, false),
       emittedAssistantText: false,
       owedTrailingIdles: 0,
       messageIdToUuid: new Map(),
@@ -15818,6 +15822,7 @@ describe("getOrCreateSession param change detection", () => {
       toolUseCache: {},
       emittedToolCalls: new Set(),
       liveBackgroundTasks: new Map(),
+      background: new SessionBackgroundWork(sessionId, false),
       emittedAssistantText: false,
       owedTrailingIdles: 0,
       messageIdToUuid: new Map(),
@@ -19390,6 +19395,38 @@ describe("assembled assistant text fallback", () => {
     });
   });
 
+  it("logs session_writes_lost after the last result without sending an update", async () => {
+    const updates: any[] = [];
+    const error = vi.fn();
+    const agent = new ClaudeAcpAgent(
+      { sessionUpdate: async (n: any) => updates.push(n) } as unknown as AcpClient,
+      { log: () => {}, error },
+    );
+    injectSession(agent, [
+      replayedResult("done"),
+      idle,
+      {
+        type: "system",
+        subtype: "session_writes_lost",
+        error_code: "ENOSPC",
+        lost: ["transcript", "global_config"],
+        transcript_session_ids: ["test-session"],
+        uuid: randomUUID(),
+        session_id: "test-session",
+      },
+    ]);
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "1+2" }] });
+    const sentAtTurnEnd = updates.length;
+
+    await vi.waitFor(() =>
+      expect(error).toHaveBeenCalledWith(
+        "Session test-session: Claude Code could not save transcript and global_config (ENOSPC); resuming may miss part of the conversation",
+      ),
+    );
+    expect(updates).toHaveLength(sentAtTurnEnd);
+  });
+
   it("marks info-level notices even when their text has no severity prefix", async () => {
     const { agent, updates } = createMockAgentWithCapture();
     injectSession(agent, [
@@ -20299,6 +20336,7 @@ describe("post-error recovery", () => {
       toolUseCache: {},
       emittedToolCalls: new Set(),
       liveBackgroundTasks: new Map(),
+      background: new SessionBackgroundWork("test-session", false),
       emittedAssistantText: false,
       owedTrailingIdles: 0,
       messageIdToUuid: new Map(),
@@ -29342,6 +29380,7 @@ describe("session/cancel wedge recovery (issue #680)", () => {
       toolUseCache: {},
       emittedToolCalls: new Set(),
       liveBackgroundTasks: new Map(),
+      background: new SessionBackgroundWork("test-session", false),
       emittedAssistantText: false,
       owedTrailingIdles: 0,
       messageIdToUuid: new Map(),
@@ -31250,6 +31289,7 @@ describe("agent selection config option", () => {
         toolUseCache: {},
         emittedToolCalls: new Set(),
         liveBackgroundTasks: new Map(),
+        background: new SessionBackgroundWork(sessionId, false),
         emittedAssistantText: false,
         owedTrailingIdles: 0,
         messageIdToUuid: new Map(),

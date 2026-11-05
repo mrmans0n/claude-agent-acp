@@ -5,7 +5,7 @@
  * schema, so a malformed v2 message fails the test.
  */
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -781,6 +781,40 @@ describe("ACP v2 sessions", () => {
       ).rejects.toMatchObject({ code: -32602 });
 
       await agent.request(v2.methods.agent.session.delete, { sessionId });
+      await authUpdate(1);
+    });
+  });
+
+  it("resumes an unavailable mode using the configured mode in the v2 response", async () => {
+    const project = path.join(tempDir, "claude", "projects", "-project");
+    await mkdir(project, { recursive: true });
+    await writeFile(
+      path.join(tempDir, "claude", "settings.json"),
+      JSON.stringify({ permissions: { defaultMode: "plan" } }),
+    );
+    const sessionId = randomUUID();
+    await writeFile(
+      path.join(project, `${sessionId}.jsonl`),
+      JSON.stringify({
+        type: "user",
+        uuid: randomUUID(),
+        parentUuid: null,
+        sessionId,
+        cwd,
+        isSidechain: false,
+        origin: { kind: "human" },
+        message: { role: "user", content: "hello" },
+        permissionMode: "dontAsk",
+      }) + "\n",
+    );
+    const { app, authUpdate } = v2Client();
+    await app.connectWith(connectRouter(), async (agent) => {
+      await initializeV2(agent);
+      const response = await agent.request(v2.methods.agent.session.resume, { sessionId, cwd });
+      expect(sdk.queryOptions.at(-1)?.permissionMode).toBe("plan");
+      expect(
+        response.configOptions?.find((option) => option.configId === "mode")?.currentValue,
+      ).toBe("plan");
       await authUpdate(1);
     });
   });
@@ -2862,6 +2896,78 @@ describe("ACP v2 prompts", () => {
       await authUpdate(1);
     });
     expect(echoed).toEqual([]);
+  });
+});
+
+describe("ACP v2 idle compaction", () => {
+  /** A main-thread request that wrote 250k tokens to the one-hour cache. */
+  const largeOneHourRequest = (options: Options) => ({
+    ...assistantText(options, "Done."),
+    message: {
+      ...assistantText(options, "Done.").message,
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        cache_creation_input_tokens: 250_000,
+        cache_creation: { ephemeral_1h_input_tokens: 250_000, ephemeral_5m_input_tokens: 0 },
+      },
+    },
+  });
+
+  /** The session is idle for 54 minutes after a large one-hour request, and the adapter's `/compact` runs. */
+  it("reports the compaction that the adapter starts as running, then idle, with no user_message", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const received: string[] = [];
+      sdk.run = async function* (prompts, options) {
+        const input = prompts[Symbol.asyncIterator]();
+        for (;;) {
+          const { value, done } = await input.next();
+          if (done) return;
+          received.push((value.message.content as Array<{ text: string }>)[0].text);
+          if (received.length === 1) {
+            yield {
+              type: "user",
+              message: value.message,
+              parent_tool_use_id: null,
+              uuid: value.uuid,
+              session_id: options.sessionId,
+              isReplay: true,
+            };
+            yield largeOneHourRequest(options);
+          } else {
+            yield { type: "system", subtype: "status", status: "compacting", uuid: randomUUID() };
+          }
+          yield result(options);
+          yield idleState(options);
+        }
+      };
+      const client = v2Client();
+      await client.app.connectWith(connectRouter(), async (agent) => {
+        await initializeV2(agent);
+        const { sessionId } = await agent.request(v2.methods.agent.session.new, { cwd });
+        await agent.request(v2.methods.agent.session.prompt, { sessionId, prompt: text("hi") });
+        await vi.advanceTimersByTimeAsync(0);
+        await vi.advanceTimersByTimeAsync(54 * 60_000);
+        for (let i = 0; i < 20 && received.length < 2; i++) await vi.advanceTimersByTimeAsync(0);
+        for (let i = 0; i < 20 && turnTrace(client.sessionUpdates).length < 6; i++) {
+          await vi.advanceTimersByTimeAsync(0);
+        }
+        await client.authUpdate(1);
+      });
+
+      expect(received).toEqual(["hi", "/compact"]);
+      expect(turnTrace(client.sessionUpdates)).toEqual([
+        "user_message",
+        "running",
+        "agent_message_chunk",
+        "idle end_turn",
+        "running",
+        "idle end_turn",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -5768,6 +5874,78 @@ describe("ACP v2 terminal of a command in the background", () => {
       ]);
     });
 
+    it("reads the command's output file into its terminal, and the rest before its exit", async () => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), "background-output-"));
+      const outputFile = path.join(dir, "tasks", "bg1.output");
+      await mkdir(path.dirname(outputFile));
+      await writeFile(outputFile, "compiling\n");
+      const ended = Promise.withResolvers<void>();
+      scriptTurns(async function* (options) {
+        yield level(options, [{}]);
+        yield taskStarted(options);
+        yield bashUse(options);
+        // The Bash result names the file, as Claude Code writes it.
+        const bashResult = backgrounded(options);
+        yield {
+          ...bashResult,
+          message: {
+            ...bashResult.message,
+            content: [
+              {
+                ...bashResult.message.content[0],
+                content: `Command running in background with ID: bg1. Output is being written to: ${outputFile}`,
+              },
+            ],
+          },
+        };
+        yield result(options);
+        yield idleState(options);
+        await ended.promise;
+        yield* taskEnded(options);
+        yield level(options, []);
+      });
+      const output = (client: ReturnType<typeof v2Client>) =>
+        client.sessionUpdates.flatMap(({ update }) => {
+          if (update.sessionUpdate === "terminal_output_chunk") {
+            return [`chunk ${Buffer.from(String(update.data), "base64").toString()}`];
+          }
+          if (update.sessionUpdate !== "terminal_update") return [];
+          return [
+            ...(update.output
+              ? [
+                  `output ${Buffer.from((update.output as { data: string }).data, "base64").toString()}`,
+                ]
+              : []),
+            ...(update.exitStatus ? ["exit"] : []),
+          ];
+        });
+      try {
+        const client = await promptUntil("idle end_turn [toolu_bg]", async (_, __, client) => {
+          await vi.waitFor(() => expect(output(client)).toContain("output compiling\n"), {
+            timeout: 2000,
+          });
+          await appendFile(outputFile, "tests passed\n");
+          await vi.waitFor(() => expect(output(client)).toContain("chunk tests passed\n"), {
+            timeout: 2000,
+          });
+          // The command writes its last line as it ends.
+          await appendFile(outputFile, "done\n");
+          ended.resolve();
+          await vi.waitFor(() => expect(backgroundTrace(client)).toContain("idle []"));
+        });
+
+        // The file's first text replaces the Bash result's placeholder.
+        expect(output(client).slice(-4)).toEqual([
+          "output compiling\n",
+          "chunk tests passed\n",
+          "chunk done\n",
+          "exit",
+        ]);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
     it("ends the listed terminals when the query ends, as its background tasks end with it", async () => {
       scriptTurns(async function* (options) {
         yield level(options, [{}]);
@@ -6078,6 +6256,25 @@ describe("ACP v2 terminal of a command in the background", () => {
             background: [{ type: "tool_call", toolCallId: "toolu_mon" }],
           },
         ]);
+      });
+
+      it("lists a task whose call returned before the task started as a _claude/task item", async () => {
+        scriptTurns(async function* (options) {
+          yield toolUseMessage(options, "toolu_mcp", "mcp__ci__watch", { job: "build" });
+          yield toolResultMessage(options, "toolu_mcp", { content: "Watching the build." });
+          // The call's task joins the level and starts after the call returned,
+          // so the call ended and cannot be listed.
+          const task = { task_id: "mcp1", task_type: "mcp_task", description: "Watch the build" };
+          yield level(options, [task]);
+          yield taskEvent(options, "task_started", { ...task, tool_use_id: "toolu_mcp" });
+          yield result(options);
+          yield idleState(options);
+        });
+        const client = await promptUntil("idle end_turn [_claude/task]");
+
+        expect(client.updates("state_update").at(-1)).toMatchObject({
+          background: [{ type: "_claude/task", taskId: "mcp1", description: "Watch the build" }],
+        });
       });
 
       it("lists a task without such a call as a _claude/task item", async () => {

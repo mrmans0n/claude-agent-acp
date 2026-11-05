@@ -106,64 +106,6 @@ session, and the response reports the matched message id and whether the id
 or the fingerprint found it. The AIR form is unchanged, and clients that do
 not opt in see no change. Upstream has no equivalent.
 
-The neutral-diff-patch patch sends the exact Git patches of the AIR diff patch
-to a client that is not AIR. It opts in with `clientCapabilities._meta.diffPatch:
-{ "version": 1 }`, gets `_meta.diffPatch { version: 1, format: "git_patch" }`
-back under ACP v1 only, and its `diff` blocks carry
-`_meta.diffPatch { version: 1, format: "git_patch", text }` with the
-placeholders `oldText: null` and `newText: ""`. The approval preview, the
-PostToolUse patch and the fallbacks are those of the AIR form, and `rawInput`
-leaves out the `Edit` and `Write` file text as it does for AIR. The
-PostToolUse `_meta.claudeCode.toolResponse` of an `Edit` or a `Write` also
-leaves out its file text. A client that
-declares both forms gets the neutral one. The AIR form and ACP v2 are
-unchanged, and clients that do not opt in see no change. Upstream has no
-equivalent.
-
-The neutral-plan-file patch sends the plan file of an ExitPlanMode to a client
-that is not AIR as metadata. It opts in with `clientCapabilities._meta.planFile:
-{ "version": 1 }` and gets `_meta.planFile { version: 1 }` back under ACP v1
-only. The ExitPlanMode tool call, its updates and the `toolCall` of its
-permission request carry `_meta.planFile { version, planId, path, sha256 }`:
-the `plan-mode:<tool-call ID>` identity, the absolute plan file when the input
-names a regular file, and the SHA-256 of the exact input plan text. `rawInput`
-and `content` keep the plan text, and no plan-file-clear call goes out. The
-approved `plan_update` uses the same `plan-mode:<tool-call ID>` for the live
-result, history replay and the clear-context restart, as upstream #1469 does
-for AIR. A client that declares both forms gets the neutral one. The AIR form
-and ACP v2 are unchanged, and clients that do not opt in see no change.
-Upstream has no equivalent.
-
-The neutral-session-failure patch sends the typed failure lane of the AIR
-session failure to a client that is not AIR. It opts in with
-`clientCapabilities._meta.sessionFailure: { "version": 1 }` and gets
-`_meta.sessionFailure { version: 1 }` back under ACP v1 only. The opt-in selects
-behavior as well as the payload location: a terminal failure ends the turn with
-`end_turn` and a record instead of a JSON-RPC rejection, raw details are
-stripped, the assistant text of a provider failure is suppressed, a stream death
-settles the turn, `session/load` replays a usage limit as a record, and an
-`api_retry` is a warning record. Authentication failures stay `authRequired`
-JSON-RPC errors. `session_info_update` and `PromptResponse` carry
-`_meta.sessionFailure { version, id, revision, category, severity, title,
-details?, reason?, actions, kind }`, where `kind` is an open string holding the
-adapter's internal failure kind. A client that declares both forms gets the
-neutral one. The AIR form and ACP v2 are unchanged, and clients that do not opt
-in see no change. Upstream has no equivalent.
-
-The neutral-agent-file-change-report patch sends the per-turn changed-file report
-of the AIR extension to a client that is not AIR. It opts in with
-`clientCapabilities._meta.agentFileChangeReport: { "version": 1 }` and gets
-`_meta.agentFileChangeReport { version: 1 }` back under ACP v1 only. The opt-in
-enables SDK file checkpointing for the session, as the AIR capability does. The
-client requests a report with `session/prompt._meta.agentFileChangeReportRequest
-{ version: 1, requestId }`, and `session_info_update` carries
-`_meta.agentFileChangeReport { version, requestId, status, paths?,
-declaredComplete?, truncated?, uncertainty?, reason? }` with the builders, limits
-and timing of the AIR form. Only the neutral form has `uncertainty`, a fixed text
-on `status: "reported"`. A client that declares both forms gets the neutral one.
-The AIR form and ACP v2 are unchanged, and clients that do not opt in see no
-change and get no checkpointing. Upstream has no equivalent.
-
 For each target release, `scripts/audit-downstream-patches.mjs` classifies every
 patch:
 
