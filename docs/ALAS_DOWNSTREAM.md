@@ -150,6 +150,20 @@ adapter's internal failure kind. A client that declares both forms gets the
 neutral one. The AIR form and ACP v2 are unchanged, and clients that do not opt
 in see no change. Upstream has no equivalent.
 
+The neutral-agent-file-change-report patch sends the per-turn changed-file report
+of the AIR extension to a client that is not AIR. It opts in with
+`clientCapabilities._meta.agentFileChangeReport: { "version": 1 }` and gets
+`_meta.agentFileChangeReport { version: 1 }` back under ACP v1 only. The opt-in
+enables SDK file checkpointing for the session, as the AIR capability does. The
+client requests a report with `session/prompt._meta.agentFileChangeReportRequest
+{ version: 1, requestId }`, and `session_info_update` carries
+`_meta.agentFileChangeReport { version, requestId, status, paths?,
+declaredComplete?, truncated?, uncertainty?, reason? }` with the builders, limits
+and timing of the AIR form. Only the neutral form has `uncertainty`, a fixed text
+on `status: "reported"`. A client that declares both forms gets the neutral one.
+The AIR form and ACP v2 are unchanged, and clients that do not opt in see no
+change and get no checkpointing. Upstream has no equivalent.
+
 For each target release, `scripts/audit-downstream-patches.mjs` classifies every
 patch:
 

@@ -4,14 +4,19 @@ import * as path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   AGENT_FILE_CHANGE_REPORT_MAX_BYTES,
+  agentFileChangeReportForm,
+  agentFileChangeReportMeta,
   agentFileChangeReportRequestId,
   createNativeFileChangeReporter,
+  type AgentFileChangeReportForm,
   type AgentFileChangeReportResult,
+  NEUTRAL_AGENT_FILE_CHANGE_REPORT_UNCERTAINTY,
   type NativeFileChangeReporter,
   recordSubagentFileEdits,
 } from "../file-change-audit.js";
 
 function createSupport(options: {
+  form?: AgentFileChangeReportForm;
   cwd?: string;
   additionalDirectories?: string[];
   publish?: (result: AgentFileChangeReportResult) => Promise<void>;
@@ -19,6 +24,7 @@ function createSupport(options: {
   timeoutMs?: number;
 }) {
   return createNativeFileChangeReporter({
+    form: options.form ?? "air",
     cwd: options.cwd ?? process.cwd(),
     additionalDirectories: options.additionalDirectories ?? [],
     publish: options.publish ?? (async () => {}),
@@ -31,14 +37,14 @@ function requestedTurn(
   reporter: NativeFileChangeReporter,
   requestId: string,
   editedPaths?: string[],
+  form: AgentFileChangeReportForm = "air",
 ) {
-  const fileChangeReport = reporter.request({
-    jetbrains: {
-      air: {
-        agentFileChangeReportRequest: { version: 1, requestId },
-      },
-    },
-  });
+  const request = { version: 1, requestId };
+  const fileChangeReport = reporter.request(
+    form === "neutral"
+      ? { agentFileChangeReportRequest: request }
+      : { jetbrains: { air: { agentFileChangeReportRequest: request } } },
+  );
   expect(fileChangeReport).toBeDefined();
   return {
     promptUuid: "prompt-uuid",
@@ -47,30 +53,36 @@ function requestedTurn(
   };
 }
 
+const MALFORMED_REQUESTS = [
+  { version: 2, requestId: "turn-42" },
+  { version: 1, requestId: "contains spaces" },
+  { version: 1, requestId: "x".repeat(129) },
+  { version: 1 },
+  { version: 1, requestId: "turn-42", extra: true },
+  null,
+];
+
 describe("native agent file-change report", () => {
   it("accepts only the versioned prompt request shape", () => {
     expect(
-      agentFileChangeReportRequestId({
-        jetbrains: {
-          air: {
-            agentFileChangeReportRequest: { version: 1, requestId: "turn:42_a-b.c" },
+      agentFileChangeReportRequestId(
+        {
+          jetbrains: {
+            air: {
+              agentFileChangeReportRequest: { version: 1, requestId: "turn:42_a-b.c" },
+            },
           },
         },
-      }),
+        "air",
+      ),
     ).toBe("turn:42_a-b.c");
 
-    for (const request of [
-      { version: 2, requestId: "turn-42" },
-      { version: 1, requestId: "contains spaces" },
-      { version: 1, requestId: "x".repeat(129) },
-      { version: 1 },
-      { version: 1, requestId: "turn-42", extra: true },
-      null,
-    ]) {
+    for (const request of MALFORMED_REQUESTS) {
       expect(
-        agentFileChangeReportRequestId({
-          jetbrains: { air: { agentFileChangeReportRequest: request } },
-        }),
+        agentFileChangeReportRequestId(
+          { jetbrains: { air: { agentFileChangeReportRequest: request } } },
+          "air",
+        ),
       ).toBeUndefined();
     }
   });
@@ -343,6 +355,178 @@ describe("native agent file-change report", () => {
     expect(published).toEqual([
       { version: 1, requestId: "request-empty", status: "unavailable", reason: "invalidOutput" },
     ]);
+  });
+});
+
+describe("client-neutral agent file-change report", () => {
+  const air = {
+    jetbrains: { air: { version: 1, capabilities: ["agentFileChangeReport"] } },
+  };
+  const neutral = { agentFileChangeReport: { version: 1 } };
+
+  it.each([
+    ["no capability", {}, false, undefined],
+    ["the opt-in", { _meta: neutral }, false, "neutral"],
+    [
+      "a later opt-in version",
+      { _meta: { agentFileChangeReport: { version: 2 } } },
+      false,
+      "neutral",
+    ],
+    ["the AIR capability", { _meta: air }, false, "air"],
+    ["both forms", { _meta: { ...air, ...neutral } }, false, "neutral"],
+    ["the opt-in on ACP v2", { _meta: neutral }, true, undefined],
+    ["both forms on ACP v2", { _meta: { ...air, ...neutral } }, true, "air"],
+    ["the AIR capability on ACP v2", { _meta: air }, true, "air"],
+  ])("selects the form for %s", (_label, capabilities, v2, form) => {
+    expect(agentFileChangeReportForm(capabilities, v2)).toBe(form);
+  });
+
+  it.each([
+    ["boolean", true],
+    ["string", "1"],
+    ["empty object", {}],
+    ["string version", { version: "1" }],
+    ["fractional version", { version: 1.5 }],
+    ["zero version", { version: 0 }],
+    ["negative version", { version: -1 }],
+    ["null", null],
+    ["array", [{ version: 1 }]],
+  ])("does not opt in with %s", (_label, optIn) => {
+    expect(agentFileChangeReportForm({ _meta: { agentFileChangeReport: optIn } })).toBeUndefined();
+  });
+
+  it("reads the request only at top level, with the validation of the AIR form", () => {
+    const request = { version: 1, requestId: "turn:42_a-b.c" };
+
+    expect(
+      agentFileChangeReportRequestId({ agentFileChangeReportRequest: request }, "neutral"),
+    ).toBe("turn:42_a-b.c");
+    expect(
+      agentFileChangeReportRequestId(
+        { jetbrains: { air: { agentFileChangeReportRequest: request } } },
+        "neutral",
+      ),
+    ).toBeUndefined();
+    expect(
+      agentFileChangeReportRequestId({ agentFileChangeReportRequest: request }, "air"),
+    ).toBeUndefined();
+    for (const malformed of MALFORMED_REQUESTS) {
+      expect(
+        agentFileChangeReportRequestId({ agentFileChangeReportRequest: malformed }, "neutral"),
+      ).toBeUndefined();
+    }
+    for (const meta of [undefined, null, "request", []]) {
+      expect(agentFileChangeReportRequestId(meta, "neutral")).toBeUndefined();
+    }
+  });
+
+  it("puts the report at top level, and keeps the exact bytes of the AIR form", () => {
+    const report: AgentFileChangeReportResult = {
+      version: 1,
+      requestId: "request",
+      status: "unavailable",
+      reason: "cancelled",
+    };
+
+    expect(agentFileChangeReportMeta(report, "neutral")).toEqual({
+      agentFileChangeReport: report,
+    });
+    expect(JSON.stringify(agentFileChangeReportMeta(report, "air"))).toBe(
+      '{"jetbrains":{"air":{"version":1,"agentFileChangeReport":{"version":1,"requestId":"request","status":"unavailable","reason":"cancelled"}}}}',
+    );
+  });
+
+  it.each([
+    ["checkpoint preview", { canRewind: true, filesChanged: ["src/a.ts"] }, "src/a.ts"],
+    ["subagent fallback", { canRewind: false, error: "checkpoint missing" }, "GEMINI.md"],
+  ])("adds the fixed uncertainty to a reported list from the %s", async (_label, preview, file) => {
+    const cwd = process.cwd();
+    const published: AgentFileChangeReportResult[] = [];
+    const support = createSupport({
+      form: "neutral",
+      cwd,
+      publish: async (result) => void published.push(result),
+    });
+    const turn = requestedTurn(support, "request-1", ["GEMINI.md"], "neutral");
+
+    await support.report(turn, { rewindFiles: vi.fn(async () => preview) });
+
+    expect(published[0]).toMatchObject({
+      status: "reported",
+      paths: expect.arrayContaining([path.join(cwd, file)]),
+      declaredComplete: false,
+      uncertainty: NEUTRAL_AGENT_FILE_CHANGE_REPORT_UNCERTAINTY,
+    });
+  });
+
+  it("gives an AIR report no uncertainty", async () => {
+    const published: AgentFileChangeReportResult[] = [];
+    const support = createSupport({ publish: async (result) => void published.push(result) });
+    const turn = requestedTurn(support, "request-1");
+
+    await support.report(turn, {
+      rewindFiles: vi.fn(async () => ({ canRewind: true, filesChanged: ["src/a.ts"] })),
+    });
+
+    expect(published[0]).not.toHaveProperty("uncertainty");
+  });
+
+  it("gives an unavailable report no uncertainty", async () => {
+    const published: AgentFileChangeReportResult[] = [];
+    const support = createSupport({
+      form: "neutral",
+      publish: async (result) => void published.push(result),
+    });
+
+    support.finish(
+      requestedTurn(support, "request-1", undefined, "neutral").fileChangeReport,
+      "cancelled",
+    );
+
+    expect(published).toEqual([
+      { version: 1, requestId: "request-1", status: "unavailable", reason: "cancelled" },
+    ]);
+  });
+
+  /** A list that just fits the AIR form must lose paths to fit the neutral one. */
+  it("counts the uncertainty in the wire limit", async () => {
+    const cwd = path.join(os.tmpdir(), "native-file-report-neutral-caps");
+    const preview = async (form: AgentFileChangeReportForm, filesChanged: string[]) => {
+      const published: AgentFileChangeReportResult[] = [];
+      const support = createSupport({
+        form,
+        cwd,
+        publish: async (result) => void published.push(result),
+      });
+      await support.report(requestedTurn(support, "request-caps", undefined, form), {
+        rewindFiles: vi.fn(async () => ({ canRewind: true, filesChanged })),
+      });
+      return published[0];
+    };
+    const size = (report: AgentFileChangeReportResult) =>
+      Buffer.byteLength(JSON.stringify(report), "utf8");
+    const files = Array.from({ length: 60 }, (_, index) => `g/${index}-${"x".repeat(3900)}.txt`);
+    let spare = AGENT_FILE_CHANGE_REPORT_MAX_BYTES - size(await preview("air", files));
+    while (spare > 3000) {
+      files.push(`g/${files.length}-${"x".repeat(2000)}.txt`);
+      spare = AGENT_FILE_CHANGE_REPORT_MAX_BYTES - size(await preview("air", files));
+    }
+    // One more path fills the limit: its JSON is `,"<parent>/<name>"`.
+    const parent = path.join(fs.realpathSync.native(os.tmpdir()), path.basename(cwd));
+    const name = "y".repeat(spare - Buffer.byteLength(parent, "utf8") - 4);
+    const filling = [...files, name];
+
+    const fits = await preview("air", filling);
+    const fitted = await preview("neutral", filling);
+
+    expect(size(fits)).toBe(AGENT_FILE_CHANGE_REPORT_MAX_BYTES);
+    expect(fits).toMatchObject({ truncated: false, paths: { length: filling.length } });
+    expect(size(fitted)).toBeLessThanOrEqual(AGENT_FILE_CHANGE_REPORT_MAX_BYTES);
+    expect(fitted).toMatchObject({
+      truncated: true,
+      uncertainty: NEUTRAL_AGENT_FILE_CHANGE_REPORT_UNCERTAINTY,
+    });
   });
 });
 
