@@ -161,6 +161,27 @@ export function neutralSessionFailureCapability(): { version: number } {
   return { version: NEUTRAL_SESSION_FAILURE_VERSION };
 }
 
+/** The top-level `_meta` key of the client-neutral agent file-change report. */
+export const NEUTRAL_AGENT_FILE_CHANGE_REPORT_KEY = "agentFileChangeReport";
+export const NEUTRAL_AGENT_FILE_CHANGE_REPORT_VERSION = 1;
+
+/** Whether `initialize.clientCapabilities._meta.agentFileChangeReport` is an
+ *  object whose `version` is an integer of at least 1. */
+export function clientOptsIntoNeutralAgentFileChangeReport(capabilities: unknown): boolean {
+  const meta = recordOrUndefined(recordOrUndefined(capabilities)?._meta);
+  const version = recordOrUndefined(meta?.[NEUTRAL_AGENT_FILE_CHANGE_REPORT_KEY])?.version;
+  return (
+    typeof version === "number" &&
+    Number.isInteger(version) &&
+    version >= NEUTRAL_AGENT_FILE_CHANGE_REPORT_VERSION
+  );
+}
+
+/** The agent side of the client-neutral agent file-change report, for the initialize `_meta`. */
+export function neutralAgentFileChangeReportCapability(): { version: number } {
+  return { version: NEUTRAL_AGENT_FILE_CHANGE_REPORT_VERSION };
+}
+
 function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)

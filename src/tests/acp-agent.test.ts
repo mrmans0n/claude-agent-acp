@@ -15034,6 +15034,61 @@ describe("logout", () => {
     });
   });
 
+  describe("client-neutral agent file-change report advert", () => {
+    const optIn = { agentFileChangeReport: { version: 1 } };
+
+    it("advertises it at top level to a client that opts in, with no AIR key", async () => {
+      const response = await createMockAgent().initialize({
+        protocolVersion: 1,
+        clientCapabilities: { _meta: optIn },
+      });
+
+      expect(response._meta?.agentFileChangeReport).toEqual({ version: 1 });
+      expect(response._meta).not.toHaveProperty("jetbrains");
+    });
+
+    it("sends version 1 to a client that opts in with a later version", async () => {
+      const response = await createMockAgent().initialize({
+        protocolVersion: 1,
+        clientCapabilities: { _meta: { agentFileChangeReport: { version: 2 } } },
+      });
+
+      expect(response._meta?.agentFileChangeReport).toEqual({ version: 1 });
+    });
+
+    it.each([
+      ["no opt-in", {}],
+      ["the AIR capability alone", AIR_CLIENT_CAPABILITIES],
+      ["boolean", { _meta: { agentFileChangeReport: true } }],
+      ["empty object", { _meta: { agentFileChangeReport: {} } }],
+      ["zero version", { _meta: { agentFileChangeReport: { version: 0 } } }],
+      ["fractional version", { _meta: { agentFileChangeReport: { version: 1.5 } } }],
+    ])("does not advertise it for %s", async (_label, clientCapabilities) => {
+      const response = await createMockAgent().initialize({
+        protocolVersion: 1,
+        clientCapabilities,
+      });
+
+      expect(response._meta).not.toHaveProperty("agentFileChangeReport");
+    });
+
+    it("keeps the AIR capability list of a client that declares both", async () => {
+      const air = { air: { version: 1, capabilities: ["agentFileChangeReport"] } };
+      const declaredAir = await createMockAgent().initialize({
+        protocolVersion: 1,
+        clientCapabilities: { _meta: { jetbrains: air } },
+      });
+      const declaredBoth = await createMockAgent().initialize({
+        protocolVersion: 1,
+        clientCapabilities: { _meta: { jetbrains: air, ...optIn } },
+      });
+
+      const { agentFileChangeReport, ...rest } = declaredBoth._meta as Record<string, unknown>;
+      expect(agentFileChangeReport).toEqual({ version: 1 });
+      expect(rest).toEqual(declaredAir._meta);
+    });
+  });
+
   it("advertises AIR sessionFailure support even before client negotiation", async () => {
     const agent = createMockAgent();
     const response = await agent.initialize({
