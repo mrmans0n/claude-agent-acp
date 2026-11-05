@@ -1122,6 +1122,54 @@ describe.skipIf(baselineDir)("ACP scenarios", () => {
     );
   });
 
+  describe("client-neutral agentFileChangeReport", () => {
+    /** Runs a scenario for a client that also opts into the neutral file-change report. */
+    async function runNeutral(name: string, base: "plain" | "air"): Promise<Recorded[]> {
+      resetIds();
+      const profile: Profile = {
+        name: base,
+        capabilities: {
+          ...PROFILES[base].capabilities,
+          _meta: { ...PROFILES[base].capabilities._meta, agentFileChangeReport: { version: 1 } },
+        },
+      };
+      const scenario = SCENARIOS.find((candidate) => candidate.name === name)!;
+      return (await runScenario(Agent, profile, scenario)).normalized;
+    }
+    const runDeclared = async (name: string, base: "plain" | "air") => {
+      resetIds();
+      const scenario = SCENARIOS.find((candidate) => candidate.name === name)!;
+      return (await runScenario(Agent, PROFILES[base], scenario)).normalized;
+    };
+    const initializeMeta = (recorded: Recorded[]) =>
+      (recorded.find((record) => record.kind === "initialize")!.payload as Record<string, any>)
+        ._meta;
+
+    it.each(["plain", "air"] as const)(
+      "adds only the advert to the %s initialize response",
+      async (base) => {
+        const neutral = await runNeutral("session-setup", base);
+        const declared = await runDeclared("session-setup", base);
+        const { agentFileChangeReport, ...rest } = initializeMeta(neutral);
+
+        expect(agentFileChangeReport).toEqual({ version: 1 });
+        expect(rest).toEqual(initializeMeta(declared));
+        const others = (recorded: Recorded[]) => recorded.filter((r) => r.kind !== "initialize");
+        expect(toJsonLines(others(neutral))).toBe(toJsonLines(others(declared)));
+      },
+    );
+
+    it.each(["plain", "air"] as const)(
+      "leaves the %s traffic of a turn that requests no report unchanged",
+      async (base) => {
+        const scenario = "edit-with-permission";
+        expect(toJsonLines(await runNeutral(scenario, base))).toBe(
+          toJsonLines(await runDeclared(scenario, base)),
+        );
+      },
+    );
+  });
+
   describe("client-neutral planFile", () => {
     const plan = "# Plan\n1. Do it";
     /** The hex SHA-256 of the UTF-8 plan text. */
