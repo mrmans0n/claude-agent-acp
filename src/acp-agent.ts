@@ -278,13 +278,13 @@ import {
 } from "./hide-claude-auth.js";
 import {
   AGENT_FILE_CHANGE_REPORT_CAPABILITY,
+  agentFileChangeReportForm,
   agentFileChangeReportMeta,
   createNativeFileChangeReporter,
   type FileChangeReportTurnState,
   type FileChangeReportUnavailableReason,
   type NativeFileChangeReporter,
   recordSubagentFileEdits,
-  supportsAgentFileChangeReport,
 } from "./file-change-audit.js";
 import {
   ContextCompactionLifecycle,
@@ -333,9 +333,11 @@ import { ChangedMetaFilter } from "./tool-calls/changed-meta-filter.js";
 import { ToolCallFieldTracker } from "./tool-calls/field-tracker.js";
 import {
   ClientCapabilities as ToolCallClientCapabilities,
+  NEUTRAL_AGENT_FILE_CHANGE_REPORT_KEY,
   NEUTRAL_DIFF_PATCH_KEY,
   NEUTRAL_PLAN_FILE_KEY,
   NEUTRAL_SESSION_FAILURE_KEY,
+  neutralAgentFileChangeReportCapability,
   neutralDiffPatchCapability,
   neutralPlanFileCapability,
   neutralSessionFailureCapability,
@@ -3228,6 +3230,10 @@ export class ClaudeAcpAgent {
           // ACP v1 only (`sessionFailureForm`). The AIR capability list stays as it is.
           ...(this.sessionFailureForm === "neutral"
             ? { [NEUTRAL_SESSION_FAILURE_KEY]: neutralSessionFailureCapability() }
+            : {}),
+          // ACP v1 only (`agentFileChangeReportForm`). The AIR capability list stays as it is.
+          ...(agentFileChangeReportForm(this.clientCapabilities, this.v2) === "neutral"
+            ? { [NEUTRAL_AGENT_FILE_CHANGE_REPORT_KEY]: neutralAgentFileChangeReportCapability() }
             : {}),
         }),
       ),
@@ -12277,8 +12283,10 @@ export class ClaudeAcpAgent {
       ...acpAdditionalDirectories,
     ];
 
-    const fileChangeReporter = supportsAgentFileChangeReport(this.clientCapabilities)
+    const fileChangeReportForm = agentFileChangeReportForm(this.clientCapabilities, this.v2);
+    const fileChangeReporter = fileChangeReportForm
       ? createNativeFileChangeReporter({
+          form: fileChangeReportForm,
           cwd: params.cwd,
           additionalDirectories,
           publish: async (result) => {
@@ -12286,7 +12294,7 @@ export class ClaudeAcpAgent {
               sessionId,
               update: {
                 sessionUpdate: "session_info_update",
-                _meta: agentFileChangeReportMeta(result),
+                _meta: agentFileChangeReportMeta(result, fileChangeReportForm),
               },
             });
           },
