@@ -160,6 +160,24 @@ const CLAUDE_PATCH_IDENTITIES = [
       "src/tests/authorization.test.ts",
     ],
   },
+  {
+    name: "neutral-agent-file-change-report",
+    identityCommit: "48f68190febed509f4fa8d24d62b742430a714e7",
+    upstreamPr: null,
+    files: [
+      "docs/air-extensions.md",
+      "src/acp-agent.ts",
+      "src/file-change-audit.ts",
+      "src/tool-calls/client-capabilities.ts",
+    ],
+    tests: [
+      "src/tests/acp-agent.test.ts",
+      "src/tests/acp-scenarios.test.ts",
+      "src/tests/acp-v2.test.ts",
+      "src/tests/file-change-audit-integration.test.ts",
+      "src/tests/file-change-audit.test.ts",
+    ],
+  },
 ];
 
 function sameJson(left, right) {
