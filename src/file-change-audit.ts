@@ -2,6 +2,10 @@ import type { Query, RewindFilesResult } from "@anthropic-ai/claude-agent-sdk";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { airExtensionMeta, clientSupportsAirCapability, withAirMeta } from "./air-extension.js";
+import {
+  clientOptsIntoNeutralAgentFileChangeReport,
+  NEUTRAL_AGENT_FILE_CHANGE_REPORT_KEY,
+} from "./tool-calls/client-capabilities.js";
 
 export const AGENT_FILE_CHANGE_REPORT_CAPABILITY = "agentFileChangeReport";
 
@@ -10,6 +14,18 @@ const MAX_REPORTED_PATH_LENGTH = 4096;
 export const AGENT_FILE_CHANGE_REPORT_MAX_BYTES = 256 * 1024;
 export const AGENT_FILE_CHANGE_REPORT_TIMEOUT_MS = 2_000;
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+const REQUEST_KEY = "agentFileChangeReportRequest";
+
+/** What a `reported` list of the neutral form can miss. The AIR form has no such field. */
+export const NEUTRAL_AGENT_FILE_CHANGE_REPORT_UNCERTAINTY =
+  "The list covers Claude file tools and subagent file edits. It misses edits made by shell commands, generators and background work.";
+
+/**
+ * Where a client sends its report request and reads the report:
+ * `_meta.jetbrains.air` or top-level `_meta`. Both forms select the same
+ * reporter, with the same limits and timing.
+ */
+export type AgentFileChangeReportForm = "air" | "neutral";
 
 export type FileChangeReportTurnState = {
   requestId: string;
@@ -39,6 +55,8 @@ export type AgentFileChangeReportResult = {
       paths: string[];
       declaredComplete: boolean;
       truncated: boolean;
+      /** The neutral form only. */
+      uncertainty?: string;
     }
   | {
       status: "unavailable";
@@ -50,6 +68,7 @@ export type FileChangeReportUnavailableReason =
   "cancelled" | "timeout" | "invalidOutput" | "notReported" | "providerError";
 
 type NativeFileChangeReporterOptions = {
+  form: AgentFileChangeReportForm;
   cwd: string;
   additionalDirectories: string[];
   publish: (result: AgentFileChangeReportResult) => Promise<void>;
@@ -69,9 +88,18 @@ export type NativeFileChangeReporter = {
   ): void;
 };
 
-export function agentFileChangeReportRequestId(meta: unknown): string | undefined {
-  const air = airExtensionMeta(meta);
-  const request = air?.agentFileChangeReportRequest;
+/** The request ID on a prompt `_meta`, read only from the place of the negotiated form. */
+export function agentFileChangeReportRequestId(
+  meta: unknown,
+  form: AgentFileChangeReportForm,
+): string | undefined {
+  const source =
+    form === "neutral"
+      ? meta && typeof meta === "object" && !Array.isArray(meta)
+        ? (meta as Record<string, unknown>)
+        : undefined
+      : airExtensionMeta(meta);
+  const request = source?.[REQUEST_KEY];
   if (!request || typeof request !== "object" || Array.isArray(request)) return undefined;
   const requestRecord = request as Record<string, unknown>;
   const requestKeys = Object.keys(requestRecord);
@@ -88,14 +116,28 @@ export function agentFileChangeReportRequestId(meta: unknown): string | undefine
     : undefined;
 }
 
-export function supportsAgentFileChangeReport(capabilities: unknown): boolean {
-  return clientSupportsAirCapability(capabilities, AGENT_FILE_CHANGE_REPORT_CAPABILITY);
+/**
+ * The form that the client negotiated, or undefined when it gets no report and
+ * no file checkpointing. A client that declares both forms gets the neutral
+ * one. Only ACP v1 reads the neutral opt-in.
+ */
+export function agentFileChangeReportForm(
+  capabilities: unknown,
+  v2 = false,
+): AgentFileChangeReportForm | undefined {
+  if (!v2 && clientOptsIntoNeutralAgentFileChangeReport(capabilities)) return "neutral";
+  return clientSupportsAirCapability(capabilities, AGENT_FILE_CHANGE_REPORT_CAPABILITY)
+    ? "air"
+    : undefined;
 }
 
 export function agentFileChangeReportMeta(
   result: AgentFileChangeReportResult,
+  form: AgentFileChangeReportForm,
 ): Record<string, unknown> {
-  return withAirMeta(undefined, AGENT_FILE_CHANGE_REPORT_CAPABILITY, result);
+  return form === "neutral"
+    ? { [NEUTRAL_AGENT_FILE_CHANGE_REPORT_KEY]: result }
+    : withAirMeta(undefined, AGENT_FILE_CHANGE_REPORT_CAPABILITY, result);
 }
 
 const FILE_EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
@@ -175,6 +217,10 @@ export function createNativeFileChangeReporter(
         // from the message stream, but the list is still not exhaustive.
         declaredComplete: false,
         truncated: normalized.truncated,
+        // Before the fit below, so the wire limit counts it.
+        ...(options.form === "neutral"
+          ? { uncertainty: NEUTRAL_AGENT_FILE_CHANGE_REPORT_UNCERTAINTY }
+          : {}),
       }),
     );
   }
@@ -234,7 +280,7 @@ export function createNativeFileChangeReporter(
 
   return {
     request(meta) {
-      const requestId = agentFileChangeReportRequestId(meta);
+      const requestId = agentFileChangeReportRequestId(meta, options.form);
       if (!requestId || requestIds.has(requestId)) return undefined;
       requestIds.add(requestId);
       return { requestId, phase: "requested" };
