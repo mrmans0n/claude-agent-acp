@@ -164,6 +164,18 @@ on `status: "reported"`. A client that declares both forms gets the neutral one.
 The AIR form and ACP v2 are unchanged, and clients that do not opt in see no
 change and get no checkpointing. Upstream has no equivalent.
 
+The neutral-permission-presentation patch sends the permission presentation and
+the question custom answer link of the AIR extension to a client that is not AIR.
+It opts in with `clientCapabilities._meta.permissionPresentation: { "version": 1 }`
+and `clientCapabilities._meta.questionCustomAnswer: { "version": 1 }`, and gets
+each back under ACP v1 only. A permission request carries
+`_meta.permissionPresentation { version, title, description?, defaultToNo? }`, and
+the companion field of an AskUserQuestion question carries
+`_meta.questionCustomAnswer { version, questionId }`. Option ids, field keys and
+the reading of a response do not change. A client that declares AIR too gets both
+forms. The AIR form and ACP v2 are unchanged, and clients that do not opt in see no
+change. Upstream has no equivalent.
+
 For each target release, `scripts/audit-downstream-patches.mjs` classifies every
 patch:
 
