@@ -55,6 +55,20 @@ export class ClientCapabilities {
      * opt-in.
      */
     readonly neutralPlanFile: boolean = false,
+    /**
+     * The client opted into the client-neutral permission presentation
+     * (`clientCapabilities._meta.permissionPresentation`). A permission request
+     * carries the record of the AIR form at top-level
+     * `_meta.permissionPresentation`. Only ACP v1 reads the opt-in.
+     */
+    readonly neutralPermissionPresentation: boolean = false,
+    /**
+     * The client opted into the client-neutral question custom answer
+     * (`clientCapabilities._meta.questionCustomAnswer`). The companion text
+     * field of an AskUserQuestion question carries
+     * `_meta.questionCustomAnswer`. Only ACP v1 reads the opt-in.
+     */
+    readonly neutralQuestionCustomAnswer: boolean = false,
   ) {}
 
   /**
@@ -96,6 +110,8 @@ export class ClientCapabilities {
       v2,
       neutralDiffPatch,
       neutralPlanFile,
+      !v2 && clientOptsIntoNeutralVersion(capabilities, NEUTRAL_PERMISSION_PRESENTATION_KEY),
+      !v2 && clientOptsIntoNeutralVersion(capabilities, NEUTRAL_QUESTION_CUSTOM_ANSWER_KEY),
     );
   }
 }
@@ -180,6 +196,24 @@ export function clientOptsIntoNeutralAgentFileChangeReport(capabilities: unknown
 /** The agent side of the client-neutral agent file-change report, for the initialize `_meta`. */
 export function neutralAgentFileChangeReportCapability(): { version: number } {
   return { version: NEUTRAL_AGENT_FILE_CHANGE_REPORT_VERSION };
+}
+
+/** The top-level `_meta` key of the client-neutral permission presentation. */
+export const NEUTRAL_PERMISSION_PRESENTATION_KEY = "permissionPresentation";
+/** The top-level `_meta` key of the client-neutral question custom answer. */
+export const NEUTRAL_QUESTION_CUSTOM_ANSWER_KEY = "questionCustomAnswer";
+
+/** The agent side of a client-neutral presentation contract, for the initialize `_meta`. */
+export function neutralPresentationCapability(): { version: number } {
+  return { version: 1 };
+}
+
+/** Whether `initialize.clientCapabilities._meta[key]` is an object whose
+ *  `version` is an integer of at least 1. */
+function clientOptsIntoNeutralVersion(capabilities: unknown, key: string): boolean {
+  const meta = recordOrUndefined(recordOrUndefined(capabilities)?._meta);
+  const version = recordOrUndefined(meta?.[key])?.version;
+  return typeof version === "number" && Number.isInteger(version) && version >= 1;
 }
 
 function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {

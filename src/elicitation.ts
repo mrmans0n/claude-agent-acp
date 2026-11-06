@@ -16,6 +16,7 @@ import {
   LEGACY_AIR_CUSTOM_ANSWER_KEY,
   withAirMeta,
 } from "./air-extension.js";
+import { NEUTRAL_QUESTION_CUSTOM_ANSWER_KEY } from "./tool-calls/client-capabilities.js";
 
 /**
  * Bridges between the Claude Agent SDK's elicitation/dialog callbacks and ACP's
@@ -184,6 +185,7 @@ export function askUserQuestionsToCreateRequest(
   sessionId: string,
   toolCallId: string | undefined,
   airClient = false,
+  neutralCustomAnswer = false,
 ): CreateElicitationRequest {
   const single = questions.length === 1;
   const properties: Record<string, ElicitationPropertySchema> = {};
@@ -223,16 +225,29 @@ export function askUserQuestionsToCreateRequest(
       description: question.multiSelect
         ? "Type your own answer to add to your selection above (optional)."
         : "Type your own answer, or add a note to the option you chose above (optional).",
-      // Marks the field as the custom answer companion of a select question,
-      // under `_meta.jetbrains.air.customAnswer` and under the root key that
-      // released AIR versions read. Only AIR gets the marker.
-      ...(airClient
+      // Marks the field as the custom answer companion of a select question:
+      // under `_meta.jetbrains.air.customAnswer` and the root key that released
+      // AIR versions read for AIR, and under `_meta.questionCustomAnswer` for a
+      // client that opted into the neutral form. Others get no marker.
+      ...(airClient || neutralCustomAnswer
         ? {
-            _meta: withAirMeta(
-              { [LEGACY_AIR_CUSTOM_ANSWER_KEY]: customAnswer },
-              AIR_CUSTOM_ANSWER_KEY,
-              customAnswer,
-            ),
+            _meta: {
+              ...(airClient
+                ? withAirMeta(
+                    { [LEGACY_AIR_CUSTOM_ANSWER_KEY]: customAnswer },
+                    AIR_CUSTOM_ANSWER_KEY,
+                    customAnswer,
+                  )
+                : {}),
+              ...(neutralCustomAnswer
+                ? {
+                    [NEUTRAL_QUESTION_CUSTOM_ANSWER_KEY]: {
+                      version: 1,
+                      questionId: questionFieldKey(index),
+                    },
+                  }
+                : {}),
+            },
           }
         : {}),
     };

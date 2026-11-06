@@ -178,6 +178,24 @@ const CLAUDE_PATCH_IDENTITIES = [
       "src/tests/file-change-audit.test.ts",
     ],
   },
+  {
+    name: "neutral-permission-presentation",
+    identityCommit: "591bd918a4540fc37f7cfd1d7eae42636bf723f9",
+    upstreamPr: null,
+    files: [
+      "docs/air-extensions.md",
+      "src/acp-agent.ts",
+      "src/elicitation.ts",
+      "src/permissions/presentation.ts",
+      "src/tool-calls/client-capabilities.ts",
+    ],
+    tests: [
+      "src/tests/acp-agent.test.ts",
+      "src/tests/acp-v2.test.ts",
+      "src/tests/elicitation.test.ts",
+      "src/tests/permission-presentation.test.ts",
+    ],
+  },
 ];
 
 function sameJson(left, right) {

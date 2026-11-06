@@ -890,6 +890,33 @@ The SDK does not expose enough renderer state for every Claude Code dialog. Vers
 
 When a durable effect cannot be shown honestly, the adapter offers only one-time allow and reject.
 
+### Client-neutral permission presentation
+
+Any client can get the same record at top-level `_meta.permissionPresentation` in place of `_meta.jetbrains.air.permission`.
+It opts in at `initialize` with `clientCapabilities._meta.permissionPresentation: { "version": 1 }`.
+Only an object whose `version` is an integer of at least 1 opts in; `true`, a string, an array, `null`, a missing `version`, `0` or a fraction enables nothing.
+
+The `initialize` response of an opted-in client carries `_meta.permissionPresentation: { "version": 1 }`, under ACP v1 only.
+
+```json
+{
+  "_meta": {
+    "permissionPresentation": {
+      "version": 1,
+      "title": "npm test",
+      "description": "Reason: Needed to verify the change.",
+      "defaultToNo": true
+    }
+  }
+}
+```
+
+- The fields and the client requirements are those of the AIR record. Claude options carry no record.
+- The record is a display hint. `toolCall`, `options`, `outcome` and the `kind` of each option stay authoritative, and the option ids do not change.
+- The client keeps the request tool call of a client that is not AIR.
+- A client that declares AIR too gets both forms.
+- ACP v2 ignores the opt-in: a v2 request has its own `title` and `description`.
+
 ## Goal
 
 The goal extension exposes a long-running, session-scoped objective.
@@ -1999,6 +2026,23 @@ A client can render the companion as the free-text choice of that question.
 For AIR, the companion field also carries the same value under the root key `_meta._askUserQuestionCustomAnswer`.
 Released AIR versions read only that key.
 A client that is not AIR gets neither key.
+
+### Client-neutral question custom answer
+
+Any client can get the link at top-level `_meta.questionCustomAnswer`.
+It opts in at `initialize` with `clientCapabilities._meta.questionCustomAnswer: { "version": 1 }`, under the same rule as the other neutral opt-ins.
+The `initialize` response of an opted-in client carries `_meta.questionCustomAnswer: { "version": 1 }`, under ACP v1 only.
+
+The companion field of each question then carries:
+
+```json
+{ "version": 1, "questionId": "<select field key>" }
+```
+
+- `questionId` names the select field of the same question. A client must use it and never the field key or the `Other` label.
+- The field keys, the field text and the reading of the response stay the same. A text with no option picked is the answer of a single-select question, and a text beside a pick is its note.
+- An MCP form elicitation gets no marker from the adapter. Its schema reaches the client as the server wrote it.
+- ACP v2 ignores the opt-in.
 
 ## Load replay end
 
