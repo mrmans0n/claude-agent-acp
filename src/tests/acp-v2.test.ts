@@ -471,6 +471,20 @@ describe("ACP protocol routing", () => {
     expect(response._meta?.sessionFailure).toBeUndefined();
   });
 
+  it("ignores the client-neutral presentation opt-ins of a v2 client", async () => {
+    const { app, authUpdate } = v2Client();
+    const response = await app.connectWith(connectRouter(), async (agent) => {
+      const response = await initializeV2(agent, {
+        _meta: { permissionPresentation: { version: 1 }, questionCustomAnswer: { version: 1 } },
+      });
+      await authUpdate(1);
+      return response;
+    });
+
+    expect(response._meta?.permissionPresentation).toBeUndefined();
+    expect(response._meta?.questionCustomAnswer).toBeUndefined();
+  });
+
   it("ignores the client-neutral agent file-change report opt-in of a v2 client", async () => {
     const { app, authUpdate } = v2Client();
     const response = await app.connectWith(connectRouter(), async (agent) => {
