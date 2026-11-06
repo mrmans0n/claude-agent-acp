@@ -15034,6 +15034,37 @@ describe("logout", () => {
     });
   });
 
+  describe.each(["permissionPresentation", "questionCustomAnswer"])(
+    "client-neutral %s advert",
+    (key) => {
+      it("advertises version 1 to a client that opts in with any version, with no AIR key", async () => {
+        const response = await createMockAgent().initialize({
+          protocolVersion: 1,
+          clientCapabilities: { _meta: { [key]: { version: 2 } } },
+        });
+
+        expect(response._meta?.[key]).toEqual({ version: 1 });
+        expect(response._meta).not.toHaveProperty("jetbrains");
+      });
+
+      it.each([
+        ["no opt-in", {}],
+        ["the AIR client alone", AIR_CLIENT_CAPABILITIES],
+        ["boolean", { _meta: { [key]: true } }],
+        ["empty object", { _meta: { [key]: {} } }],
+        ["zero version", { _meta: { [key]: { version: 0 } } }],
+        ["fractional version", { _meta: { [key]: { version: 1.5 } } }],
+      ])("does not advertise it for %s", async (_label, clientCapabilities) => {
+        const response = await createMockAgent().initialize({
+          protocolVersion: 1,
+          clientCapabilities,
+        });
+
+        expect(response._meta).not.toHaveProperty(key);
+      });
+    },
+  );
+
   describe("client-neutral agent file-change report advert", () => {
     const optIn = { agentFileChangeReport: { version: 1 } };
 

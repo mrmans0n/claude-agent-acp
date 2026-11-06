@@ -332,10 +332,13 @@ import { ToolCallFieldTracker } from "./tool-calls/field-tracker.js";
 import {
   ClientCapabilities as ToolCallClientCapabilities,
   NEUTRAL_AGENT_FILE_CHANGE_REPORT_KEY,
+  NEUTRAL_PERMISSION_PRESENTATION_KEY,
+  NEUTRAL_QUESTION_CUSTOM_ANSWER_KEY,
   NEUTRAL_DIFF_PATCH_KEY,
   NEUTRAL_PLAN_FILE_KEY,
   NEUTRAL_SESSION_FAILURE_KEY,
   neutralAgentFileChangeReportCapability,
+  neutralPresentationCapability,
   neutralDiffPatchCapability,
   neutralPlanFileCapability,
   neutralSessionFailureCapability,
@@ -3232,6 +3235,13 @@ export class ClaudeAcpAgent {
           // ACP v1 only (`agentFileChangeReportForm`). The AIR capability list stays as it is.
           ...(agentFileChangeReportForm(this.clientCapabilities, this.v2) === "neutral"
             ? { [NEUTRAL_AGENT_FILE_CHANGE_REPORT_KEY]: neutralAgentFileChangeReportCapability() }
+            : {}),
+          // ACP v1 only (`ClientCapabilities.from`).
+          ...(this.toolCallCapabilities.neutralPermissionPresentation
+            ? { [NEUTRAL_PERMISSION_PRESENTATION_KEY]: neutralPresentationCapability() }
+            : {}),
+          ...(this.toolCallCapabilities.neutralQuestionCustomAnswer
+            ? { [NEUTRAL_QUESTION_CUSTOM_ANSWER_KEY]: neutralPresentationCapability() }
             : {}),
         }),
       ),
@@ -11294,6 +11304,7 @@ export class ClaudeAcpAgent {
       requestSessionId,
       toolUseID,
       this.toolCallCapabilities.air.client,
+      this.toolCallCapabilities.neutralQuestionCustomAnswer,
     );
     let response;
     try {
