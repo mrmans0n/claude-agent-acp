@@ -159,19 +159,23 @@ export function prepareAlasPackage(packageJson, metadata) {
 }
 
 function main() {
-  const required = [
-    "ALAS_UPSTREAM_VERSION",
-    "ALAS_UPSTREAM_COMMIT",
-    "ALAS_SOURCE_COMMIT",
-    "ALAS_PUBLISHED_JSON",
-  ];
+  const required = ["ALAS_UPSTREAM_VERSION", "ALAS_UPSTREAM_COMMIT", "ALAS_SOURCE_COMMIT"];
   for (const key of required) {
     if (!process.env[key]) throw new Error(`${key} is required`);
   }
 
+  if (Boolean(process.env.ALAS_PUBLISHED_FILE) === Boolean(process.env.ALAS_PUBLISHED_JSON)) {
+    throw new Error("exactly one of ALAS_PUBLISHED_FILE or ALAS_PUBLISHED_JSON is required");
+  }
+
   const packagePath = "package.json";
   const packageJson = JSON.parse(readFileSync(packagePath, "utf8"));
-  const published = JSON.parse(process.env.ALAS_PUBLISHED_JSON);
+  // Registry packuments can exceed Linux's per-environment-string size limit.
+  const published = JSON.parse(
+    process.env.ALAS_PUBLISHED_FILE
+      ? readFileSync(process.env.ALAS_PUBLISHED_FILE, "utf8")
+      : process.env.ALAS_PUBLISHED_JSON,
+  );
   const prepared = prepareAlasPackage(packageJson, {
     upstreamVersion: process.env.ALAS_UPSTREAM_VERSION,
     upstreamCommit: process.env.ALAS_UPSTREAM_COMMIT,
