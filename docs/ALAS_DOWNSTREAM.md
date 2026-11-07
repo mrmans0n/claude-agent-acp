@@ -185,6 +185,14 @@ record, because the SDK reports no recommended effort. A client that declares AI
 gets both records. Clients that do not opt in see no change. Upstream has no
 equivalent.
 
+The neutral-command-presentation patch gives a client that is not AIR the kind and
+`SKILL.md` path of each skill command. It opts in with
+`clientCapabilities._meta.commandPresentation: { "version": 1 }` and gets it back under
+ACP v1 only. A skill command carries `_meta.commandPresentation { version, kind,
+skillPath? }`, found as for the AIR `kind` and `skillPath` keys; a skill without a file
+has the kind only. A client that declares AIR too gets both records. Clients that do not
+opt in see no change. Upstream has no equivalent.
+
 For each target release, `scripts/audit-downstream-patches.mjs` classifies every
 patch:
 

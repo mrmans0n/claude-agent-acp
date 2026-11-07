@@ -213,6 +213,14 @@ const CLAUDE_PATCH_IDENTITIES = [
       "src/tests/model-presentation.test.ts",
     ],
   },
+  {
+    name: "neutral-command-presentation",
+    identityCommit: "f0575103dc41baca51afee91ae9a63f8805412d3",
+    commit: "f0575103dc41baca51afee91ae9a63f8805412d3",
+    upstreamPr: null,
+    files: ["docs/air-extensions.md", "src/acp-agent.ts", "src/tool-calls/client-capabilities.ts"],
+    tests: ["src/tests/acp-agent.test.ts", "src/tests/acp-v2.test.ts"],
+  },
 ];
 
 function sameJson(left, right) {
