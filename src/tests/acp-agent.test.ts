@@ -14605,6 +14605,25 @@ describe("skill commands in available_commands_update", () => {
     });
   });
 
+  it("marks a skill in the client-neutral form for a client that opts in", async () => {
+    const neutral = await advertisedCommands({ _meta: { commandPresentation: { version: 1 } } });
+    expect(neutral.find((c) => c.name === "review")?._meta).toEqual({
+      commandPresentation: { version: 1, kind: "skill", skillPath },
+    });
+    expect(neutral.filter((c) => c.name !== "review").every((c) => c._meta === undefined)).toBe(
+      true,
+    );
+
+    const both = await advertisedCommands({
+      ...AIR_CLIENT_CAPABILITIES,
+      _meta: { ...AIR_CLIENT_CAPABILITIES._meta, commandPresentation: { version: 1 } },
+    });
+    expect(both.find((c) => c.name === "review")?._meta).toEqual({
+      jetbrains: { air: { version: 1, kind: "skill", skillPath } },
+      commandPresentation: { version: 1, kind: "skill", skillPath },
+    });
+  });
+
   it("gives a client that is not AIR no _meta", async () => {
     const commands = await advertisedCommands({});
 
@@ -14828,6 +14847,20 @@ describe("skill files from getContextUsage in available_commands_update", () => 
 
     expect(lastMeta(commandUpdates, "simplify")).toEqual(skillMeta());
     expect(lastMeta(commandUpdates, "compact")).toBeUndefined();
+  });
+
+  it("marks a built-in skill with the kind only for a neutral client", async () => {
+    const getContextUsage = vi.fn(async () => skillEntry({ name: "simplify", source: "built-in" }));
+
+    const { commandUpdates } = await runTurn({
+      capabilities: { _meta: { commandPresentation: { version: 1 } } },
+      commands: [{ name: "simplify", description: "Simplify", argumentHint: "", builtin: true }],
+      getContextUsage,
+    });
+
+    expect(lastMeta(commandUpdates, "simplify")).toEqual({
+      commandPresentation: { version: 1, kind: "skill" },
+    });
   });
 
   /**
@@ -15066,36 +15099,38 @@ describe("logout", () => {
     });
   });
 
-  describe.each(["permissionPresentation", "questionCustomAnswer", "recommendedConfigValue"])(
-    "client-neutral %s advert",
-    (key) => {
-      it("advertises version 1 to a client that opts in with any version, with no AIR key", async () => {
-        const response = await createMockAgent().initialize({
-          protocolVersion: 1,
-          clientCapabilities: { _meta: { [key]: { version: 2 } } },
-        });
-
-        expect(response._meta?.[key]).toEqual({ version: 1 });
-        expect(response._meta).not.toHaveProperty("jetbrains");
+  describe.each([
+    "permissionPresentation",
+    "questionCustomAnswer",
+    "recommendedConfigValue",
+    "commandPresentation",
+  ])("client-neutral %s advert", (key) => {
+    it("advertises version 1 to a client that opts in with any version, with no AIR key", async () => {
+      const response = await createMockAgent().initialize({
+        protocolVersion: 1,
+        clientCapabilities: { _meta: { [key]: { version: 2 } } },
       });
 
-      it.each([
-        ["no opt-in", {}],
-        ["the AIR client alone", AIR_CLIENT_CAPABILITIES],
-        ["boolean", { _meta: { [key]: true } }],
-        ["empty object", { _meta: { [key]: {} } }],
-        ["zero version", { _meta: { [key]: { version: 0 } } }],
-        ["fractional version", { _meta: { [key]: { version: 1.5 } } }],
-      ])("does not advertise it for %s", async (_label, clientCapabilities) => {
-        const response = await createMockAgent().initialize({
-          protocolVersion: 1,
-          clientCapabilities,
-        });
+      expect(response._meta?.[key]).toEqual({ version: 1 });
+      expect(response._meta).not.toHaveProperty("jetbrains");
+    });
 
-        expect(response._meta).not.toHaveProperty(key);
+    it.each([
+      ["no opt-in", {}],
+      ["the AIR client alone", AIR_CLIENT_CAPABILITIES],
+      ["boolean", { _meta: { [key]: true } }],
+      ["empty object", { _meta: { [key]: {} } }],
+      ["zero version", { _meta: { [key]: { version: 0 } } }],
+      ["fractional version", { _meta: { [key]: { version: 1.5 } } }],
+    ])("does not advertise it for %s", async (_label, clientCapabilities) => {
+      const response = await createMockAgent().initialize({
+        protocolVersion: 1,
+        clientCapabilities,
       });
-    },
-  );
+
+      expect(response._meta).not.toHaveProperty(key);
+    });
+  });
 
   describe("client-neutral agent file-change report advert", () => {
     const optIn = { agentFileChangeReport: { version: 1 } };
