@@ -15034,7 +15034,7 @@ describe("logout", () => {
     });
   });
 
-  describe.each(["permissionPresentation", "questionCustomAnswer"])(
+  describe.each(["permissionPresentation", "questionCustomAnswer", "recommendedConfigValue"])(
     "client-neutral %s advert",
     (key) => {
       it("advertises version 1 to a client that opts in with any version, with no AIR key", async () => {

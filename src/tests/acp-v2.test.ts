@@ -475,7 +475,11 @@ describe("ACP protocol routing", () => {
     const { app, authUpdate } = v2Client();
     const response = await app.connectWith(connectRouter(), async (agent) => {
       const response = await initializeV2(agent, {
-        _meta: { permissionPresentation: { version: 1 }, questionCustomAnswer: { version: 1 } },
+        _meta: {
+          permissionPresentation: { version: 1 },
+          questionCustomAnswer: { version: 1 },
+          recommendedConfigValue: { version: 1 },
+        },
       });
       await authUpdate(1);
       return response;
@@ -483,6 +487,7 @@ describe("ACP protocol routing", () => {
 
     expect(response._meta?.permissionPresentation).toBeUndefined();
     expect(response._meta?.questionCustomAnswer).toBeUndefined();
+    expect(response._meta?.recommendedConfigValue).toBeUndefined();
   });
 
   it("ignores the client-neutral agent file-change report opt-in of a v2 client", async () => {

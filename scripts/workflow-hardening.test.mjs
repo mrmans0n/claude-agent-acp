@@ -39,6 +39,7 @@ describe("downstream patch ledger", () => {
       "neutral-session-failure",
       "neutral-agent-file-change-report",
       "neutral-permission-presentation",
+      "neutral-recommended-config-value",
     ]);
     for (const patch of ledger.patches) {
       expect(patch.commit).toMatch(/^[0-9a-f]{40}$/);

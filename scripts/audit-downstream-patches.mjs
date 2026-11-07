@@ -196,6 +196,23 @@ const CLAUDE_PATCH_IDENTITIES = [
       "src/tests/permission-presentation.test.ts",
     ],
   },
+  {
+    name: "neutral-recommended-config-value",
+    identityCommit: "6fdbdcc5bbc42124daa06ad60b81f85d7abbe758",
+    commit: "6fdbdcc5bbc42124daa06ad60b81f85d7abbe758",
+    upstreamPr: null,
+    files: [
+      "docs/air-extensions.md",
+      "src/acp-agent.ts",
+      "src/session-model.ts",
+      "src/tool-calls/client-capabilities.ts",
+    ],
+    tests: [
+      "src/tests/acp-agent.test.ts",
+      "src/tests/acp-v2.test.ts",
+      "src/tests/model-presentation.test.ts",
+    ],
+  },
 ];
 
 function sameJson(left, right) {
