@@ -86,6 +86,11 @@ describe("sync workflow hardening", () => {
 });
 
 describe("publish workflow hardening", () => {
+  it("passes registry metadata by file instead of embedding the packument in the environment", () => {
+    expect(publish).toContain('ALAS_PUBLISHED_FILE="$REPORT_DIR/published.json"');
+    expect(publish).not.toContain("ALAS_PUBLISHED_JSON");
+    expect(publish).not.toMatch(/\$\(cat[^\n]*published\.json/);
+  });
   it("pins checkout and setup-node to the sync workflow SHAs", () => {
     expect(publish.match(new RegExp(`actions/checkout@${checkoutSha}`, "g"))).toHaveLength(2);
     expect(publish).toContain(`actions/setup-node@${setupNodeSha}`);
