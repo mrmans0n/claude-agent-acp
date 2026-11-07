@@ -1,6 +1,7 @@
 import type { SessionConfigOption } from "@agentclientprotocol/sdk/unstable";
 import type { ModelInfo, Query, Settings } from "@anthropic-ai/claude-agent-sdk";
 import { AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY, withAirMeta } from "./air-extension.js";
+import { NEUTRAL_RECOMMENDED_CONFIG_VALUE_KEY } from "./tool-calls/client-capabilities.js";
 import { bedrockRegionPrefix } from "./gateway-models.js";
 
 export const MODEL_CONFIG_ID = "model";
@@ -189,6 +190,7 @@ export function buildModelConfigOption(
   models: SessionModelState,
   modelInfos: ModelInfo[],
   useRecommendedValue: boolean,
+  useNeutralRecommendedValue: boolean = false,
 ): SessionConfigOption {
   const defaultInfo = modelInfos.find((model) => model.value === "default");
   const selectableIds = new Set(models.availableModels.map((model) => model.modelId));
@@ -247,6 +249,16 @@ export function buildModelConfigOption(
     });
   }
 
+  const airMeta = concreteRecommendation
+    ? withAirMeta(undefined, AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY, recommended.value)
+    : undefined;
+  // The client-neutral record only names a row: the `default` row and the
+  // current value stay as they are.
+  const neutralMeta =
+    useNeutralRecommendedValue && recommended !== null
+      ? { [NEUTRAL_RECOMMENDED_CONFIG_VALUE_KEY]: { version: 1, value: recommended.value } }
+      : undefined;
+
   return {
     id: MODEL_CONFIG_ID,
     name: "Model",
@@ -254,11 +266,7 @@ export function buildModelConfigOption(
     category: "model",
     type: "select",
     currentValue,
-    ...(concreteRecommendation
-      ? {
-          _meta: withAirMeta(undefined, AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY, recommended.value),
-        }
-      : {}),
+    ...(airMeta || neutralMeta ? { _meta: { ...airMeta, ...neutralMeta } } : {}),
     options,
   };
 }

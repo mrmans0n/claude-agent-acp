@@ -336,6 +336,7 @@ import {
   NEUTRAL_AGENT_FILE_CHANGE_REPORT_KEY,
   NEUTRAL_PERMISSION_PRESENTATION_KEY,
   NEUTRAL_QUESTION_CUSTOM_ANSWER_KEY,
+  NEUTRAL_RECOMMENDED_CONFIG_VALUE_KEY,
   NEUTRAL_DIFF_PATCH_KEY,
   NEUTRAL_PLAN_FILE_KEY,
   NEUTRAL_SESSION_FAILURE_KEY,
@@ -3244,6 +3245,9 @@ export class ClaudeAcpAgent {
             : {}),
           ...(this.toolCallCapabilities.neutralQuestionCustomAnswer
             ? { [NEUTRAL_QUESTION_CUSTOM_ANSWER_KEY]: neutralPresentationCapability() }
+            : {}),
+          ...(this.toolCallCapabilities.neutralRecommendedConfigValue
+            ? { [NEUTRAL_RECOMMENDED_CONFIG_VALUE_KEY]: neutralPresentationCapability() }
             : {}),
         }),
       ),
@@ -11701,6 +11705,7 @@ export class ClaudeAcpAgent {
         },
         {
           useRecommendedValue,
+          useNeutralRecommendedValue: this.toolCallCapabilities.neutralRecommendedConfigValue,
         },
         {
           // Like Fast mode, the toggle hides on models without ultracode
@@ -12803,6 +12808,7 @@ export class ClaudeAcpAgent {
         fastMode,
         {
           useRecommendedValue,
+          useNeutralRecommendedValue: this.toolCallCapabilities.neutralRecommendedConfigValue,
         },
         ultracode,
       );
@@ -13851,6 +13857,9 @@ export type ConfigOptionPresentation = {
   /** Replace ambiguous `default` rows with concrete values and advertise the
    *  SDK/adapter recommendation as `_meta.jetbrains.air.recommendedValue`. */
   useRecommendedValue: boolean;
+  /** Name the recommended model in `_meta.recommendedConfigValue`, and keep the
+   *  rows and the current value as they are. */
+  useNeutralRecommendedValue?: boolean;
 };
 
 export function buildConfigOptions(
@@ -13869,7 +13878,12 @@ export function buildConfigOptions(
   // there is no model option at all.
   if (models.availableModels.length > 0) {
     options.push(
-      buildModelConfigOption(models, modelInfos, presentation?.useRecommendedValue === true),
+      buildModelConfigOption(
+        models,
+        modelInfos,
+        presentation?.useRecommendedValue === true,
+        presentation?.useNeutralRecommendedValue === true,
+      ),
     );
   }
   const effort = buildEffortConfigOption(
