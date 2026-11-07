@@ -335,6 +335,7 @@ import {
   NEUTRAL_PERMISSION_PRESENTATION_KEY,
   NEUTRAL_QUESTION_CUSTOM_ANSWER_KEY,
   NEUTRAL_RECOMMENDED_CONFIG_VALUE_KEY,
+  NEUTRAL_COMMAND_PRESENTATION_KEY,
   NEUTRAL_DIFF_PATCH_KEY,
   NEUTRAL_PLAN_FILE_KEY,
   NEUTRAL_SESSION_FAILURE_KEY,
@@ -3246,6 +3247,9 @@ export class ClaudeAcpAgent {
             : {}),
           ...(this.toolCallCapabilities.neutralRecommendedConfigValue
             ? { [NEUTRAL_RECOMMENDED_CONFIG_VALUE_KEY]: neutralPresentationCapability() }
+            : {}),
+          ...(this.toolCallCapabilities.neutralCommandPresentation
+            ? { [NEUTRAL_COMMAND_PRESENTATION_KEY]: neutralPresentationCapability() }
             : {}),
         }),
       ),
@@ -6734,10 +6738,11 @@ export class ClaudeAcpAgent {
                     availableCommands: getAvailableSlashCommands(
                       message.commands,
                       session.terminalSlashCommands,
-                      this.toolCallCapabilities.air.client ? session.cwd : undefined,
+                      this.toolCallCapabilities.presentsSkills ? session.cwd : undefined,
                       session.skillPaths,
                       session.query,
                       session.skillFiles,
+                      this.skillRecords(),
                     ),
                   },
                 });
@@ -11397,18 +11402,27 @@ export class ClaudeAcpAgent {
     return getAvailableSlashCommands(
       commands,
       session.terminalSlashCommands,
-      this.toolCallCapabilities.air.client ? session.cwd : undefined,
+      this.toolCallCapabilities.presentsSkills ? session.cwd : undefined,
       (session.skillPaths ??= new Map()),
       session.query,
       session.skillFiles,
+      this.skillRecords(),
     );
+  }
+
+  /** The forms in which skill commands carry their kind and `SKILL.md` path. */
+  private skillRecords(): SkillRecords {
+    return {
+      air: this.toolCallCapabilities.air.client,
+      neutral: this.toolCallCapabilities.neutralCommandPresentation,
+    };
   }
 
   /**
    * Reads the skill files from Claude Code's own skill list
    * (`getContextUsage().skills.skillFrontmatter`) and, when they differ from
    * the last read, re-publishes the slash commands with the skill paths. Only
-   * for AIR clients, the only ones that use the paths.
+   * for clients that get the paths: AIR and a neutral commandPresentation client.
    *
    * Callers do not await it: the control request takes about 1 s on the first
    * call, and it must not delay the turn or the first command list. A trigger
@@ -11417,7 +11431,7 @@ export class ClaudeAcpAgent {
    */
   private async refreshSkillFiles(sessionId: string): Promise<void> {
     const session = this.sessions[sessionId];
-    if (!session || !this.toolCallCapabilities.air.client) return;
+    if (!session || !this.toolCallCapabilities.presentsSkills) return;
     if (typeof session.query.getContextUsage !== "function") return;
     if (session.skillFilesRefreshing) {
       session.skillFilesRerun = true;
@@ -13924,14 +13938,40 @@ export function buildConfigOptions(
   return options;
 }
 
+/** The forms in which a skill command carries its kind and `SKILL.md` path. */
+type SkillRecords = { air: boolean; neutral: boolean };
+
+/** The `_meta` of a skill command, with the `SKILL.md` path when the skill has a file. */
+function skillMeta(
+  records: SkillRecords,
+  skillMdPath: string | undefined,
+): Record<string, unknown> {
+  const airKind = records.air ? withAirMeta(undefined, AIR_KIND_KEY, "skill") : {};
+  const air =
+    records.air && skillMdPath ? withAirMeta(airKind, AIR_SKILL_PATH_KEY, skillMdPath) : airKind;
+  return {
+    ...air,
+    ...(records.neutral
+      ? {
+          [NEUTRAL_COMMAND_PRESENTATION_KEY]: {
+            version: 1,
+            kind: "skill",
+            ...(skillMdPath ? { skillPath: skillMdPath } : {}),
+          },
+        }
+      : {}),
+  };
+}
+
 function getAvailableSlashCommands(
   commands: SlashCommand[],
   // Names the CLI tagged terminal-bound on `system`/init (their UX lives in
   // the CLI's own terminal, which ACP clients aren't) — filtered alongside
   // the static list. Raw CLI names, matched before the MCP rename.
   terminalCommands?: readonly string[],
-  // The session cwd of an AIR client, or undefined for every other client.
-  // AIR gets the kind and the SKILL.md path of each skill command.
+  // The session cwd of a client that gets the kind and the SKILL.md path of
+  // each skill command (AIR or a neutral commandPresentation client), or
+  // undefined for every other client.
   airSkillCwd?: string,
   // The resolved SKILL.md paths of the session, keyed by the cwd and the name.
   skillPaths?: Map<string, string | undefined>,
@@ -13940,6 +13980,8 @@ function getAvailableSlashCommands(
   // A listed skill gets its path from here; one that is not listed, or has no
   // path (remote connections), is looked up on disk.
   skillFiles?: ReadonlyMap<string, { path?: string }>,
+  // The forms of the skill record: AIR's `_meta.jetbrains.air` and the neutral `_meta.commandPresentation`.
+  skillRecords: SkillRecords = { air: true, neutral: false },
 ): AvailableCommand[] {
   // The container listings of this one pass, so a list of a hundred commands lists each container once.
   const skillScans: SkillScanCache = new Map();
@@ -14001,18 +14043,8 @@ function getAvailableSlashCommands(
         name,
         description: command.description || "",
         input,
-        ...(skillMdPath
-          ? {
-              _meta: withAirMeta(
-                withAirMeta(undefined, AIR_KIND_KEY, "skill"),
-                AIR_SKILL_PATH_KEY,
-                skillMdPath,
-              ),
-            }
-          : skillFile
-            ? // A skill without a file (bundled with the CLI, like `simplify`, or a remote connection): kind only.
-              { _meta: withAirMeta(undefined, AIR_KIND_KEY, "skill") }
-            : {}),
+        // A skill without a file (bundled with the CLI, like `simplify`, or a remote connection): kind only.
+        ...(skillMdPath || skillFile ? { _meta: skillMeta(skillRecords, skillMdPath) } : {}),
       };
     })
     .filter((command: AvailableCommand) => !UNSUPPORTED_COMMANDS.includes(command.name));
