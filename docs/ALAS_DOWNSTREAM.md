@@ -176,6 +176,15 @@ the reading of a response do not change. A client that declares AIR too gets bot
 forms. The AIR form and ACP v2 are unchanged, and clients that do not opt in see no
 change. Upstream has no equivalent.
 
+The neutral-recommended-config-value patch names the recommended model for a client
+that is not AIR. It opts in with `clientCapabilities._meta.recommendedConfigValue:
+{ "version": 1 }` and gets it back under ACP v1 only. The model selector carries
+`_meta.recommendedConfigValue { version, value }`. Unlike the AIR form, it removes no
+row, changes no current value and applies nothing to the SDK, and it has no effort
+record, because the SDK reports no recommended effort. A client that declares AIR too
+gets both records. Clients that do not opt in see no change. Upstream has no
+equivalent.
+
 For each target release, `scripts/audit-downstream-patches.mjs` classifies every
 patch:
 
