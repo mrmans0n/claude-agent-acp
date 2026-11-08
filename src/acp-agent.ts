@@ -334,6 +334,8 @@ import {
   NEUTRAL_QUESTION_CUSTOM_ANSWER_KEY,
   NEUTRAL_RECOMMENDED_CONFIG_VALUE_KEY,
   NEUTRAL_COMMAND_PRESENTATION_KEY,
+  NEUTRAL_LOAD_REPLAY_END_KEY,
+  loadReplayEndRequestId,
   NEUTRAL_DIFF_PATCH_KEY,
   NEUTRAL_PLAN_FILE_KEY,
   NEUTRAL_SESSION_FAILURE_KEY,
@@ -3248,6 +3250,9 @@ export class ClaudeAcpAgent {
           ...(this.toolCallCapabilities.neutralCommandPresentation
             ? { [NEUTRAL_COMMAND_PRESENTATION_KEY]: neutralPresentationCapability() }
             : {}),
+          ...(this.toolCallCapabilities.neutralLoadReplayEnd
+            ? { [NEUTRAL_LOAD_REPLAY_END_KEY]: neutralPresentationCapability() }
+            : {}),
         }),
       ),
     };
@@ -3287,7 +3292,14 @@ export class ClaudeAcpAgent {
     };
     const transcript = readResumedSession(params.sessionId, this.logger);
     const replay = transcript
-      .then(({ messages }) => this.replaySessionHistory(params.sessionId, messages, pending))
+      .then(({ messages }) =>
+        this.replaySessionHistory(
+          params.sessionId,
+          messages,
+          pending,
+          loadReplayEndRequestId(params._meta),
+        ),
+      )
       .then(
         () => ({ ok: true as const }),
         (error: unknown) => ({ ok: false as const, error }),
@@ -3384,7 +3396,12 @@ export class ClaudeAcpAgent {
       const resumedSession = await readResumedSession(params.sessionId, this.logger);
       result = await this.getOrCreateSession(params, resumedSession);
       timing.phase("session-ready");
-      await this.replaySessionHistory(params.sessionId, resumedSession.messages);
+      await this.replaySessionHistory(
+        params.sessionId,
+        resumedSession.messages,
+        undefined,
+        loadReplayEndRequestId(params._meta),
+      );
     } else {
       result = await this.createSessionWhileReplaying(params, timing);
     }
@@ -9758,6 +9775,9 @@ export class ClaudeAcpAgent {
     sessionId: string,
     resumedMessages?: SessionMessage[],
     pending?: PendingReplay,
+    /** The `_meta.loadReplayEnd.id` of the load request, echoed by the
+     *  client-neutral end update. */
+    loadReplayEndId?: string,
   ): Promise<void> {
     const replayStartedAt = performance.now();
     const toolUseCache: ToolUseCache = {};
@@ -10292,19 +10312,34 @@ export class ClaudeAcpAgent {
     this.logger.log(
       `[session/replay] sessionId=${sessionId} phase=publish durationMs=${Math.round(replayFinishedAt - historyLoadedAt)} totalMs=${Math.round(replayFinishedAt - replayStartedAt)} messages=${messages.length}`,
     );
-    // A client with `loadReplayEnd` gets one more update after the whole
-    // replay, the subagent history included. A stopped replay (the CLI start
-    // failed) does not get it, and a failed replay throws before this line.
-    if (
-      !pending?.stopped &&
-      clientSupportsAirCapability(this.clientCapabilities, AIR_LOAD_REPLAY_END_CAPABILITY)
-    ) {
+    // A client with `loadReplayEnd`, in the AIR or the neutral form, gets one
+    // more update after the whole replay, the subagent history included. A
+    // stopped replay (the CLI start failed) does not get it, and a failed
+    // replay throws before this line. A client with both forms gets both keys
+    // in the one update.
+    const airEnd = clientSupportsAirCapability(
+      this.clientCapabilities,
+      AIR_LOAD_REPLAY_END_CAPABILITY,
+    );
+    const neutralEnd = this.toolCallCapabilities.neutralLoadReplayEnd;
+    if (!pending?.stopped && (airEnd || neutralEnd)) {
+      const endMeta = airEnd ? withAirMeta(undefined, AIR_LOAD_REPLAY_END_KEY, true) : {};
       await this.client.sessionUpdate({
         sessionId,
         // No `title` and no `updatedAt`: `null` would clear them.
         update: {
           sessionUpdate: "session_info_update",
-          _meta: withAirMeta(undefined, AIR_LOAD_REPLAY_END_KEY, true),
+          _meta: {
+            ...endMeta,
+            ...(neutralEnd
+              ? {
+                  [NEUTRAL_LOAD_REPLAY_END_KEY]: {
+                    version: 1,
+                    ...(loadReplayEndId ? { id: loadReplayEndId } : {}),
+                  },
+                }
+              : {}),
+          },
         },
       });
     }
