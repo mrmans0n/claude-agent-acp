@@ -201,6 +201,15 @@ sends one `session_info_update` with `_meta.loadReplayEnd { version, id? }`, at 
 point as the AIR `loadReplayEnd` event. A client that declares AIR too gets both keys.
 Clients that do not opt in see no change. Upstream has no equivalent.
 
+The neutral-prompt-suggestions patch gives a client that is not AIR the predicted
+follow-up prompt. It opts in with `clientCapabilities._meta.promptSuggestions: { "version": 1 }`
+and gets it back under ACP v1 only. A `session/prompt` that names
+`_meta.promptSuggestions.id` gets that turn's prediction as
+`session_info_update._meta.promptSuggestions { suggestions, id }`; an empty list with the
+id says the turn predicted nothing. The SDK `promptSuggestions` option is now on only for
+AIR and neutral clients, so other clients no longer pay for predictions they never get.
+A client that declares AIR too gets one update. Upstream has no equivalent.
+
 For each target release, `scripts/audit-downstream-patches.mjs` classifies every
 patch:
 
