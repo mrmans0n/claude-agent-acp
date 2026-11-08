@@ -193,6 +193,14 @@ skillPath? }`, found as for the AIR `kind` and `skillPath` keys; a skill without
 has the kind only. A client that declares AIR too gets both records. Clients that do not
 opt in see no change. Upstream has no equivalent.
 
+The neutral-load-replay-end patch gives a client that is not AIR the end of the history
+replay of a `session/load`. It opts in with
+`clientCapabilities._meta.loadReplayEnd: { "version": 1 }` and gets it back under ACP v1
+only. The load request can name `_meta.loadReplayEnd.id`; after the whole replay the agent
+sends one `session_info_update` with `_meta.loadReplayEnd { version, id? }`, at the same
+point as the AIR `loadReplayEnd` event. A client that declares AIR too gets both keys.
+Clients that do not opt in see no change. Upstream has no equivalent.
+
 For each target release, `scripts/audit-downstream-patches.mjs` classifies every
 patch:
 
