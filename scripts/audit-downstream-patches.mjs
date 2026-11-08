@@ -221,6 +221,18 @@ const CLAUDE_PATCH_IDENTITIES = [
     files: ["docs/air-extensions.md", "src/acp-agent.ts", "src/tool-calls/client-capabilities.ts"],
     tests: ["src/tests/acp-agent.test.ts", "src/tests/acp-v2.test.ts"],
   },
+  {
+    name: "neutral-load-replay-end",
+    identityCommit: "dfb31b948a4a53f6da2feb4d23c2e3eca22193c9",
+    commit: "dfb31b948a4a53f6da2feb4d23c2e3eca22193c9",
+    upstreamPr: null,
+    files: ["docs/air-extensions.md", "src/acp-agent.ts", "src/tool-calls/client-capabilities.ts"],
+    tests: [
+      "src/tests/acp-agent.test.ts",
+      "src/tests/acp-v2.test.ts",
+      "src/tests/create-session-options.test.ts",
+    ],
+  },
 ];
 
 function sameJson(left, right) {

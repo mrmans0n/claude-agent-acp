@@ -2083,6 +2083,32 @@ After the history replay of the loaded session, the agent then sends one more up
 - It does not come for a live update, and it does not come to a client without the capability.
 - The `session/load` can still fail after it, for example when the CLI start fails after the replay. The event means that the recorded history arrived whole. The client decides what to do with the failed load.
 
+### Client-neutral load replay end
+
+A client that is not AIR can get the same event.
+It declares `initialize.clientCapabilities._meta.loadReplayEnd: {"version": 1}` (any integer version of at least 1), and the agent answers with `_meta.loadReplayEnd: {"version": 1}` in the `initialize` response.
+The `session/load` request can name an id in `_meta.loadReplayEnd.id`, a non-empty string of at most 256 characters, so that the client can tell the end of this load from the end of an earlier one:
+
+```json
+{ "_meta": { "loadReplayEnd": { "id": "<client id of this load>" } } }
+```
+
+The end update then carries the neutral key, with the id when the request named a valid one:
+
+```json
+{
+  "sessionId": "<loaded session>",
+  "update": {
+    "sessionUpdate": "session_info_update",
+    "_meta": { "loadReplayEnd": { "version": 1, "id": "<client id of this load>" } }
+  }
+}
+```
+
+- It follows the rules above. Only the key is different.
+- A client that declares both forms gets both keys in the one update.
+- ACP v2 ignores the neutral opt-in.
+
 ## Session fork point
 
 AIR can fork a session at one agent message.
