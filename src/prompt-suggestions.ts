@@ -21,6 +21,9 @@ export const PROMPT_SUGGESTIONS_META_KEY = "promptSuggestions";
 /** One predicted prompt, as the `_meta` value carries it. */
 export type PromptSuggestionsMetaValue = {
   suggestions: { text: string }[];
+  /** The `_meta.promptSuggestions.id` of the `session/prompt` whose turn
+   *  this predicts after, for a client-neutral request. */
+  id?: string;
 };
 
 /**
@@ -38,7 +41,13 @@ export function promptSuggestionText(raw: string | null | undefined): string | n
  * empty `suggestions` list, which clears the prompt the client holds — the turn
  * predicted nothing, so the composer must not keep the previous prediction.
  */
-export function promptSuggestionsMeta(text: string | null): Record<string, unknown> {
-  const value: PromptSuggestionsMetaValue = { suggestions: text === null ? [] : [{ text }] };
+export function promptSuggestionsMeta(
+  text: string | null,
+  requestId?: string,
+): Record<string, unknown> {
+  const value: PromptSuggestionsMetaValue = {
+    suggestions: text === null ? [] : [{ text }],
+    ...(requestId !== undefined ? { id: requestId } : {}),
+  };
   return { [PROMPT_SUGGESTIONS_META_KEY]: value };
 }
