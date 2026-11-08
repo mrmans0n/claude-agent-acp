@@ -15,6 +15,9 @@ const AIR_CLIENT: ClientCapabilities = {
   _meta: { jetbrains: { air: { version: 1, capabilities: [] } } },
 };
 
+/** A client that opts into the client-neutral predicted prompt. */
+const NEUTRAL_CLIENT: ClientCapabilities = { _meta: { promptSuggestions: { version: 1 } } };
+
 describe("the follow-up prompt on the wire", () => {
   it("drops a prediction that says nothing", () => {
     expect(promptSuggestionText("Run the tests")).toBe("Run the tests");
@@ -65,16 +68,19 @@ describe("the follow-up prompt at turn-end", () => {
     })();
   }
 
-  async function airAgent(client: AcpClient) {
+  async function airAgent(client: AcpClient, clientCapabilities: ClientCapabilities = AIR_CLIENT) {
     const agent = new ClaudeAcpAgent(client, { log: () => {}, error: () => {} });
-    await agent.initialize({ protocolVersion: 1, clientCapabilities: AIR_CLIENT });
+    await agent.initialize({ protocolVersion: 1, clientCapabilities });
     return agent;
   }
 
   async function run(
     agent: ClaudeAcpAgent,
     suggestions: (string | null)[],
-    { drain = true }: { drain?: boolean } = {},
+    {
+      drain = true,
+      requestIds = [],
+    }: { drain?: boolean; requestIds?: (string | undefined)[] } = {},
   ) {
     const input = new Pushable<any>();
     agent.sessions["test-session"] = mockSessionState(
@@ -85,6 +91,9 @@ describe("the follow-up prompt at turn-end", () => {
       await agent.prompt({
         sessionId: "test-session",
         prompt: [{ type: "text", text: `prompt ${i}` }],
+        ...(requestIds[i] !== undefined
+          ? { _meta: { promptSuggestions: { id: requestIds[i] } } }
+          : {}),
       });
       // The prediction lands after the turn's result, so let the consumer read
       // it off the stream before the next prompt: a user types slower than this.
@@ -140,6 +149,65 @@ describe("the follow-up prompt at turn-end", () => {
     await agent.initialize({ protocolVersion: 1, clientCapabilities: {} as ClientCapabilities });
 
     await run(agent, ["Run the tests"]);
+
+    expect(published).toEqual([]);
+  });
+
+  it.each([
+    [
+      "a prompt that asks gets its prediction with its id",
+      NEUTRAL_CLIENT,
+      ["Run the tests"],
+      ["turn-1"],
+      [{ suggestions: [{ text: "Run the tests" }], id: "turn-1" }],
+    ],
+    ["a prompt that does not ask gets none", NEUTRAL_CLIENT, ["Run the tests"], [], []],
+    [
+      "a turn that predicts only whitespace answers its request with an empty list",
+      NEUTRAL_CLIENT,
+      ["   "],
+      ["turn-1"],
+      [{ suggestions: [], id: "turn-1" }],
+    ],
+    [
+      "the same text again still answers the next request",
+      NEUTRAL_CLIENT,
+      ["Run the tests", "Run the tests"],
+      ["turn-1", "turn-2"],
+      [
+        { suggestions: [{ text: "Run the tests" }], id: "turn-1" },
+        { suggestions: [] },
+        { suggestions: [{ text: "Run the tests" }], id: "turn-2" },
+      ],
+    ],
+    [
+      "a client with both forms gets one update that carries the id",
+      { _meta: { ...AIR_CLIENT._meta, ...NEUTRAL_CLIENT._meta } },
+      ["Run the tests"],
+      ["turn-1"],
+      [{ suggestions: [{ text: "Run the tests" }], id: "turn-1" }],
+    ],
+    [
+      "a client with both forms still gets the AIR form for a prompt that does not ask",
+      { _meta: { ...AIR_CLIENT._meta, ...NEUTRAL_CLIENT._meta } },
+      ["Run the tests"],
+      [],
+      [{ suggestions: [{ text: "Run the tests" }] }],
+    ],
+  ])("client-neutral: %s", async (_label, capabilities, suggestions, requestIds, expected) => {
+    const { client, published } = recorder();
+    const agent = await airAgent(client, capabilities as ClientCapabilities);
+
+    await run(agent, suggestions, { requestIds });
+
+    expect(published).toEqual(expected);
+  });
+
+  it("client-neutral: drops a prediction the next prompt outran", async () => {
+    const { client, published } = recorder();
+    const agent = await airAgent(client, NEUTRAL_CLIENT);
+
+    await run(agent, ["Run the tests", null], { drain: false, requestIds: ["turn-1", "turn-2"] });
 
     expect(published).toEqual([]);
   });
