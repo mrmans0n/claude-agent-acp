@@ -83,6 +83,13 @@ export class ClientCapabilities {
      * reads the opt-in.
      */
     readonly neutralCommandPresentation: boolean = false,
+    /**
+     * The client opted into the client-neutral load replay end
+     * (`clientCapabilities._meta.loadReplayEnd`). After the whole history
+     * replay of a `session/load`, the agent sends one `session_info_update`
+     * with `_meta.loadReplayEnd`. Only ACP v1 reads the opt-in.
+     */
+    readonly neutralLoadReplayEnd: boolean = false,
   ) {}
 
   /** Whether skill commands carry their kind and `SKILL.md` path, in any form. */
@@ -133,6 +140,7 @@ export class ClientCapabilities {
       !v2 && clientOptsIntoNeutralVersion(capabilities, NEUTRAL_QUESTION_CUSTOM_ANSWER_KEY),
       !v2 && clientOptsIntoNeutralVersion(capabilities, NEUTRAL_RECOMMENDED_CONFIG_VALUE_KEY),
       !v2 && clientOptsIntoNeutralVersion(capabilities, NEUTRAL_COMMAND_PRESENTATION_KEY),
+      !v2 && clientOptsIntoNeutralVersion(capabilities, NEUTRAL_LOAD_REPLAY_END_KEY),
     );
   }
 }
@@ -227,6 +235,20 @@ export const NEUTRAL_QUESTION_CUSTOM_ANSWER_KEY = "questionCustomAnswer";
 export const NEUTRAL_RECOMMENDED_CONFIG_VALUE_KEY = "recommendedConfigValue";
 /** The top-level `_meta` key of the client-neutral command presentation. */
 export const NEUTRAL_COMMAND_PRESENTATION_KEY = "commandPresentation";
+/** The top-level `_meta` key of the client-neutral load replay end, on the
+ *  client capabilities, the initialize response, the `session/load` request
+ *  and the end update. */
+export const NEUTRAL_LOAD_REPLAY_END_KEY = "loadReplayEnd";
+
+/**
+ * The id that a `session/load` request names in `_meta.loadReplayEnd.id`, for
+ * the end update of its replay to echo. Undefined when the request names none
+ * or a value that is not a non-empty string of at most 256 characters.
+ */
+export function loadReplayEndRequestId(meta: unknown): string | undefined {
+  const id = recordOrUndefined(recordOrUndefined(meta)?.[NEUTRAL_LOAD_REPLAY_END_KEY])?.id;
+  return typeof id === "string" && id.length > 0 && id.length <= 256 ? id : undefined;
+}
 
 /** The agent side of a client-neutral presentation contract, for the initialize `_meta`. */
 export function neutralPresentationCapability(): { version: number } {
