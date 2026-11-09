@@ -1,42 +1,403 @@
 {
   "version": 1,
-  "fromTag": "v0.85.1",
-  "toTag": "v0.85.1",
-  "toCommit": "686c0c99b3b89217b74d1f5de8272e7c9ef1aab4",
+  "fromTag": "v0.101.1",
+  "toTag": "v0.102.0",
+  "toCommit": "8e18eb7c75fb6fe07890ad2f639e515d29ab62a2",
   "patches": [
     {
       "name": "goal-capability-opt-in",
-      "commit": "60749d07ff50308ef96c5251152a8d4986fe680f",
+      "commit": "72c08026539006157f7cd80b006e5a01262acae8",
       "upstreamPr": 1245,
       "files": ["docs/air-extensions.md", "src/acp-agent.ts", "src/goal-extension.ts"],
       "tests": ["src/tests/acp-agent.test.ts"],
-      "classification": "unaffected",
+      "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": [],
+      "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
         "decision": "retain",
-        "rationale": "No equivalent upstream patch or overlapping path was detected.",
-        "tests": ["src/tests/acp-agent.test.ts"],
-        "automatic": true
+        "rationale": "Goals are still AIR-only upstream in v0.102.0: the upstream PR for a non-AIR opt-in (#1245) is still open, and no commit in v0.101.1..v0.102.0 adds a goal capability, so the patch is not absorbed. It replays onto v0.102.0 without conflict as c926f2b with the ledger's stable patch-id (650615ee, the same as ledger commit 72c0802), so its added, removed and context lines are unchanged. The v0.101.1..v0.102.0 edits of src/acp-agent.ts are the plans import and the three checklist call sites plus the conversation_reset plan removal (#1554), the workflow_progress field in the task_progress handler and the adoptTasks loop call (#1552, #1556), and a Fable 5.2 comment (#1557). None touches goalMeta, the GOAL_* constants, the initialize _meta builder (no AIR capability is added to or removed from the airSessionFailureCapabilityMeta list that the patch passes to goalMeta), the v1 _session/goal handler, publishGoal or publishRuntimeGoal. The /clear reset path that #1554 edits does not publish or clear the goal. src/goal-extension.ts, src/air-extension.ts, src/v2/initialize.ts and docs/air-extensions.md are unchanged upstream. @anthropic-ai/claude-agent-sdk 0.3.321 (#1557) still exports SDKActiveGoalMessage, and `npx tsc --noEmit -p .` passes on the candidate. The scoped run passes 14 tests (13 in acp-agent.test.ts, 1 in acp-v2.test.ts). The patch's src diff does not reverse-apply because later stacked patches rewrap the initialize _meta, so the core change was disabled in place: goalMeta's non-AIR branch returns meta unchanged. With it disabled, 'advertises and publishes goals for an opted-in non-AIR client' and 'advertises async tasks with steering and goals for an opted-in non-AIR client' fail. The pre-existing v2 follow-up is unchanged (see doubts).",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-agent.test.ts src/tests/acp-v2.test.ts -t goal",
+          "npm run test:run"
+        ],
+        "automatic": false
       }
     },
     {
       "name": "async-tasks-opt-in",
-      "commit": "3e098c71628cc7d5927ee8a3d794faa433dce12d",
+      "commit": "374911daa9a00f103d8d6a16e32a75c639a64724",
       "upstreamPr": null,
-      "files": ["src/acp-agent.ts", "src/async-tasks.ts"],
+      "files": [
+        "README.md",
+        "docs/air-extensions.md",
+        "src/acp-agent.ts",
+        "src/async-tasks.ts",
+        "src/tool-calls/background.ts",
+        "src/v2/initialize.ts"
+      ],
       "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
-      "classification": "unaffected",
+      "classification": "overlap",
       "equivalent": false,
-      "overlappingFiles": [],
+      "overlappingFiles": ["src/acp-agent.ts"],
       "resolution": {
         "decision": "retain",
-        "rationale": "No equivalent upstream patch or overlapping path was detected.",
-        "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
-        "automatic": true
+        "rationale": "Upstream v0.102.0 still gates async tasks on the AIR asyncTasks capability only, so the provider-neutral opt-in is not absorbed. The patch replays onto v0.102.0 without conflict as c59a1a1 with the ledger's stable patch-id (1c6daa67, the same as ledger commit 374911d). src/async-tasks.ts, src/tool-calls/background.ts, src/v2/initialize.ts, README.md and docs/air-extensions.md are unchanged upstream, and so are stopsWorkflowsOnCancel and the backgroundedBashToolCall marker argument. Two upstream changes reach the code paths of an opted-in v1 client. #1552 adds the untyped workflow_progress snapshot in the task_progress handler, but passes it only to session.background.taskProgress (the v2 workflow card); the asyncTasks.taskProgress call that follows is byte-identical to v0.101.1 (task_id, description, summary, last_tool_name, usage, tool_use_id), so the async task lifecycle carries no workflow phases. #1556 adds SessionBackgroundWork.adoptTasks, called in the message loop before backgroundWork.sync, which returns [] unless the session's background list is reported. reported is backgroundWork.enabled && perTaskStopAffordance, and backgroundWork.enabled means a background sink, which only src/v2/agent.ts passes; v1AgentApp constructs ClaudeAcpAgent without one, so a v1 neutral client never gets an adopted task_<id> tool call. A throwaway probe in the candidate (inserted into acp-agent.test.ts, then reverted) ran one v1 scenario for an AIR asyncTasks client and for a neutral `_meta[\"async-tasks\"]: true` client, both with `plan: {}`. The scenario has a Workflow tool call whose local_workflow task reports progress twice, the first time with a workflow_progress snapshot, and a second local_workflow task that no tool call started (the adoptTasks case). Both clients got identical async_task_spawned and async_task_progress updates, with no workflow phase text, no tool call with a task_ id, no state_update and no _claude/task item, and the neutral client got no jetbrains namespace. The same probe with the session's background forced to reported=true fails on an adopted 'task_hook1' tool call, so the probe does detect the v2 behaviour. #1554 touches only the checklist and plan removal next to asyncTasks.clear() in conversation_reset; asyncTasks.clear() itself is unchanged. `npx tsc --noEmit -p .` passes. The scoped run passes 18 tests (8 in acp-agent.test.ts, 2 in acp-v2.test.ts, 7 in async-tasks.test.ts, 1 in create-session-options.test.ts). The patch's src diff does not reverse-apply because later stacked patches change the same initialize _meta and UNSERVED_EXTENSION_KEYS lines, so the core change was disabled in place. With clientSupportsAsyncTasks ignoring _meta['async-tasks'], seven tests fail: 'requires literal true for provider-neutral async task opt-in (true)', 'leaves workflows running for a provider-neutral client that opted into async tasks', 'stops one provider-neutral async task through the SDK without cancelling the prompt', 'publishes a Monitor task as a monitor to a provider-neutral async-task client', 'holds async_task_spawned until the Bash result brings the tool id for provider-neutral', 'keeps a provider-neutral async-task client's terminal running without the AIR marker' and 'advertises async tasks with steering and goals for an opted-in non-AIR client'. Removing 'async-tasks' from UNSERVED_EXTENSION_KEYS fails 'does not advertise the provider-neutral async tasks extension to a v2 client'. Passing asyncTasks.enabled again as the marker argument fails 'holds async_task_spawned until the Bash result brings the tool id for provider-neutral' and 'keeps a provider-neutral async-task client's terminal running without the AIR marker'.",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-agent.test.ts src/tests/acp-v2.test.ts src/tests/async-tasks.test.ts src/tests/create-session-options.test.ts -t \"provider-neutral|neutral flag|async tasks|async-task|non-AIR\"",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "context-usage-extension",
+      "commit": "ae96867b0666c2d6ae29efd05ae60690d9747f57",
+      "upstreamPr": null,
+      "files": ["src/acp-agent.ts", "src/v2/initialize.ts"],
+      "tests": ["src/tests/acp-agent.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "retain",
+        "rationale": "_alas/context_usage is an Alas-only extension with no upstream counterpart, so it is not absorbed. The patch replays onto v0.102.0 without conflict as 27cde5a with the ledger's stable patch-id (7b542798, the same as ledger commit ae96867). None of the v0.101.1..v0.102.0 edits of src/acp-agent.ts touches CONTEXT_USAGE_METHOD, clientRequestsContextUsage, parseContextUsageRequest, ClaudeAcpAgent.contextUsage, the v1AgentApp route or the _meta.contextUsage advertisement in the initialize _meta builder, and src/v2/initialize.ts (UNSERVED_EXTENSION_KEYS) is unchanged upstream. #1554, #1552 and #1556 add no usage_update and do not change attachUsageModel or the rate-limit handling, and the extension sends no session/update of its own: it answers a request with the SDK's getContextUsage breakdown, unchanged. #1557 moves to @anthropic-ai/claude-agent-sdk 0.3.321, whose sdk.d.ts still declares SDKControlGetContextUsageResponse and Query.getContextUsage, and `npx tsc --noEmit -p .` passes on the candidate. @agentclientprotocol/sdk stays at 2.5.0, so the extMethod/onRequest routing used by the v1 route does not change. The scoped run passes 8 tests (3 in acp-agent.test.ts, 3 in acp-v2.test.ts, 2 in create-session-options.test.ts). The patch's src diff does not reverse-apply because later stacked patches rewrap the initialize _meta, so the core change was disabled in place. With clientRequestsContextUsage returning false, 'routes the Alas context usage request of a v1 client to the v1 app', 'advertises and serves the context usage breakdown' and 'advertises context usage to an AIR client next to its unchanged AIR capabilities' fail. With contextUsage removed from UNSERVED_EXTENSION_KEYS, 'does not advertise the Alas context usage request to a v2 client' fails.",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-agent.test.ts src/tests/acp-v2.test.ts src/tests/create-session-options.test.ts -t \"context usage\"",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "neutral-session-index",
+      "commit": "dff2b8b693965471b4e025f6144134dd77c23d40",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/acp-agent.ts",
+        "src/session-index/connection.ts",
+        "src/session-index/list-subscriptions.ts",
+        "src/session-index/meta.ts",
+        "src/session-index/service.ts",
+        "src/session-index/session-info.ts"
+      ],
+      "tests": ["src/tests/acp-scenarios.test.ts", "src/tests/session-index.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "retain",
+        "rationale": "Upstream v0.102.0 still serves the session index only to AIR clients, so the client-neutral form is not absorbed. The patch replays onto v0.102.0 without conflict as 4e71eab with the ledger's stable patch-id (6de4f1c4, the same as ledger commit dff2b8b). Upstream does not touch src/session-index/* or docs/air-extensions.md in v0.101.1..v0.102.0. In src/acp-agent.ts the patch only wraps the initialize _meta in withNeutralCapabilities, and no v0.102.0 edit touches the initialize _meta builder. #1557 changes only comments in src/session-model.ts and the resume comment in createSession; aliasResumedModelRow's code is unchanged, and session index rows still take their model from the transcript scan, not from the model option list. #1554's conversation_reset edit replaces only the publishTaskPlan call with plan updates; session.titles.reset(), which index titles depend on, is unchanged. #1552 and #1556 do not touch session/list, session/delete, the _session/* index methods or session_info_update. `npx tsc --noEmit -p .` passes. The scoped run passes 38 tests (13 in session-index.test.ts, 25 in acp-scenarios.test.ts; the acp-scenarios count includes other neutral-scenario tests that match the pattern). The patch's src diff does not reverse-apply because later stacked patches extend the same initialize _meta, so the core change was disabled in place: SessionIndexConnection.negotiate ignores the neutral opt-in. That fails ten tests: 'is advertised under top-level _meta.sessionIndex to a client that opts in without AIR', 'lists with _meta.sessionIndex.list and annotates rows under _meta.sessionIndex', 'renames, archives and unarchives, and reports the archive state under _meta.sessionIndex', 'sends _session/list/changes rows under _meta.sessionIndex', 'holds a fork back from session/list and list changes until its session/fork response is out', 'advertises and routes _session/batch_get for a client that opts in without AIR', 'returns batch_get rows under _meta.sessionIndex, equal to the neutral list rows', 'rejects a relative cwd, and lists from the index without the SDK list', 'fails the delete of an unknown session with -32002' and 'differs only by _meta.sessionIndex in the initialize response'.",
+        "tests": [
+          "npm exec -- vitest run src/tests/session-index.test.ts src/tests/acp-scenarios.test.ts -t \"neutral|_meta.sessionIndex|without AIR\"",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "settle-at-result",
+      "commit": "1dcdf19fb5d792a3d154c8b7a91dca7574de4284",
+      "upstreamPr": null,
+      "files": ["src/acp-agent.ts"],
+      "tests": ["src/tests/acp-agent.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "retain",
+        "rationale": "settleAtResult is the Alas client-neutral form of the AIR backgroundSubagents capability, which upstream still offers to AIR only, so it is not absorbed. The patch replays onto v0.102.0 without conflict as ef35dff with the ledger's stable patch-id (656653e9, the same as ledger commit 1dcdf19). v0.102.0 does not change endsTurnsWithLiveSubagents, turnAwaitingSubagents, settleDeferredIfDrained, Turn.deferredSettle, the session_state_changed idle branch or the initialize advertisement, so the opt-in still goes through upstream's single gate, ACP v1 only. #1552 and #1556 change only the v2 background-work reporting (workflow card progress and adopted tool calls), which a settleAtResult client never gets because both features are v1 only on the patch side and v2 only upstream. The interaction checked was #1554: after the prompt is answered at its result, the follow-up cycles that subagent notifications start can write a checklist outside any turn. A throwaway probe (inserted into the 'with settleAtResult (Alas)' block, then reverted) answers a prompt at its result with a live subagent, then runs a task-notification cycle that calls TodoWrite, for a v1 client with settleAtResult and neutral async tasks, with and without `plan: {}`. Both answer end_turn before any plan update. With the plan capability, the out-of-turn cycle sends one plan_update {planId: \"plan\", type: \"items\"}; without it, the legacy plan. In both cases the update comes inside the cycle's async task (between async_task_spawned and async_task_state_update), so the patch's out-of-turn path carries the new plan operation unchanged. `npx tsc --noEmit -p .` passes. The scoped run passes 7 tests in acp-agent.test.ts. The patch's src diff does not reverse-apply because the fork-point patch adds its advertisement next to the settleAtResult one, so the core change was disabled in place by removing the settleAtResult term from endsTurnsWithLiveSubagents. With it disabled, six of the seven scoped tests fail: 'answers the prompt at its result while a subagent is live, for a client that opts into settleAtResult', 'keeps the streamed tool input of a running subagent when the turn ends at its result', 'answers a steer folded into an autonomous cycle at that cycle's result while a subagent is live', 'settles an out-of-turn SandboxNetworkAccess tool call while a subagent is live', 'cancels an out-of-turn permission request before session/close responds' and 'asks out of the turn without a clear-context option'. The seventh, 'is not advertised under ACP v2, which keeps the hold', still passes because the advertisement code was left in place.",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-agent.test.ts -t settleAtResult",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "neutral-fork-point",
+      "commit": "41b37d6df80428f4a9eb9dfa54e5a51c752d4fe4",
+      "upstreamPr": null,
+      "files": ["docs/air-extensions.md", "src/acp-agent.ts", "src/fork-session.ts"],
+      "tests": [
+        "src/tests/acp-agent.test.ts",
+        "src/tests/acp-v2.test.ts",
+        "src/tests/fork-session.test.ts"
+      ],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "retain",
+        "rationale": "Upstream v0.102.0 still reads the fork point only from _meta.jetbrains.air.fork, so the client-neutral form is not absorbed. The patch replays onto v0.102.0 without conflict, and the replayed commit f0a4792 has the ledger's stable patch-id (407b1768). src/fork-session.ts and docs/air-extensions.md are unchanged upstream in v0.101.1..v0.102.0. The src/acp-agent.ts edits of this range (#1552 workflow progress in the task_progress handler, #1554 plan operations and the /clear reset, #1556 adoptTasks in the message loop, #1557 a comment) do not touch unstable_forkSession, the forkSession call with neutralForkPoint, the response _meta.forkPoint or the initialize advertisement; the patch's hunks are byte-identical. The fork point only selects the SDK's upToMessageId and fills the response _meta, so the checklist or plan operations a forked session later sends, and v2-only adopted background tool calls, do not meet it. #1557 bumps @anthropic-ai/claude-agent-sdk to 0.3.321; its forkSession options still declare upToMessageId, and `npx tsc --noEmit -p .` passes on the candidate. The core change was disabled in place (forkPoint in src/fork-session.ts ignoring _meta.forkPoint, replacement asserted to match once). The scoped run then fails 30 of 58 tests (fork-session 28, acp-agent 2), including 'rejects a fork point from a client that did not opt in', 'takes the neutral fork point over an AIR one in the same request', 'resolves a fingerprint without an occurrence', 'forks at an inactive persisted branch by its client-neutral ACP message id' and 'forks at an inactive persisted branch by its client-neutral fingerprint without an occurrence'; the tree was restored with git checkout and git status --porcelain is empty. Baseline: 58 passed (fork-session 53, acp-agent 4, acp-v2 1), every file with passed tests.",
+        "tests": [
+          "npm exec -- vitest run src/tests/fork-session.test.ts src/tests/acp-v2.test.ts src/tests/acp-agent.test.ts -t \"fork point|forkPoint|inactive persisted branch\"",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "neutral-diff-patch",
+      "commit": "02b732ee3e12c65f702a743401af97a334dfce9f",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/acp-agent.ts",
+        "src/diff.ts",
+        "src/tool-calls/client-capabilities.ts",
+        "src/tool-calls/renderer.ts",
+        "src/tool-calls/reporters/file-edit.ts"
+      ],
+      "tests": [
+        "src/tests/acp-scenarios.test.ts",
+        "src/tests/acp-v2.test.ts",
+        "src/tests/diff-patch.test.ts"
+      ],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "retain",
+        "rationale": "Upstream v0.102.0 still sends the v1 git patch only under _meta.jetbrains.air.diffPatch, so the client-neutral form is not absorbed. The patch replays onto v0.102.0 without conflict, and the replayed commit 9b20b84 has the ledger's stable patch-id (39ab174b). Upstream does not touch src/diff.ts, src/tool-calls/client-capabilities.ts, src/tool-calls/renderer.ts, src/tool-calls/reporters/file-edit.ts or docs/air-extensions.md in this range, and the patch's src/acp-agent.ts hunks (the import, the initialize advertisement, and previewPatchContent with capabilities.patchForm in canUseTool) are unchanged. #1556 adoptTasks starts tool calls only when SessionBackgroundWork.reported is true, which needs the background sink that only src/v2/agent.ts passes; ClientCapabilities.from forces neutralDiffPatch false under v2, so a neutral v1 client never gets an adopted call, and an adopted call has a title and no toolUse, so it never reaches an Edit/Write diff renderer. #1554 changes only plan updates and #1552 only the workflow card text, neither of which carries a file diff. The core change was disabled in place (ClientCapabilities.from forcing neutralDiffPatch false). The scoped run then fails 9 of 46 tests, including 'previews the Edit patch in the permission request, without the file text in rawInput', 'sends only the neutral form to a client that also declares the AIR diffPatch', 'keeps the file text out of the Edit and Write toolResponse' and 'takes the neutral form over the AIR form, and the v2 form over both'. Baseline: 46 passed (acp-scenarios 25, diff-patch 14, acp-v2 7).",
+        "tests": [
+          "npm exec -- vitest run src/tests/diff-patch.test.ts src/tests/acp-scenarios.test.ts src/tests/acp-v2.test.ts -t \"neutral|diffPatch\"",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "neutral-plan-file",
+      "commit": "c89808edcdfcddf7fdc6c8a8fd99e6c3532e1c8d",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/acp-agent.ts",
+        "src/exit-plan.ts",
+        "src/tool-calls/client-capabilities.ts",
+        "src/tool-calls/renderer.ts",
+        "src/tool-calls/reporters/interaction.ts"
+      ],
+      "tests": [
+        "src/tests/acp-scenarios.test.ts",
+        "src/tests/acp-v2.test.ts",
+        "src/tests/clear-context-coordinator.test.ts",
+        "src/tests/tool-call-contract.test.ts",
+        "src/tests/tools.test.ts"
+      ],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "retain",
+        "rationale": "Upstream v0.102.0 still offers the plan file only to AIR (planFile), and still links an approved plan to its review only for AIR, so the client-neutral form is not absorbed. The patch replays onto v0.102.0 without conflict, and the replayed commit be121ca has the ledger's stable patch-id (69a57ebc). src/exit-plan.ts, src/tool-calls/*, and docs/air-extensions.md are unchanged upstream; the patch's src/acp-agent.ts lines (the linksPlanToReview host callback, the initialize advertisement, and the approvedPlanUpdate in toAcpNotifications) are unchanged. #1554 adds src/plans.ts and a new call site in the /clear reset, resetPlanUpdates(this.clientCapabilities?.plan != null, this.toolCallCapabilities.air.client), which for a plan-capable non-AIR client also sends plan_removed {planId: \"plan-mode\"}. Upstream exempts AIR because its approved plans are joined to their approval cards. A throwaway probe in acp-agent.test.ts (an approved ExitPlanMode, then /clear) recorded the plan operations per client: a plain v1 client with plan: {} gets plan_update 'plan' (items), plan_update 'plan-mode' (markdown), then plan_removed 'plan' and 'plan-mode'; AIR with plan gets plan_update 'plan-mode:toolu_plan', then only plan_removed 'plan'; the neutral client (plan: {} plus _meta.planFile {version: 1}) gets _meta.planFile.planId and plan_update both as 'plan-mode:toolu_plan', then plan_removed 'plan' and plan_removed 'plan-mode'. A second probe copied the clear-context restart test ('shows a plan approved with clearing the context as the session's markdown plan') for the neutral and AIR clients; both get plan_update 'plan-mode:tool-plan'. The neutral client never receives the unlinked 'plan-mode' ID (live result, replay and clear-context restart all use linksPlanToReview, and v2 ignores the opt-in), so the extra removal targets nothing. In Alas, plan_removed hides only documents whose planId equals the removed ID and bumps planRevisions for that exact ID, while a neutral plan review binds to the payload's 'plan-mode:<id>', so the message is a no-op there. Upstream's PR also accepts sending that removal when no plan was published. The patch's contract (the approved plan has the review's ID 'as for AIR'; the docs say nothing about /clear) still holds, so I retain it unchanged. Strict AIR parity would pass linksPlanToReview at the new reset call site; that change is noted as a doubt and not made. The core change was disabled in place (ClientCapabilities.from forcing neutralPlanFile false). The scoped run then fails 14 of 42 tests, including 'adds the plan file to the tool call and the permission request, and keeps the plan text', 'links a replayed plan to its review', 'links the plan of a client-neutral planFile client by ID' and 'takes the neutral plan file over the AIR planFile'. The clear-context-coordinator case stays green under that red proof because it injects linksPlanToReview directly. Baseline: 42 passed (tool-call-contract 26, acp-scenarios 10, tools 4, acp-v2 1, clear-context-coordinator 1). Probes were reverted and git status --porcelain is empty.",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-scenarios.test.ts src/tests/acp-v2.test.ts src/tests/tool-call-contract.test.ts src/tests/tools.test.ts src/tests/clear-context-coordinator.test.ts -t \"planFile|plan file|links\"",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "neutral-session-failure",
+      "commit": "11faafe89f8de72118ce60df09e1ae480c4499bc",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/acp-agent.ts",
+        "src/session-failure-extension.ts",
+        "src/tool-calls/client-capabilities.ts"
+      ],
+      "tests": [
+        "src/tests/acp-agent.test.ts",
+        "src/tests/acp-scenarios.test.ts",
+        "src/tests/acp-v2.test.ts",
+        "src/tests/authorization.test.ts"
+      ],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "retain",
+        "rationale": "Upstream v0.102.0 still sends typed failure records only to AIR (sessionFailure); it has no top-level sessionFailure key and no neutral opt-in, so the client-neutral form is not absorbed. The patch replays onto v0.102.0 without conflict, and the replayed commit 8d20ad1 has the ledger's stable patch-id (8397fb3e). src/session-failure-extension.ts, src/tool-calls/client-capabilities.ts and docs/air-extensions.md are unchanged upstream. None of the v0.102.0 src/acp-agent.ts edits touches a sessionFailureForm call site, internalErrorForClient, failActiveWithSessionFailure, the typed-failure skip of the assistant error frame, the stream-death branch or the usage-limit replay. #1556's adoptTasks call sits in the message loop before backgroundWork.sync and returns [] unless the session reports background lists, which only the v2 sink enables; sessionFailureForm returns no neutral form under v2, so the two never meet, and a failed turn's settlement does not depend on adopted calls. #1554's checklist and reset plan operations are separate session updates and do not touch the failure lane or turnOutcome. #1552 only adds the workflow snapshot to the v2 workflow card. #1557's SDK bump keeps the result and rate_limit types the lane reads (tsc passes). The core change was disabled in place (sessionFailureForm ignoring the neutral opt-in). The scoped run then fails 11 of 117 tests, including 'ends a failed turn with end_turn and the record, without the assistant text', 'gives a client that declares both forms only the neutral record', 'replays the usage limit in the neutral form, without the duplicate text', 'keeps a transport loss on end_turn with no raw detail' and 'publishes the model fallback as a neutral advisory without ACP notices'. Baseline: 117 passed (acp-agent 83, acp-scenarios 25, acp-v2 7, authorization 2).",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-agent.test.ts src/tests/acp-scenarios.test.ts src/tests/acp-v2.test.ts src/tests/authorization.test.ts -t \"neutral|sessionFailure|session failure\"",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "neutral-agent-file-change-report",
+      "commit": "48f68190febed509f4fa8d24d62b742430a714e7",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/acp-agent.ts",
+        "src/file-change-audit.ts",
+        "src/tool-calls/client-capabilities.ts"
+      ],
+      "tests": [
+        "src/tests/acp-agent.test.ts",
+        "src/tests/acp-scenarios.test.ts",
+        "src/tests/acp-v2.test.ts",
+        "src/tests/file-change-audit-integration.test.ts",
+        "src/tests/file-change-audit.test.ts"
+      ],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "retain",
+        "rationale": "Upstream v0.102.0 still offers the agent file-change report only to AIR (supportsAgentFileChangeReport), so the client-neutral form is not absorbed. The patch replays onto v0.102.0 without conflict, and the replayed commit 7364093 has the ledger's stable patch-id (8a3c050f). src/file-change-audit.ts, src/tool-calls/client-capabilities.ts and docs/air-extensions.md are unchanged upstream, and the src/acp-agent.ts edits leave the reporter creation, enableFileCheckpointing, the initialize advert and the per-turn request, report and finish call sites unchanged. #1556's adopted tool calls exist only for a session whose background lists are reported (v2 sink), carry a title and no toolUse, and are not file edits, so they add nothing to editedPaths or the checkpoint rewind dry run that the report is built from; agentFileChangeReportForm also returns no neutral form under v2. #1554's plan operations, including the /clear reset, are plan session updates and do not reach the file-change reporter. #1552 only adds the workflow snapshot to the v2 workflow card. The core change was disabled in place (agentFileChangeReportForm ignoring the neutral opt-in). The scoped run then fails 15 of 164 tests, including 'enables checkpointing and reports at top level before the prompt response', 'advertises it at top level to a client that opts in, with no AIR key', 'gives a client that declares both forms only the neutral report', 'adds a subagent edit to the list' and 'selects the form for the opt-in'. Baseline: 164 passed (acp-agent 81, file-change-audit 37, acp-scenarios 25, file-change-audit-integration 14, acp-v2 7).",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-agent.test.ts src/tests/acp-scenarios.test.ts src/tests/acp-v2.test.ts src/tests/file-change-audit-integration.test.ts src/tests/file-change-audit.test.ts -t \"neutral|agent file-change|agentFileChangeReport\"",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "neutral-permission-presentation",
+      "commit": "591bd918a4540fc37f7cfd1d7eae42636bf723f9",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/acp-agent.ts",
+        "src/elicitation.ts",
+        "src/permissions/presentation.ts",
+        "src/tool-calls/client-capabilities.ts"
+      ],
+      "tests": [
+        "src/tests/acp-agent.test.ts",
+        "src/tests/acp-v2.test.ts",
+        "src/tests/elicitation.test.ts",
+        "src/tests/permission-presentation.test.ts"
+      ],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "retain",
+        "rationale": "Upstream v0.102.0 still sends the permission presentation and the custom-answer marker only to AIR, and it has no permissionPresentation or questionCustomAnswer key, so the client-neutral contracts are not absorbed. The patch replays onto v0.102.0 without conflict as fe12939, with the ledger's stable patch-id (f57a81fa, the same as identity commit 591bd91). Upstream does not change src/permissions/presentation.ts, src/elicitation.ts, src/tool-calls/client-capabilities.ts or docs/air-extensions.md in v0.101.1..v0.102.0. The src/acp-agent.ts edits are the plans.js and workflow-progress.js imports, the checklist plan operation in publishTaskPlan and toAcpNotifications (#1554), the /clear plan removal (#1554), adoptTasks in the message loop (#1556), the workflow field in task_progress (#1552), and a resume comment (#1557). None of them touches the canUseTool presentation call, buildClaudePermissionPresentation, the askUserQuestionsToCreateRequest call site or the initialize _meta builder. #1556's adoptTasks only acts when the background list is reported (the v2 background sink), and it creates tool calls for background tasks, not permission requests. SDK check: I npm-packed @anthropic-ai/claude-agent-sdk 0.3.319 and diffed it against the installed 0.3.321. agentSdkTypes.d.ts, core.d.ts, bridge.d.ts and browser-sdk.d.ts are byte-identical. sdk-tools.d.ts gains only the optional CronDeleteOutput.endedLoopWakeup, so AskUserQuestionInput and AskUserQuestionOutput are unchanged. sdk.d.ts changes only doc comments and blank lines, so CanUseTool and its options (decisionReason, blockedPath) are unchanged. npx tsc --noEmit -p . exits 0 on the candidate fcdcd00. Later stacked patches extend the same client-capabilities and initialize lines, so the src diff does not reverse-apply. I disabled the core change in place instead, with 4 exact single-match replacements: both ClientCapabilities.from neutral flags set to false, and both neutralCustomAnswer uses in askUserQuestionsToCreateRequest set to false. Four tests fail: 'client-neutral permissionPresentation advert > advertises version 1 to a client that opts in with any version, with no AIR key', the same test for questionCustomAnswer, 'links each custom-answer field to its question for a client that opted into the neutral form' and 'sends the record at top level to a client that opted into the neutral form, and only then'.",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-agent.test.ts src/tests/acp-v2.test.ts src/tests/elicitation.test.ts src/tests/permission-presentation.test.ts -t \"neutral form|presentation opt-ins|permissionPresentation advert|questionCustomAnswer advert\"",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "neutral-recommended-config-value",
+      "commit": "6fdbdcc5bbc42124daa06ad60b81f85d7abbe758",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/acp-agent.ts",
+        "src/session-model.ts",
+        "src/tool-calls/client-capabilities.ts"
+      ],
+      "tests": [
+        "src/tests/acp-agent.test.ts",
+        "src/tests/acp-v2.test.ts",
+        "src/tests/model-presentation.test.ts"
+      ],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts", "src/session-model.ts"],
+      "resolution": {
+        "decision": "retain",
+        "rationale": "Upstream v0.102.0 still has only the AIR form of the recommended model (_meta.jetbrains.air.recommendedValue) and no client-neutral recommendedConfigValue key, so the patch is not absorbed. It replays onto v0.102.0 without conflict as 627f3c7, with the ledger's stable patch-id (28697d8a, the same as identity commit 6fdbdcc). The only upstream edits on its paths come from #1557 (SDK 0.3.321, CLI 2.1.321, where Fable 5.2 becomes `fable`): the aliasResumedModelRow doc comment in src/session-model.ts, the resume comment in createSession, and the model-resolution.test.ts fixture. aliasResumedModelRow's code, buildModelConfigOption and the createSession call order (alias, then allowlist, then modelInfos) are unchanged, and ModelInfo in sdk.d.ts is identical between 0.3.319 and 0.3.321. I wrote a throwaway probe in src/tests/acp-agent-settings.test.ts (not committed). It creates a v1 client with the neutral opt-in, resumes a transcript, and lists rows as CLI 2.1.321 does. Results: (1) Resumed Fable 5.2, default resolving to claude-fable-5-2: rows default, fable, claude-fable-5-1, claude-fable-5; currentValue 'default'; record {version: 1, value: 'fable'}. (2) Resumed Fable 5.2, default resolving to claude-opus-5-5 with no opus row: same rows, currentValue 'fable', no record, because the record only names a concrete row that matches the default's resolvedModel. (3) Resumed Fable 5.1 where the CLI lists 5.2 by id: the row stays claude-fable-5-1 because a newer Fable is listed, and the record names 'claude-fable-5-1'. (4) Resumed Fable 5.1 with a `fable` -> 5.2 row: the record names 'claude-fable-5-1' when the default resolves to 5.1. It names 'fable' when the default resolves to 5.2, and then currentValue is 'claude-fable-5-1'. In every case the recorded value is one of the offered option values, and there is no jetbrains key. With aliasResumedModelRow bypassed, cases 1 and 2 and upstream's 'offers Fable 5.1 as `fable` when the CLI resumed on it' fail, because the row and the record go back to claude-fable-5-2. So the neutral record follows upstream's row naming. Upstream's acp-agent-settings Fable test and the updated aliasResumedModelRow unit tests pass on the candidate (13 passed together with the probe). Red proof, in place with exact single matches: the opt-in is forced false and the buildModelConfigOption neutralMeta gate is forced false. Four tests fail: 'client-neutral recommendedConfigValue advert > advertises version 1 to a client that opts in with any version, with no AIR key', 'client-neutral recommendation > names the row of the running default and leaves current default and the rows alone', '... leaves current haiku and the rows alone' and 'sends both records to a client that declares AIR too'. Dropping only this key's !v2 guard fails 'ignores the client-neutral presentation opt-ins of a v2 client'.",
+        "tests": [
+          "npm exec -- vitest run src/tests/model-presentation.test.ts src/tests/acp-agent.test.ts src/tests/acp-v2.test.ts -t \"client-neutral recommendation|client-neutral recommendedConfigValue advert|ignores the client-neutral presentation opt-ins of a v2 client\"",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "neutral-command-presentation",
+      "commit": "f0575103dc41baca51afee91ae9a63f8805412d3",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/acp-agent.ts",
+        "src/tool-calls/client-capabilities.ts"
+      ],
+      "tests": ["src/tests/acp-agent.test.ts", "src/tests/acp-v2.test.ts"],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "retain",
+        "rationale": "Upstream v0.102.0 still marks skill commands only in the AIR form (_meta.jetbrains.air kind/skillPath), so the client-neutral commandPresentation record is not absorbed. The patch replays onto v0.102.0 without conflict as 82c537b, with the ledger's stable patch-id (d16aa289, the same as identity commit f057510). No v0.101.1..v0.102.0 edit touches getAvailableSlashCommands, the commands_changed case, availableSlashCommands, refreshSkillFiles, the skill-path lookup or the initialize _meta builder. The src/acp-agent.ts edits are elsewhere: #1554's checklist and reset plan updates, #1552's workflow field in task_progress, #1556's adoptTasks, which is v2-sink only, and #1557's comment. #1554's /clear branch sends plan updates, not available_commands_update. The SDK bump leaves sdk.d.ts with doc-only changes, so SlashCommand is unchanged, and tsc passes. Red proof, in place, one exact match: with the commandPresentation opt-in forced false, three tests fail: 'marks a skill in the client-neutral form for a client that opts in', 'marks a built-in skill with the kind only for a neutral client' and 'client-neutral commandPresentation advert > advertises version 1 to a client that opts in with any version, with no AIR key'. Dropping this key's !v2 guard fails 'ignores the client-neutral presentation opt-ins of a v2 client'.",
+        "tests": [
+          "npm exec -- vitest run src/tests/acp-agent.test.ts src/tests/acp-v2.test.ts -t \"client-neutral form for a client that opts in|kind only for a neutral client|client-neutral commandPresentation advert|ignores the client-neutral presentation opt-ins of a v2 client\"",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "neutral-load-replay-end",
+      "commit": "dfb31b948a4a53f6da2feb4d23c2e3eca22193c9",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/acp-agent.ts",
+        "src/tool-calls/client-capabilities.ts"
+      ],
+      "tests": [
+        "src/tests/acp-agent.test.ts",
+        "src/tests/acp-v2.test.ts",
+        "src/tests/create-session-options.test.ts"
+      ],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "retain",
+        "rationale": "Upstream v0.102.0 still sends the load replay end only in the AIR form (_meta.jetbrains.air.loadReplayEnd), with no client-neutral key and no echo of the load id, so the patch is not absorbed. It replays onto v0.102.0 without conflict as eaceeca, with the ledger's stable patch-id (dc9c1d0a, the same as identity commit dfb31b9). The relevant upstream change is #1554. During replaySessionHistory, toAcpNotifications now turns a replayed TodoWrite or Task checklist into checklistPlanUpdate(entries, clientCapabilities.plan != null). An Alas-like client with the `plan` capability therefore gets plan_update / plan_removed during the replay instead of a legacy `plan`. These updates still go out through the same awaited this.client.sessionUpdate inside replayMessage, before the publish phase ends and therefore before the end update that the patch emits after the loop (gated on !pending?.stopped). The replay's forgetPublishedTaskPlan at the start is unchanged. I wrote a throwaway probe in the 'load replay end' describe of src/tests/create-session-options.test.ts (not committed). It loads a history of user, TodoWrite in_progress, its tool_result, TodoWrite [] and its tool_result, with load id 'load-p'. For a client with plan: {} and the neutral opt-in, the updates at the response were user_message_chunk, plan_update {planId 'plan', items}, plan_removed {planId 'plan'}, then session_info_update {loadReplayEnd: {version: 1, id: 'load-p'}} last, with exactly one neutral end. Without the plan capability the plan updates are two legacy `plan` updates in the same position. The order of the end relative to plan updates is unchanged; only the kind of plan update differs. The existing 15 'load replay end' tests also pass. #1554's reset plan_removed runs only on a live conversation_reset, not on load. #1556's adoptTasks runs in the prompt message loop on the v2 sink, not in the replay. Red proof, in place, one exact match: with the loadReplayEnd opt-in forced false, five tests fail: 'sends one end event in the neutral form, echoing the load's id', '... the neutral form, for a load that names no id, ...', '... both forms, ...', 'echoes the load's id after the replay of a session that is already live' and 'client-neutral loadReplayEnd advert > advertises version 1 to a client that opts in with any version, with no AIR key'. Dropping this key's !v2 guard fails 'ignores the client-neutral presentation opt-ins of a v2 client'.",
+        "tests": [
+          "npm exec -- vitest run src/tests/create-session-options.test.ts src/tests/acp-agent.test.ts src/tests/acp-v2.test.ts -t \"load replay end|client-neutral loadReplayEnd advert|ignores the client-neutral presentation opt-ins of a v2 client\"",
+          "npm run test:run"
+        ],
+        "automatic": false
+      }
+    },
+    {
+      "name": "neutral-prompt-suggestions",
+      "commit": "6f95b38665472c9c6a58a17a68654911cf5b387f",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/acp-agent.ts",
+        "src/prompt-suggestions.ts",
+        "src/tool-calls/client-capabilities.ts"
+      ],
+      "tests": [
+        "src/tests/acp-agent.test.ts",
+        "src/tests/acp-v2.test.ts",
+        "src/tests/create-session-options.test.ts",
+        "src/tests/prompt-suggestions.test.ts"
+      ],
+      "classification": "overlap",
+      "equivalent": false,
+      "overlappingFiles": ["src/acp-agent.ts"],
+      "resolution": {
+        "decision": "adapt",
+        "commit": "fcdcd009281a38df0c4fdba1a521fad85e473900",
+        "rationale": "Upstream v0.102.0 still publishes the predicted follow-up prompt only to AIR, asks the SDK for promptSuggestions for every client, and has no per-prompt request id, so the patch is still needed. It no longer replays cleanly. The ledger commit is 6f95b38, and its v0.101.1 replay is bc39ecc, both with patch-id 2e2ea943. git merge-tree of bc39ecc onto 0ef5f65 (the exploration candidate without this patch) gives exactly one conflict: the src/acp-agent.ts import block. Upstream #1554 inserted `import { checklistPlanUpdate, resetPlanUpdates } from \"./plans.js\";` directly above the `./prompt-suggestions.js` import that the patch widens to also import PROMPT_SUGGESTIONS_META_KEY. The adaptation fcdcd00 keeps both imports and touches the same 8 files as 6f95b38. Its added and removed lines (228 +/- lines) are byte-identical to bc39ecc's. Only the context changes (plans.js above, no toGoalSnapshot line), which gives a new stable patch-id, b25bc860. That id is distinct from the retired 2e2ea943 and from 516df919 (d2ddd27). The merge-tree result differs from fcdcd00 only by the conflict markers. No other upstream edit touches publishPromptSuggestion, the prompt-time clear and request-id capture, the prompt_suggestion or result cases, src/prompt-suggestions.ts or the promptSuggestions query option. Claude Agent SDK 0.3.321 changes sdk.d.ts only in doc comments, so the prompt_suggestion message and the promptSuggestions option are unchanged, and tsc passes. #1554 rewrote the conversation_reset branch: publishTaskPlan was replaced by forgetPublishedTaskPlan plus a resetPlanUpdates loop. That loop runs before the patch's untouched `publishPromptSuggestion(params.sessionId, null)` and does not read or reset promptSuggestionExpected, promptSuggestionRequestId or lastPublishedPromptSuggestion. A throwaway probe (src/tests/probe-psr.test.ts, deleted afterwards) used an Alas-like v1 client with plan: {} and the neutral promptSuggestions opt-in. Three cases passed. (a) Prompts turn-1, /clear (turn-2) and turn-3 gave: the prediction with id turn-1; the prompt-time clear {suggestions: []}; plan_removed 'plan' and plan_removed 'plan-mode', with no duplicate clear from the reset because nothing was held; then the turn-3 prediction with its id. (b) A reset after a published prediction sent both plan_removed updates and then {suggestions: []} without an id. (c) A reset between the result and the prediction sent the plan removals and dropped the late prediction. With the patch's src diff reverse-applied, (a) and (b) fail. (c) passes either way by construction. Scoped tests: 27 passed in 4 files. Red proof: `git show fcdcd00 -- src ':!src/tests' | git apply -R` applies cleanly on the candidate. Six tests fail: 'client-neutral: a prompt that asks gets its prediction with its id', 'client-neutral: a turn that predicts only whitespace answers its request with an empty list', 'client-neutral: the same text again still answers the next request', 'client-neutral: a client with both forms gets one update that carries the id', 'asks the SDK for a predicted follow-up prompt per turn only for a client that reads it: any other' and 'client-neutral promptSuggestions advert > advertises version 1 to a client that opts in with any version, with no AIR key'. That is the same set as the v0.101.1 proof. The tree was restored and git status is clean.",
+        "tests": [
+          "npm exec -- vitest run src/tests/prompt-suggestions.test.ts src/tests/create-session-options.test.ts src/tests/acp-agent.test.ts src/tests/acp-v2.test.ts -t \"follow-up prompt|client-neutral promptSuggestions advert|ignores the client-neutral presentation opt-ins of a v2 client\"",
+          "npm run test:run"
+        ],
+        "automatic": false
       }
     }
   ],
   "preservedCommits": [],
+  "retiredCommits": [],
   "resolved": true
 }
