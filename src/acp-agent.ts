@@ -170,6 +170,7 @@ import {
   backgroundBashTaskFromToolResult,
   backgroundedBashToolCallIds,
   clientSupportsAsyncTasks,
+  taskProgressFields,
 } from "./async-tasks.js";
 import {
   type BackgroundSink,
@@ -296,6 +297,7 @@ import {
 import { IdleCompaction } from "./idle-compaction.js";
 import {
   clientSupportsNotices,
+  collapseHookSpeaker,
   MAX_NOTICE_TITLE_LENGTH,
   normalizeNoticeText,
   noticeOrTranscriptUpdate,
@@ -391,6 +393,7 @@ import {
   SessionModeManager,
 } from "./session-mode.js";
 import {
+  aliasResumedModelRow,
   applyAvailableModelsAllowlist,
   buildModelConfigOption,
   getAvailableModels,
@@ -4825,6 +4828,8 @@ export class ClaudeAcpAgent {
     let lastAssistantTotalUsage: number | null = null;
     let lastAssistantUsage: UsageSnapshot | null = null;
     let lastAssistantModel: string | null = null;
+    // A rate_limit_event that came before the turn had any usage to report.
+    let pendingRateLimit: unknown = null;
     // When the Claude SDK classifies a turn as failed (e.g. rate limit, auth
     // problem, billing), it sets a categorical `error` field on the
     // `SDKAssistantMessage` that precedes the final `result` message. We capture
@@ -5133,7 +5138,8 @@ export class ClaudeAcpAgent {
     };
 
     // ACP's usage_update has no model field, so the model the usage belongs
-    // to rides in `_meta` alongside the other `_claude/*` keys.
+    // to rides in `_meta` alongside the other `_claude/*` keys, as does a
+    // pending rate limit.
     const attachUsageModel = <
       T extends {
         sessionUpdate: "usage_update";
@@ -5144,6 +5150,13 @@ export class ClaudeAcpAgent {
     >(
       update: T,
     ): T => {
+      if (pendingRateLimit !== null) {
+        update = {
+          ...update,
+          _meta: { "_claude/rateLimit": pendingRateLimit, ...(update._meta ?? {}) },
+        };
+        pendingRateLimit = null;
+      }
       if (!lastAssistantModel) return update;
       return {
         ...update,
@@ -6568,8 +6581,6 @@ export class ClaudeAcpAgent {
                   !firstUnsettledQueuedTurn()
                 ) {
                   await asyncTasks.autonomousTurnStarted();
-                } else if (message.state === "idle" && asyncTasks.autonomousTurnOpen) {
-                  await asyncTasks.autonomousTurnEnded("completed");
                 }
                 if (
                   message.state === "running" &&
@@ -6601,6 +6612,9 @@ export class ClaudeAcpAgent {
                   // here. An owed idle belongs to an earlier result: it can lag
                   // past the cycle's first output.
                   if (session.owedTrailingIdles === 0) {
+                    if (asyncTasks.autonomousTurnOpen) {
+                      await asyncTasks.autonomousTurnEnded("completed");
+                    }
                     await closeCycleToolCalls();
                     this.endAutonomousCycle(params.sessionId, {
                       outcome: { stopReason: session.cancelled ? "cancelled" : "end_turn" },
@@ -6874,10 +6888,11 @@ export class ClaudeAcpAgent {
                   }
                 }
                 const severity = message.level === "warning" ? "warning" : "info";
+                const transcriptContent = collapseHookSpeaker(message.content);
                 const transcriptText =
                   message.level === "info"
-                    ? message.content
-                    : `**${sentenceCase(message.level)}:** ${message.content}`;
+                    ? transcriptContent
+                    : `**${sentenceCase(message.level)}:** ${transcriptContent}`;
                 await sendUpdate({
                   sessionId: params.sessionId,
                   update: noticeOrTranscriptUpdate(
@@ -6906,13 +6921,18 @@ export class ClaudeAcpAgent {
               case "hook_response":
               case "files_persisted":
                 break;
-              case "task_progress":
+              case "task_progress": {
                 if (isLateTaskRun(session, message.task_id, message.run_id)) {
                   this.logger.log(
                     `Ignoring task_progress for task ${message.task_id} from earlier run ${message.run_id}`,
                   );
                   break;
                 }
+                const progress = session.background.taskProgress(
+                  message.task_id,
+                  taskProgressFields(message),
+                );
+                if (progress) await sendUpdate(progress);
                 await asyncTasks.taskProgress({
                   task_id: message.task_id,
                   description: message.description,
@@ -6922,6 +6942,7 @@ export class ClaudeAcpAgent {
                   tool_use_id: message.tool_use_id,
                 });
                 break;
+              }
               case "task_started":
                 if (isLateTaskRun(session, message.task_id, message.run_id)) {
                   this.logger.log(
@@ -8667,6 +8688,18 @@ export class ClaudeAcpAgent {
                 content,
                 toolUseResult,
                 session.toolUseCache,
+                (toolUseId) => {
+                  for (const [taskId, task] of session.liveBackgroundTasks) {
+                    if (
+                      task.parentToolUseId === toolUseId &&
+                      task.taskType === "local_bash" &&
+                      task.backgrounded
+                    ) {
+                      return taskId;
+                    }
+                  }
+                  return undefined;
+                },
               );
               if (backgroundBashTask) await asyncTasks.taskBackgrounded(backgroundBashTask);
               // The command's terminal runs until its task ends, unless the
@@ -8776,6 +8809,9 @@ export class ClaudeAcpAgent {
                 ),
               );
             }
+            for (const progress of session.background.toolCallProgress(runningToolCalls)) {
+              await sendUpdate(progress);
+            }
             // After the result's own updates: the command's output replaces
             // the placeholder that they gave its terminal.
             if (runningTerminalTask) {
@@ -8844,7 +8880,11 @@ export class ClaudeAcpAgent {
           }
           case "rate_limit_event": {
             session.idleCompaction?.noteRateLimit(message.rate_limit_info);
-            if (lastAssistantTotalUsage !== null) {
+            // With partial messages on, the SDK sends this before the turn's
+            // first assistant frame, while there is no usage yet to send it with.
+            if (lastAssistantTotalUsage === null) {
+              pendingRateLimit = message.rate_limit_info;
+            } else {
               await sendUpdate({
                 sessionId: params.sessionId,
                 update: attachUsageModel({
@@ -10202,9 +10242,10 @@ export class ClaudeAcpAgent {
       // The entity is keyed by the summary message's uuid, which differs from
       // the live id (the `compacting` status uuid) — replay is terminal-first
       // by the RFD, and no client merges a replay into a live entity store.
-      // A subagent's own compaction summary is not the root session's, and a
-      // summary whose framing is unrecognized stays visible as transcript
-      // text rather than vanishing behind a summary-less entity.
+      // A subagent's own compaction summary is not the root session's. A summary
+      // whose framing is unrecognized is still this compaction, without summary
+      // text: isCompactSummary says what it is, and the framing is Claude Code's
+      // to change.
       if (
         replayCompactionUpdates &&
         isCompactSummaryMessage(message) &&
@@ -10220,10 +10261,9 @@ export class ClaudeAcpAgent {
             airClient: this.toolCallCapabilities.air.client,
           },
         );
-        if (replayCompaction.recordSummary(assistantMessageText(message.message))) {
-          await replayCompaction.finish(message.uuid, "completed");
-          return;
-        }
+        replayCompaction.recordSummary(assistantMessageText(message.message));
+        await replayCompaction.finish(message.uuid, "completed");
+        return;
       }
 
       for (const notification of toAcpNotifications(
@@ -10942,15 +10982,13 @@ export class ClaudeAcpAgent {
   }
 
   /**
-   * The PreToolUse hook of a v2 connection, for Edit and Write: the tool call
-   * shows the exact patch of the change before the tool runs.
+   * Captures pre-execution patches for v2 Edit and Write tool calls.
    *
-   * A v2 diff cannot hold the input's snippet, so without it an auto-approved
-   * Edit or Write would show its change only once it is done. Claude Code runs
-   * the tool only after the hook returns, so the file is as it was before the
-   * change, as for the approval patch of a permission request (which runs
-   * after this hook, and shows the same patch). The hook makes no permission
-   * decision, and a failure only leaves the preview out.
+   * A v2 diff cannot hold the input's snippet, so the patch needs the file as
+   * it was before the tool runs. Claude Code waits for the hook before running
+   * the tool. If its streamed tool use has not arrived, the patch waits for
+   * the tool call's first publication. The hook makes no permission decision,
+   * and a failure only leaves the preview out.
    */
   private fileChangePreviewHook(sessionId: string): HookCallback {
     return async (input, toolUseID, { signal }) => {
@@ -10977,34 +11015,25 @@ export class ClaudeAcpAgent {
     const toolInput = (input.tool_input ?? {}) as Record<string, unknown>;
     const content = await previewPatchContent(input.tool_name, toolInput, session.cwd, "v2");
     if (!content) return;
+    const fields = toolCallFieldsOf(session);
+    // Workflow tools can run hooks without streaming their use or result.
+    // Keep the patch until the stream or a permission request publishes the
+    // tool call, instead of creating a pending call with no completion path.
+    if (!session.emittedToolCalls.has(toolUseID)) {
+      fields.stagePreview(toolUseID, content);
+      return;
+    }
     const { parentToolUseId, toolCallSessionId } = this.toolUseOwner(
       session,
       sessionId,
       input.agent_id,
     );
-    // Hook callbacks bypass the stream, so the hook can come before the
-    // streamed tool_use, as `canUseTool` can: then the tool call goes out
-    // with the patch.
-    if (!session.emittedToolCalls.has(toolUseID)) {
-      await this.ensureToolCallEmitted(
-        sessionId,
-        input.tool_name,
-        toolUseID,
-        toolInput,
-        parentToolUseId,
-        undefined,
-        toolCallSessionId,
-        content,
-      );
-      return;
-    }
     const update: SessionNotification["update"] = {
       sessionUpdate: "tool_call_update",
       toolCallId: toolUseID,
       content,
     };
     if (parentToolUseId) stampParentToolUseId(update, parentToolUseId);
-    const fields = toolCallFieldsOf(session);
     if (!fields.apply(update)) return;
     // The streamed input must not replace the patch, as for an approval patch.
     fields.pinContent(toolUseID, content);
@@ -12491,9 +12520,9 @@ export class ClaudeAcpAgent {
               ],
             }
           : {}),
-        // On v2, an Edit or Write shows its exact patch before it runs, also
-        // when no permission request shows it (`fileChangePreviewHook`): a v2
-        // diff cannot hold the input's snippet.
+        // v2 needs the patch captured before an Edit or Write runs, also
+        // without a permission request (`fileChangePreviewHook`): a v2 diff
+        // cannot hold the input's snippet.
         ...(this.v2 || subagentConfigHook
           ? {
               PreToolUse: [
@@ -12692,14 +12721,21 @@ export class ClaudeAcpAgent {
       // configured. Managed `deniedModels` drops entries the CLI would refuse.
       const settingsAvailableModels = settingsManager.getSettings().availableModels;
       const settingsModelOverrides = settingsManager.getSettings().modelOverrides;
+      const resumedModel = await resumedModelHint;
+      // A resumed Fable 5.1 session lists Fable 5.1 as `fable`, as a new
+      // session does (see `aliasResumedModelRow`).
+      const sdkModels = aliasResumedModelRow(
+        initializationResult.models,
+        creationOpts.resume !== undefined ? resumedModel : undefined,
+      );
       const settingsAllowedModels = Array.isArray(settingsAvailableModels)
         ? applyAvailableModelsAllowlist(
-            initializationResult.models,
+            sdkModels,
             settingsAvailableModels,
             settingsModelOverrides,
             settingsManager.getManagedDeniedModels(),
           )
-        : initializationResult.models;
+        : sdkModels;
       // Then keep only the models the `providers/set` gateway listed.
       const allowedModels = resolvedProvider?.listedModels
         ? narrowToGatewayModels(
@@ -12717,7 +12753,7 @@ export class ClaudeAcpAgent {
         this.logger,
         creationOpts.resume !== undefined,
         sessionId,
-        await resumedModelHint,
+        resumedModel,
         resolvedProvider?.listedModels !== undefined,
       );
       timing.phase("models");
@@ -12733,7 +12769,7 @@ export class ClaudeAcpAgent {
       const allowlistedModelInfo = allowedModels.find((m) => m.value === models.currentModelId);
       const fallbackModelInfo = allowlistedModelInfo
         ? undefined
-        : (resolveModelPreference(initializationResult.models, models.currentModelId) ?? undefined);
+        : (resolveModelPreference(sdkModels, models.currentModelId) ?? undefined);
       const currentModelInfo = allowlistedModelInfo ?? fallbackModelInfo;
       // Register the fallback-resolved capabilities under the verbatim live id
       // so every modelInfos consumer (buildConfigOptions' effort lookup, later
