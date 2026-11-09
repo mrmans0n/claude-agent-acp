@@ -164,6 +164,52 @@ on `status: "reported"`. A client that declares both forms gets the neutral one.
 The AIR form and ACP v2 are unchanged, and clients that do not opt in see no
 change and get no checkpointing. Upstream has no equivalent.
 
+The neutral-permission-presentation patch sends the permission presentation and
+the question custom answer link of the AIR extension to a client that is not AIR.
+It opts in with `clientCapabilities._meta.permissionPresentation: { "version": 1 }`
+and `clientCapabilities._meta.questionCustomAnswer: { "version": 1 }`, and gets
+each back under ACP v1 only. A permission request carries
+`_meta.permissionPresentation { version, title, description?, defaultToNo? }`, and
+the companion field of an AskUserQuestion question carries
+`_meta.questionCustomAnswer { version, questionId }`. Option ids, field keys and
+the reading of a response do not change. A client that declares AIR too gets both
+forms. The AIR form and ACP v2 are unchanged, and clients that do not opt in see no
+change. Upstream has no equivalent.
+
+The neutral-recommended-config-value patch names the recommended model for a client
+that is not AIR. It opts in with `clientCapabilities._meta.recommendedConfigValue:
+{ "version": 1 }` and gets it back under ACP v1 only. The model selector carries
+`_meta.recommendedConfigValue { version, value }`. Unlike the AIR form, it removes no
+row, changes no current value and applies nothing to the SDK, and it has no effort
+record, because the SDK reports no recommended effort. A client that declares AIR too
+gets both records. Clients that do not opt in see no change. Upstream has no
+equivalent.
+
+The neutral-command-presentation patch gives a client that is not AIR the kind and
+`SKILL.md` path of each skill command. It opts in with
+`clientCapabilities._meta.commandPresentation: { "version": 1 }` and gets it back under
+ACP v1 only. A skill command carries `_meta.commandPresentation { version, kind,
+skillPath? }`, found as for the AIR `kind` and `skillPath` keys; a skill without a file
+has the kind only. A client that declares AIR too gets both records. Clients that do not
+opt in see no change. Upstream has no equivalent.
+
+The neutral-load-replay-end patch gives a client that is not AIR the end of the history
+replay of a `session/load`. It opts in with
+`clientCapabilities._meta.loadReplayEnd: { "version": 1 }` and gets it back under ACP v1
+only. The load request can name `_meta.loadReplayEnd.id`; after the whole replay the agent
+sends one `session_info_update` with `_meta.loadReplayEnd { version, id? }`, at the same
+point as the AIR `loadReplayEnd` event. A client that declares AIR too gets both keys.
+Clients that do not opt in see no change. Upstream has no equivalent.
+
+The neutral-prompt-suggestions patch gives a client that is not AIR the predicted
+follow-up prompt. It opts in with `clientCapabilities._meta.promptSuggestions: { "version": 1 }`
+and gets it back under ACP v1 only. A `session/prompt` that names
+`_meta.promptSuggestions.id` gets that turn's prediction as
+`session_info_update._meta.promptSuggestions { suggestions, id }`; an empty list with the
+id says the turn predicted nothing. The SDK `promptSuggestions` option is now on only for
+AIR and neutral clients, so other clients no longer pay for predictions they never get.
+A client that declares AIR too gets one update. Upstream has no equivalent.
+
 For each target release, `scripts/audit-downstream-patches.mjs` classifies every
 patch:
 
