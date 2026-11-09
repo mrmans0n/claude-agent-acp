@@ -251,6 +251,24 @@ const CLAUDE_PATCHES = [
       "src/tests/create-session-options.test.ts",
     ],
   },
+  {
+    name: "neutral-prompt-suggestions",
+    identityCommit: "6f95b38665472c9c6a58a17a68654911cf5b387f",
+    commit: "6f95b38665472c9c6a58a17a68654911cf5b387f",
+    upstreamPr: null,
+    files: [
+      "docs/air-extensions.md",
+      "src/acp-agent.ts",
+      "src/prompt-suggestions.ts",
+      "src/tool-calls/client-capabilities.ts",
+    ],
+    tests: [
+      "src/tests/acp-agent.test.ts",
+      "src/tests/acp-v2.test.ts",
+      "src/tests/create-session-options.test.ts",
+      "src/tests/prompt-suggestions.test.ts",
+    ],
+  },
 ];
 
 afterEach(() => {

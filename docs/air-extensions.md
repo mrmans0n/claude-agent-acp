@@ -1025,6 +1025,39 @@ A prediction the next prompt outran — the user sent it before the adapter read
 The CLI predicts nothing on the first turn of a session, after an API error, in plan mode, and at the account's usage limit, so many turns end with no prediction.
 A client must treat a turn without one as normal.
 A caller can turn the whole feature off with `_meta.claudeCode.options.promptSuggestions: false` on `session/new`; a user can turn it off in Claude Code settings or with `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false`.
+The adapter asks the CLI for predictions only for a client that reads them: AIR, or a client with the neutral opt-in below.
+
+### Client-neutral predicted prompt
+
+A client that is not AIR can get the prediction too.
+It declares `initialize.clientCapabilities._meta.promptSuggestions: {"version": 1}` (any integer version of at least 1), and the agent answers with `_meta.promptSuggestions: {"version": 1}` in the `initialize` response.
+The client then asks per turn: a `session/prompt` that wants the prediction of its turn names an id, a non-empty string of at most 256 characters:
+
+```json
+{ "_meta": { "promptSuggestions": { "id": "<client id of this prompt>" } } }
+```
+
+The prediction of that turn carries the id:
+
+```json
+{
+  "sessionUpdate": "session_info_update",
+  "_meta": {
+    "promptSuggestions": {
+      "suggestions": [{ "text": "Run the tests" }],
+      "id": "<client id of this prompt>"
+    }
+  }
+}
+```
+
+- A prompt without an id gets no prediction.
+- A turn whose prediction says nothing answers the request with `suggestions: []` and the id, so the client can stop waiting.
+  A turn whose CLI predicts nothing at all sends nothing; the client must not wait for it forever.
+- The clear at the next prompt and at a `conversation_reset` carries no id, as above.
+- A prediction the next prompt outran is dropped, as above.
+- A client that declares both forms gets one update; it carries the id when the prompt named one.
+- ACP v2 ignores the neutral opt-in.
 
 ## Recommended config values
 
