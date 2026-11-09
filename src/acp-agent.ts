@@ -108,6 +108,7 @@ import {
   toGoalSnapshot,
 } from "./goal-extension.js";
 import { blobResourceToClaude } from "./blob-resources.js";
+import { checklistPlanUpdate, resetPlanUpdates } from "./plans.js";
 import {
   PROMPT_SUGGESTIONS_META_KEY,
   promptSuggestionsMeta,
@@ -172,6 +173,7 @@ import {
   clientSupportsAsyncTasks,
   taskProgressFields,
 } from "./async-tasks.js";
+import { workflowSnapshot } from "./workflow-progress.js";
 import {
   type BackgroundSink,
   type BackgroundTaskEnd,
@@ -4619,7 +4621,7 @@ export class ClaudeAcpAgent {
     if (!entries) return;
     await this.client.sessionUpdate({
       sessionId,
-      update: { sessionUpdate: "plan", entries },
+      update: checklistPlanUpdate(entries, this.clientCapabilities?.plan != null),
     });
   }
 
@@ -6079,7 +6081,9 @@ export class ClaudeAcpAgent {
         const pause = messageLoopYielder.maybeYield();
         if (pause) await pause;
         // The last message may have changed the background work, and its
-        // updates are sent, so the list follows them.
+        // updates are sent, so the list follows them. A task that needs a
+        // tool call of its own gets it first, so the list can name it.
+        for (const call of session.background.adoptTasks(session)) await sendUpdate(call);
         this.backgroundWork.sync(params.sessionId, session, this.foregroundState(params.sessionId));
         pendingNext ??= session.query
           .next()
@@ -6928,10 +6932,14 @@ export class ClaudeAcpAgent {
                   );
                   break;
                 }
-                const progress = session.background.taskProgress(
-                  message.task_id,
-                  taskProgressFields(message),
+                // The SDK does not type `workflow_progress`; see workflow-progress.ts.
+                const workflow = workflowSnapshot(
+                  (message as { workflow_progress?: unknown }).workflow_progress,
                 );
+                const progress = session.background.taskProgress(message.task_id, {
+                  ...taskProgressFields(message),
+                  ...(workflow ? { workflow } : {}),
+                });
                 if (progress) await sendUpdate(progress);
                 await asyncTasks.taskProgress({
                   task_id: message.task_id,
@@ -8910,7 +8918,13 @@ export class ClaudeAcpAgent {
             session.toolCallFields?.clear();
             clearHookCallbacks(params.sessionId);
             session.taskState.clear();
-            await this.publishTaskPlan(params.sessionId, session.taskState);
+            forgetPublishedTaskPlan(session.taskState);
+            for (const update of resetPlanUpdates(
+              this.clientCapabilities?.plan != null,
+              this.toolCallCapabilities.air.client,
+            )) {
+              await this.client.sessionUpdate({ sessionId: params.sessionId, update });
+            }
             // A reset mounts a fresh transcript (`new_conversation_id`), so our
             // cached title no longer describes the session: drop it and
             // re-evaluate at the next turn-end.
@@ -12722,7 +12736,7 @@ export class ClaudeAcpAgent {
       const settingsAvailableModels = settingsManager.getSettings().availableModels;
       const settingsModelOverrides = settingsManager.getSettings().modelOverrides;
       const resumedModel = await resumedModelHint;
-      // A resumed Fable 5.1 session lists Fable 5.1 as `fable`, as a new
+      // A resumed Fable 5.2 session lists Fable 5.2 as `fable`, as a new
       // session does (see `aliasResumedModelRow`).
       const sdkModels = aliasResumedModelRow(
         initializationResult.models,
@@ -14590,10 +14604,10 @@ export function toAcpNotifications(
         if (chunk.name === "TodoWrite") {
           // @ts-expect-error - sometimes input is empty object or undefined
           if (Array.isArray(chunk.input?.todos)) {
-            update = {
-              sessionUpdate: "plan",
-              entries: planEntries(chunk.input as { todos: ClaudePlanEntry[] }),
-            };
+            update = checklistPlanUpdate(
+              planEntries(chunk.input as { todos: ClaudePlanEntry[] }),
+              options?.clientCapabilities?.plan != null,
+            );
           }
         } else if (isTaskTool(chunk.name)) {
           // Task* tool_use is suppressed; the plan update is emitted at
@@ -14828,7 +14842,9 @@ export function toAcpNotifications(
           const entries = shouldEmitTaskPlan
             ? changedTaskPlanEntries(taskState, renderer.capabilities.air.client)
             : undefined;
-          if (entries) update = { sessionUpdate: "plan", entries };
+          if (entries) {
+            update = checklistPlanUpdate(entries, options?.clientCapabilities?.plan != null);
+          }
         } else if (toolUse.name !== "TodoWrite") {
           // A command sends its output first, then the exit and the status.
           const [finalUpdate, ...rest] = renderer
