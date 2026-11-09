@@ -178,6 +178,79 @@ const CLAUDE_PATCH_IDENTITIES = [
       "src/tests/file-change-audit.test.ts",
     ],
   },
+  {
+    name: "neutral-permission-presentation",
+    identityCommit: "591bd918a4540fc37f7cfd1d7eae42636bf723f9",
+    upstreamPr: null,
+    files: [
+      "docs/air-extensions.md",
+      "src/acp-agent.ts",
+      "src/elicitation.ts",
+      "src/permissions/presentation.ts",
+      "src/tool-calls/client-capabilities.ts",
+    ],
+    tests: [
+      "src/tests/acp-agent.test.ts",
+      "src/tests/acp-v2.test.ts",
+      "src/tests/elicitation.test.ts",
+      "src/tests/permission-presentation.test.ts",
+    ],
+  },
+  {
+    name: "neutral-recommended-config-value",
+    identityCommit: "6fdbdcc5bbc42124daa06ad60b81f85d7abbe758",
+    commit: "6fdbdcc5bbc42124daa06ad60b81f85d7abbe758",
+    upstreamPr: null,
+    files: [
+      "docs/air-extensions.md",
+      "src/acp-agent.ts",
+      "src/session-model.ts",
+      "src/tool-calls/client-capabilities.ts",
+    ],
+    tests: [
+      "src/tests/acp-agent.test.ts",
+      "src/tests/acp-v2.test.ts",
+      "src/tests/model-presentation.test.ts",
+    ],
+  },
+  {
+    name: "neutral-command-presentation",
+    identityCommit: "f0575103dc41baca51afee91ae9a63f8805412d3",
+    commit: "f0575103dc41baca51afee91ae9a63f8805412d3",
+    upstreamPr: null,
+    files: ["docs/air-extensions.md", "src/acp-agent.ts", "src/tool-calls/client-capabilities.ts"],
+    tests: ["src/tests/acp-agent.test.ts", "src/tests/acp-v2.test.ts"],
+  },
+  {
+    name: "neutral-load-replay-end",
+    identityCommit: "dfb31b948a4a53f6da2feb4d23c2e3eca22193c9",
+    commit: "dfb31b948a4a53f6da2feb4d23c2e3eca22193c9",
+    upstreamPr: null,
+    files: ["docs/air-extensions.md", "src/acp-agent.ts", "src/tool-calls/client-capabilities.ts"],
+    tests: [
+      "src/tests/acp-agent.test.ts",
+      "src/tests/acp-v2.test.ts",
+      "src/tests/create-session-options.test.ts",
+    ],
+  },
+  {
+    name: "neutral-prompt-suggestions",
+    identityCommit: "6f95b38665472c9c6a58a17a68654911cf5b387f",
+    commit: "6f95b38665472c9c6a58a17a68654911cf5b387f",
+    upstreamPr: null,
+    files: [
+      "docs/air-extensions.md",
+      "src/acp-agent.ts",
+      "src/prompt-suggestions.ts",
+      "src/tool-calls/client-capabilities.ts",
+    ],
+    tests: [
+      "src/tests/acp-agent.test.ts",
+      "src/tests/acp-v2.test.ts",
+      "src/tests/create-session-options.test.ts",
+      "src/tests/prompt-suggestions.test.ts",
+    ],
+  },
 ];
 
 function sameJson(left, right) {
