@@ -7,6 +7,7 @@ import {
   isAirClient,
 } from "../air-extension.js";
 import type { PatchForm } from "../diff.js";
+import { PROMPT_SUGGESTIONS_META_KEY } from "../prompt-suggestions.js";
 
 /**
  * The client choices that decide the shape of a tool call report.
@@ -90,7 +91,19 @@ export class ClientCapabilities {
      * with `_meta.loadReplayEnd`. Only ACP v1 reads the opt-in.
      */
     readonly neutralLoadReplayEnd: boolean = false,
+    /**
+     * The client opted into the client-neutral predicted prompt
+     * (`clientCapabilities._meta.promptSuggestions`). A `session/prompt` that
+     * names `_meta.promptSuggestions.id` gets the prediction of its turn,
+     * carrying that id. Only ACP v1 reads the opt-in.
+     */
+    readonly neutralPromptSuggestions: boolean = false,
   ) {}
+
+  /** Whether the agent predicts follow-up prompts for this client, in any form. */
+  get predictsPrompts(): boolean {
+    return this.air.client || this.neutralPromptSuggestions;
+  }
 
   /** Whether skill commands carry their kind and `SKILL.md` path, in any form. */
   get presentsSkills(): boolean {
@@ -141,6 +154,7 @@ export class ClientCapabilities {
       !v2 && clientOptsIntoNeutralVersion(capabilities, NEUTRAL_RECOMMENDED_CONFIG_VALUE_KEY),
       !v2 && clientOptsIntoNeutralVersion(capabilities, NEUTRAL_COMMAND_PRESENTATION_KEY),
       !v2 && clientOptsIntoNeutralVersion(capabilities, NEUTRAL_LOAD_REPLAY_END_KEY),
+      !v2 && clientOptsIntoNeutralVersion(capabilities, PROMPT_SUGGESTIONS_META_KEY),
     );
   }
 }
@@ -246,7 +260,20 @@ export const NEUTRAL_LOAD_REPLAY_END_KEY = "loadReplayEnd";
  * or a value that is not a non-empty string of at most 256 characters.
  */
 export function loadReplayEndRequestId(meta: unknown): string | undefined {
-  const id = recordOrUndefined(recordOrUndefined(meta)?.[NEUTRAL_LOAD_REPLAY_END_KEY])?.id;
+  return requestId(meta, NEUTRAL_LOAD_REPLAY_END_KEY);
+}
+
+/**
+ * The id that a `session/prompt` names in `_meta.promptSuggestions.id` to ask
+ * for the prediction of its turn. Undefined when the request names none or a
+ * value that is not a non-empty string of at most 256 characters.
+ */
+export function promptSuggestionsRequestId(meta: unknown): string | undefined {
+  return requestId(meta, PROMPT_SUGGESTIONS_META_KEY);
+}
+
+function requestId(meta: unknown, key: string): string | undefined {
+  const id = recordOrUndefined(recordOrUndefined(meta)?.[key])?.id;
   return typeof id === "string" && id.length > 0 && id.length <= 256 ? id : undefined;
 }
 

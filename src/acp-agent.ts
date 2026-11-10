@@ -109,7 +109,11 @@ import {
 } from "./goal-extension.js";
 import { blobResourceToClaude } from "./blob-resources.js";
 import { checklistPlanUpdate, resetPlanUpdates } from "./plans.js";
-import { promptSuggestionsMeta, promptSuggestionText } from "./prompt-suggestions.js";
+import {
+  PROMPT_SUGGESTIONS_META_KEY,
+  promptSuggestionsMeta,
+  promptSuggestionText,
+} from "./prompt-suggestions.js";
 import { sanitizeTitle, SessionTitles } from "./session-titles.js";
 import {
   AIR_NATIVE_SUBAGENT_SESSIONS_CAPABILITY,
@@ -340,6 +344,7 @@ import {
   NEUTRAL_COMMAND_PRESENTATION_KEY,
   NEUTRAL_LOAD_REPLAY_END_KEY,
   loadReplayEndRequestId,
+  promptSuggestionsRequestId,
   NEUTRAL_DIFF_PATCH_KEY,
   NEUTRAL_PLAN_FILE_KEY,
   NEUTRAL_SESSION_FAILURE_KEY,
@@ -1170,6 +1175,10 @@ export type Session = {
    *  prediction was read off the stream — follows a turn that is already
    *  answered, so it is dropped instead of published mid-turn. */
   promptSuggestionExpected?: boolean;
+  /** The `_meta.promptSuggestions.id` of the client prompt whose turn the next
+   *  prediction answers. A client-neutral client gets a prediction only for a
+   *  prompt that named one. */
+  promptSuggestionRequestId?: string;
   /** Count of result messages the consumer should treat as orphans and skip
    *  (not promote/attribute to the current head). When cancel() settles+removes
    *  a queued turn, that turn's user message was already pushed to the SDK, so
@@ -3258,6 +3267,9 @@ export class ClaudeAcpAgent {
           ...(this.toolCallCapabilities.neutralLoadReplayEnd
             ? { [NEUTRAL_LOAD_REPLAY_END_KEY]: neutralPresentationCapability() }
             : {}),
+          ...(this.toolCallCapabilities.neutralPromptSuggestions
+            ? { [PROMPT_SUGGESTIONS_META_KEY]: neutralPresentationCapability() }
+            : {}),
         }),
       ),
     };
@@ -4196,6 +4208,9 @@ export class ClaudeAcpAgent {
       } else {
         session.promptSuggestionExpected = false;
       }
+      session.promptSuggestionRequestId = this.toolCallCapabilities.neutralPromptSuggestions
+        ? promptSuggestionsRequestId(params._meta)
+        : undefined;
     }
 
     // A `/remote-control` command still in flight answers into the session's
@@ -4575,22 +4590,28 @@ export class ClaudeAcpAgent {
    * `null` to clear the one the client holds. Only AIR renders it, so only AIR
    * gets the key; see `docs/air-extensions.md`.
    */
-  private async publishPromptSuggestion(sessionId: string, text: string | null): Promise<void> {
+  private async publishPromptSuggestion(
+    sessionId: string,
+    text: string | null,
+    requestId?: string,
+  ): Promise<void> {
     const session = this.sessions[sessionId];
     if (!session) return;
     // A clear ends the window the turn's result opened: whatever prediction is
     // still in flight answers a turn the user has already moved past.
     if (text === null) session.promptSuggestionExpected = false;
     // A session that never published one holds nothing, so a clear before the
-    // first prediction is already true on the client and goes nowhere.
-    if ((session.lastPublishedPromptSuggestion ?? null) === text) return;
-    if (!this.toolCallCapabilities.air.client) return;
+    // first prediction is already true on the client and goes nowhere. A
+    // prediction that answers a request always goes out: the client waits for
+    // that id, even for an empty list or a repeated text.
+    if (requestId === undefined && (session.lastPublishedPromptSuggestion ?? null) === text) return;
+    if (!this.toolCallCapabilities.predictsPrompts) return;
     session.lastPublishedPromptSuggestion = text;
     await this.client.sessionUpdate({
       sessionId,
       update: {
         sessionUpdate: "session_info_update",
-        _meta: promptSuggestionsMeta(text),
+        _meta: promptSuggestionsMeta(text, requestId),
       },
     });
   }
@@ -8923,9 +8944,16 @@ export class ClaudeAcpAgent {
             // composer, and nothing is sent until the user sends it.
             if (!session.promptSuggestionExpected) break;
             session.promptSuggestionExpected = false;
+            // One prediction per request: a later turn's prediction (an
+            // autonomous cycle) does not answer the prompt that asked.
+            const requestId = session.promptSuggestionRequestId;
+            session.promptSuggestionRequestId = undefined;
+            // A client-neutral client asks per prompt; AIR takes every one.
+            if (!this.toolCallCapabilities.air.client && requestId === undefined) break;
             await this.publishPromptSuggestion(
               params.sessionId,
               promptSuggestionText(message.suggestion),
+              requestId,
             );
             break;
           }
@@ -12436,12 +12464,14 @@ export class ClaudeAcpAgent {
       // `perTaskStopAffordance` wins.
       ...(subagentForm(this.clientCapabilities) === "rfd" ? { perTaskStopAffordance: true } : {}),
       // One predicted follow-up prompt per turn, published as
-      // `session_info_update._meta.promptSuggestions`. It rides the turn's own
-      // prompt cache, and the user can turn it off in settings.json
-      // (`promptSuggestionEnabled`) or with CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false.
-      // Before `userProvidedOptions`, so a client that passes
-      // `promptSuggestions: false` keeps it off.
-      promptSuggestions: true,
+      // `session_info_update._meta.promptSuggestions`, for a client that reads
+      // it (AIR or the client-neutral opt-in); no other client gets one, so
+      // none pays for it. It rides the turn's own prompt cache, and the user
+      // can turn it off in settings.json (`promptSuggestionEnabled`) or with
+      // CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false. Before
+      // `userProvidedOptions`, so a client that passes `promptSuggestions:
+      // false` keeps it off.
+      promptSuggestions: this.toolCallCapabilities.predictsPrompts,
       ...userProvidedOptions,
       // Claude Code uses the same checkpoint store for /rewind. Enable it only
       // for clients that negotiated per-turn file-change reports; this avoids
