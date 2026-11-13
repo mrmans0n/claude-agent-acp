@@ -654,7 +654,7 @@ export function toAcpNotifications(
             if (plan) {
               approvedPlanUpdate = planModeUpdate(
                 plan,
-                renderer.capabilities.air.client ? toolUse.id : undefined,
+                renderer.capabilities.linksPlanToReview ? toolUse.id : undefined,
               );
             }
           }

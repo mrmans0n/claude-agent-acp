@@ -1071,6 +1071,184 @@ describe.skipIf(baselineDir)("ACP scenarios", () => {
       ).toEqual([]);
     });
   });
+
+  describe("client-neutral planFile", () => {
+    const plan = "# Plan\n1. Do it";
+    /** The hex SHA-256 of the UTF-8 plan text. */
+    const sha256 = "96e7885d43adc3273af3e9831772f0e76a6823a61bf311ce7f2d564cba5757d5";
+
+    /** Runs a scenario for a plain or AIR client that also opts into the neutral plan file. */
+    async function runNeutral(
+      scenario: Scenario | string,
+      base: "plain" | "air" = "plain",
+    ): Promise<Recorded[]> {
+      resetIds();
+      const profile: Profile = {
+        name: base,
+        capabilities: {
+          ...PROFILES[base].capabilities,
+          _meta: { ...PROFILES[base].capabilities._meta, planFile: { version: 1 } },
+        },
+      };
+      const found =
+        typeof scenario === "string"
+          ? SCENARIOS.find((candidate) => candidate.name === scenario)!
+          : scenario;
+      return (await runScenario(Agent, profile, found)).raw;
+    }
+    const initializeMeta = (recorded: Recorded[]) =>
+      (recorded.find((record) => record.kind === "initialize")!.payload as Record<string, any>)
+        ._meta;
+    const planUpdates = (recorded: Recorded[]) =>
+      updates(recorded).filter((update) => update.sessionUpdate === "plan_update");
+
+    /** An approved ExitPlanMode whose plan file exists, for a client with plan operations. */
+    const planFileScenario: Scenario = {
+      name: "exit-plan-file",
+      capabilities: { plan: {} },
+      files: { "plans/plan.md": plan },
+      turns: [
+        async function* (ctx) {
+          const planFilePath = path.join(ctx.cwd, "plans", "plan.md");
+          yield* streamMessage("msg_toolu_plan", [
+            { type: "tool_use", id: "toolu_plan", name: "ExitPlanMode", input: {} },
+          ]);
+          yield* toolCall(
+            ctx,
+            { id: "toolu_plan", name: "ExitPlanMode", input: { plan, planFilePath } },
+            {
+              ask: true,
+              content: `User has approved your plan.\n\n## Approved Plan:\n${plan}`,
+              structured: { plan, isAgent: false, filePath: planFilePath },
+            },
+          );
+          yield result();
+        },
+      ],
+    };
+
+    it("advertises the plan file only to a client that opts in", async () => {
+      expect(initializeMeta(await runNeutral("session-setup")).planFile).toEqual({ version: 1 });
+      expect(initializeMeta(run("plain", "session-setup").raw)?.planFile).toBeUndefined();
+      expect(initializeMeta(run("air", "session-setup").raw)?.planFile).toBeUndefined();
+    });
+
+    it("adds the plan file to the tool call and the permission request, and keeps the plan text", async () => {
+      const recorded = await runNeutral(planFileScenario);
+      const [request] = permissionRequests(recorded);
+      const planFile = {
+        version: 1,
+        planId: "plan-mode:toolu_plan",
+        path: expect.stringMatching(/plans\/plan\.md$/),
+        sha256,
+      };
+
+      expect(request.toolCall).toMatchObject({
+        _meta: { planFile },
+        rawInput: { plan, planFilePath: planFile.path },
+        content: [{ type: "content", content: { type: "text", text: plan } }],
+      });
+      expect(path.isAbsolute(request.toolCall._meta.planFile.path)).toBe(true);
+      const reports = toolCallReports(recorded, "toolu_plan");
+      // The streamed input has no plan, so the first report has no plan file.
+      expect(reports[0]._meta).not.toHaveProperty("planFile");
+      // Each later report has the plan file, with the path once the input names it.
+      for (const report of reports.slice(1)) {
+        expect(report._meta.planFile).toEqual(
+          report.rawInput?.planFilePath || report.status === "completed"
+            ? planFile
+            : { version: 1, planId: "plan-mode:toolu_plan", sha256 },
+        );
+      }
+      expect(reports.at(-1)).toMatchObject({ status: "completed", _meta: { planFile } });
+      // No clear call.
+      expect(
+        toolCallReports(recorded).filter((report) => report.toolCallId !== "toolu_plan"),
+      ).toEqual([]);
+      expect(planUpdates(recorded)).toEqual([
+        {
+          sessionUpdate: "plan_update",
+          plan: { type: "markdown", planId: "plan-mode:toolu_plan", content: plan },
+        },
+      ]);
+    });
+
+    it("leaves out the path when the CLI names no plan file", async () => {
+      const [request] = permissionRequests(await runNeutral("exit-plan-approve"));
+
+      expect(request.toolCall._meta.planFile).toEqual({
+        version: 1,
+        planId: "plan-mode:toolu_plan",
+        sha256,
+      });
+      expect(request.toolCall.rawInput).toEqual({ plan });
+    });
+
+    it("links a replayed plan to its review", async () => {
+      const recorded = await runNeutral({
+        name: "replayed-plan",
+        capabilities: { plan: {} },
+        transcript: ({ sessionId }) => [
+          {
+            type: "assistant",
+            uuid: "00000000-0000-4000-8000-00000000f101",
+            session_id: sessionId,
+            parent_tool_use_id: null,
+            message: {
+              id: "msg_r_plan",
+              role: "assistant",
+              model: "claude-sonnet-4-6",
+              content: [
+                { type: "tool_use", id: "toolu_r_plan", name: "ExitPlanMode", input: { plan } },
+              ],
+            },
+          },
+          {
+            type: "user",
+            uuid: "00000000-0000-4000-8000-00000000f102",
+            session_id: sessionId,
+            parent_tool_use_id: null,
+            message: {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "toolu_r_plan",
+                  content: "User has approved your plan.",
+                },
+              ],
+            },
+          },
+        ],
+        turns: [],
+      });
+
+      expect(planUpdates(recorded)).toEqual([
+        {
+          sessionUpdate: "plan_update",
+          plan: { type: "markdown", planId: "plan-mode:toolu_r_plan", content: plan },
+        },
+      ]);
+    });
+
+    it("sends only the neutral form to a client that also declares the AIR planFile", async () => {
+      const recorded = await runNeutral(planFileScenario, "air");
+      const [request] = permissionRequests(recorded);
+
+      expect(initializeMeta(await runNeutral("session-setup", "air"))).toMatchObject({
+        planFile: { version: 1 },
+        // The AIR capability list stays that of an AIR client.
+        jetbrains: { air: { capabilities: expect.arrayContaining(["planFile"]) } },
+      });
+      expect(request.toolCall._meta.planFile).toMatchObject({
+        planId: "plan-mode:toolu_plan",
+        sha256,
+      });
+      // The plan text stays: no AIR path in its place, and no clear call.
+      expect(request.toolCall.rawInput).toEqual({ plan, planFilePath: expect.any(String) });
+      expect(JSON.stringify(recorded)).not.toContain("plan-file-clear");
+    });
+  });
 });
 
 /** The `_meta.diffPatch` of every diff block in a message. */
