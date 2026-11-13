@@ -17,18 +17,17 @@ import { AIR_ASYNC_TASKS_CAPABILITY, withAirMeta } from "../air-extension.js";
  *
  * The command's own lifecycle -- progress, completion, the stop control -- is
  * published separately as an async task; this says only that the card has one.
- * Hence the AIR namespace rather than `claudeCode`: to a client without the
- * `asyncTasks` capability, which is never sent that lifecycle, the marker would
- * promise a card state it has no way to ever resolve.
+ * The marker is an AIR presentation contract, so a provider-neutral client can
+ * receive the lifecycle without receiving an AIR namespace.
  */
 export function backgroundedBashToolCall(
   notification: SessionNotification,
   backgroundedToolCallIds: ReadonlySet<string>,
-  asyncTasksSupported: boolean,
+  airAsyncTasksSupported: boolean,
 ): SessionNotification {
   const update = notification.update;
   if (
-    !asyncTasksSupported ||
+    !airAsyncTasksSupported ||
     update.sessionUpdate !== "tool_call_update" ||
     !backgroundedToolCallIds.has(update.toolCallId)
   ) {
