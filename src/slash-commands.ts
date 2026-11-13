@@ -11,7 +11,33 @@ import {
   REMOTE_CONTROL_COMMAND_NAME,
   supportsRemoteControl,
 } from "./remote-control.js";
+import { NEUTRAL_COMMAND_PRESENTATION_KEY } from "./tool-calls/client-capabilities.js";
 import { resolveSkillPath, type SkillScanCache } from "./tool-calls/reporters/interaction.js";
+
+/** The forms in which a skill command carries its kind and `SKILL.md` path. */
+export type SkillRecords = { air: boolean; neutral: boolean };
+
+/** The `_meta` of a skill command, with the `SKILL.md` path when the skill has a file. */
+function skillMeta(
+  records: SkillRecords,
+  skillMdPath: string | undefined,
+): Record<string, unknown> {
+  const airKind = records.air ? withAirMeta(undefined, AIR_KIND_KEY, "skill") : {};
+  const air =
+    records.air && skillMdPath ? withAirMeta(airKind, AIR_SKILL_PATH_KEY, skillMdPath) : airKind;
+  return {
+    ...air,
+    ...(records.neutral
+      ? {
+          [NEUTRAL_COMMAND_PRESENTATION_KEY]: {
+            version: 1,
+            kind: "skill",
+            ...(skillMdPath ? { skillPath: skillMdPath } : {}),
+          },
+        }
+      : {}),
+  };
+}
 
 export function getAvailableSlashCommands(
   commands: SlashCommand[],
@@ -19,8 +45,9 @@ export function getAvailableSlashCommands(
   // the CLI's own terminal, which ACP clients aren't) — filtered alongside
   // the static list. Raw CLI names, matched before the MCP rename.
   terminalCommands?: readonly string[],
-  // The session cwd of an AIR client, or undefined for every other client.
-  // AIR gets the kind and the SKILL.md path of each skill command.
+  // The session cwd of a client that gets the kind and the SKILL.md path of
+  // each skill command (AIR or a neutral commandPresentation client), or
+  // undefined for every other client.
   airSkillCwd?: string,
   // The resolved SKILL.md paths of the session, keyed by the cwd and the name.
   skillPaths?: Map<string, string | undefined>,
@@ -29,6 +56,8 @@ export function getAvailableSlashCommands(
   // A listed skill gets its path from here; one that is not listed, or has no
   // path (remote connections), is looked up on disk.
   skillFiles?: ReadonlyMap<string, { path?: string }>,
+  // The forms of the skill record: AIR's `_meta.jetbrains.air` and the neutral `_meta.commandPresentation`.
+  skillRecords: SkillRecords = { air: true, neutral: false },
 ): AvailableCommand[] {
   // The container listings of this one pass, so a list of a hundred commands lists each container once.
   const skillScans: SkillScanCache = new Map();
@@ -90,18 +119,8 @@ export function getAvailableSlashCommands(
         name,
         description: command.description || "",
         input,
-        ...(skillMdPath
-          ? {
-              _meta: withAirMeta(
-                withAirMeta(undefined, AIR_KIND_KEY, "skill"),
-                AIR_SKILL_PATH_KEY,
-                skillMdPath,
-              ),
-            }
-          : skillFile
-            ? // A skill without a file (bundled with the CLI, like `simplify`, or a remote connection): kind only.
-              { _meta: withAirMeta(undefined, AIR_KIND_KEY, "skill") }
-            : {}),
+        // A skill without a file (bundled with the CLI, like `simplify`, or a remote connection): kind only.
+        ...(skillMdPath || skillFile ? { _meta: skillMeta(skillRecords, skillMdPath) } : {}),
       };
     })
     .filter((command: AvailableCommand) => !UNSUPPORTED_COMMANDS.includes(command.name));

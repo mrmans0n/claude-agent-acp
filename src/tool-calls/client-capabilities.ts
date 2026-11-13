@@ -76,7 +76,19 @@ export class ClientCapabilities {
      * not change. Only ACP v1 reads the opt-in.
      */
     readonly neutralRecommendedConfigValue: boolean = false,
+    /**
+     * The client opted into the client-neutral command presentation
+     * (`clientCapabilities._meta.commandPresentation`). A skill command carries
+     * `_meta.commandPresentation` with its kind and `SKILL.md` path. Only ACP v1
+     * reads the opt-in.
+     */
+    readonly neutralCommandPresentation: boolean = false,
   ) {}
+
+  /** Whether skill commands carry their kind and `SKILL.md` path, in any form. */
+  get presentsSkills(): boolean {
+    return this.air.client || this.neutralCommandPresentation;
+  }
 
   /**
    * Whether the approved plan of an ExitPlanMode has the ID of its review,
@@ -120,6 +132,7 @@ export class ClientCapabilities {
       !v2 && clientOptsIntoNeutralVersion(capabilities, NEUTRAL_PERMISSION_PRESENTATION_KEY),
       !v2 && clientOptsIntoNeutralVersion(capabilities, NEUTRAL_QUESTION_CUSTOM_ANSWER_KEY),
       !v2 && clientOptsIntoNeutralVersion(capabilities, NEUTRAL_RECOMMENDED_CONFIG_VALUE_KEY),
+      !v2 && clientOptsIntoNeutralVersion(capabilities, NEUTRAL_COMMAND_PRESENTATION_KEY),
     );
   }
 }
@@ -212,6 +225,8 @@ export const NEUTRAL_PERMISSION_PRESENTATION_KEY = "permissionPresentation";
 export const NEUTRAL_QUESTION_CUSTOM_ANSWER_KEY = "questionCustomAnswer";
 /** The top-level `_meta` key of the client-neutral recommended config value. */
 export const NEUTRAL_RECOMMENDED_CONFIG_VALUE_KEY = "recommendedConfigValue";
+/** The top-level `_meta` key of the client-neutral command presentation. */
+export const NEUTRAL_COMMAND_PRESENTATION_KEY = "commandPresentation";
 
 /** The agent side of a client-neutral presentation contract, for the initialize `_meta`. */
 export function neutralPresentationCapability(): { version: number } {
