@@ -1,6 +1,9 @@
 import type { RequestPermissionRequest, ToolCallContent } from "@agentclientprotocol/sdk/unstable";
 import { AIR_PERMISSION_KEY, withAirMeta } from "../air-extension.js";
-import { ClientCapabilities } from "../tool-calls/client-capabilities.js";
+import {
+  ClientCapabilities,
+  NEUTRAL_PERMISSION_PRESENTATION_KEY,
+} from "../tool-calls/client-capabilities.js";
 import { AcpToolCallRenderer } from "../tool-calls/renderer.js";
 
 /**
@@ -64,8 +67,9 @@ function compactText(value: unknown): string | undefined {
  * holds the rest. The request adds only what it shows new: the exact preview
  * patch, and the blocked path when the tool call has no such location.
  *
- * The heading and the explanation of the prompt go to AIR in `_meta`, and to a
- * v2 client as `title` and `description`.
+ * The heading and the explanation of the prompt go in `_meta` to AIR and to a
+ * client that opted into the neutral form, and to a v2 client as `title` and
+ * `description`.
  */
 export function buildClaudePermissionPresentation(
   value: ClaudePermissionPresentationInput,
@@ -93,6 +97,13 @@ export function buildClaudePermissionPresentation(
   const decisionReason = humanText(value.decisionReason, 4_000);
   const description = decisionReason ? `Reason: ${decisionReason}` : undefined;
   const blockedPath = humanText(value.blockedPath, 4_096, true);
+  const permission = { title, description, defaultToNo: value.defaultToNo };
+  const permissionMeta = {
+    ...(capabilities.air.client ? airPermissionMeta(permission) : {}),
+    ...(capabilities.neutralPermissionPresentation
+      ? { [NEUTRAL_PERMISSION_PRESENTATION_KEY]: permissionRecord(permission) }
+      : {}),
+  };
   const extraLocations =
     blockedPath && !(facts.locations ?? []).some((location) => location.path === blockedPath)
       ? [{ path: blockedPath }]
@@ -118,10 +129,8 @@ export function buildClaudePermissionPresentation(
             ]
           : undefined,
     }),
-    // Only AIR gets the permission presentation.
-    ...(title && capabilities.air.client
-      ? { _meta: airPermissionMeta({ title, description, defaultToNo: value.defaultToNo }) }
-      : {}),
+    // A client that is not AIR and did not opt in gets no record.
+    ...(title && Object.keys(permissionMeta).length > 0 ? { _meta: permissionMeta } : {}),
     ...(capabilities.v2 ? { title, ...(description ? { description } : {}) } : {}),
   };
 }
@@ -141,7 +150,27 @@ export function airPermissionMeta({
   description?: string;
   defaultToNo?: boolean;
 }): Record<string, unknown> {
-  return withAirMeta(undefined, AIR_PERMISSION_KEY, {
+  return withAirMeta(
+    undefined,
+    AIR_PERMISSION_KEY,
+    permissionRecord({ title, description, defaultToNo }),
+  );
+}
+
+/**
+ * The permission presentation record: AIR's `permission`, and the
+ * `_meta.permissionPresentation` of a client that opted into the neutral form.
+ */
+function permissionRecord({
+  title,
+  description,
+  defaultToNo,
+}: {
+  title: string;
+  description?: string;
+  defaultToNo?: boolean;
+}) {
+  return {
     version: 1,
     title,
     ...(description ? { description } : {}),
@@ -149,7 +178,7 @@ export function airPermissionMeta({
     // option keeps the decline focused; the option order already leads with
     // the reject options when this is set.
     ...(defaultToNo === true ? { defaultToNo: true } : {}),
-  });
+  };
 }
 
 /**

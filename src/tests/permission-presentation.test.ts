@@ -169,6 +169,41 @@ describe("Claude permission ACP v1 presentation", () => {
     });
   });
 
+  it("sends the record at top level to a client that opted into the neutral form, and only then", () => {
+    const build = (clientCapabilities: Parameters<typeof ClientCapabilities.from>[0]) =>
+      buildClaudePermissionPresentation({
+        capabilities: ClientCapabilities.from(clientCapabilities),
+        toolName: "Bash",
+        input: { command: "rm -rf build" },
+        toolUseID: "tool-1",
+        decisionReason: "Writes outside the sandbox.",
+        defaultToNo: true,
+      })._meta;
+    const permissionPresentation = {
+      version: 1,
+      title: "rm -rf build",
+      description: "Reason: Writes outside the sandbox.",
+      defaultToNo: true,
+    };
+
+    expect(build({ _meta: { permissionPresentation: { version: 1 } } })).toEqual({
+      permissionPresentation,
+    });
+    expect(build({ _meta: { permissionPresentation: true } })).toBeUndefined();
+    expect(build({})).toBeUndefined();
+
+    const both = build({
+      _meta: {
+        jetbrains: { air: { version: 1, capabilities: [] } },
+        permissionPresentation: { version: 1 },
+      },
+    });
+    expect(both).toEqual({
+      jetbrains: { air: { version: 1, permission: permissionPresentation } },
+      permissionPresentation,
+    });
+  });
+
   it("keeps command descriptions and decision reasons in their presentation fields", () => {
     const input = { command: "npm test", description: "Run the tests" };
     const presentation = buildClaudePermissionPresentation({
