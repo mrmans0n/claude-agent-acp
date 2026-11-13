@@ -100,9 +100,9 @@ export function mockSessionState(
     owedTrailingIdles: 0,
     messageIdToUuid: new Map(),
     sessionFailureState: { epoch: randomUUID(), revisions: new Map(), active: new Map() },
-    // As `createSession` gives it to the session of an AIR client.
-    ...(agent?.toolCallCapabilities?.air?.client
-      ? { promptSuggestions: new PromptSuggestions() }
+    // As `createSession` gives it to the session of an AIR or a client-neutral client.
+    ...(agent?.toolCallCapabilities?.predictsPrompts
+      ? { promptSuggestions: new PromptSuggestions(agent.toolCallCapabilities.air.client) }
       : {}),
     ...overrides,
   } as any;

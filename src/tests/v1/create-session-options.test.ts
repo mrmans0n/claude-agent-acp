@@ -581,14 +581,29 @@ describe("createSession options merging", () => {
     expect(capturedOptions?.env?.HOME).toBe("/custom/home");
   });
 
-  it("asks the SDK for a predicted follow-up prompt per turn", async () => {
-    await agent.newSession({
-      cwd: process.cwd(),
-      mcpServers: [],
-    });
+  it.each([
+    ["AIR", { _meta: { jetbrains: { air: { version: 1, capabilities: [] } } } }, true],
+    ["client-neutral", { _meta: { promptSuggestions: { version: 1 } } }, true],
+    ["any other", {}, false],
+  ])(
+    "asks the SDK for a predicted follow-up prompt per turn only for a client that reads it: %s",
+    async (label, clientCapabilities, expected) => {
+      await agent.initialize({ protocolVersion: 1, clientCapabilities });
+      const { sessionId } = await agent.newSession({
+        cwd: process.cwd(),
+        mcpServers: [],
+      });
 
-    expect(capturedOptions!.promptSuggestions).toBe(true);
-  });
+      expect(capturedOptions!.promptSuggestions).toBe(expected);
+      // The session keeps the prediction state (`PromptSuggestions`) for those clients only.
+      const state = agent.sessions[sessionId]?.promptSuggestions;
+      expect(state !== undefined).toBe(expected);
+      // Only the AIR form gets a prediction for every turn; the client-neutral form only answers
+      // a prompt that named a request id.
+      state?.resultArrived();
+      expect(state?.suggested("Run the tests") !== undefined).toBe(label === "AIR");
+    },
+  );
 
   it("lets a caller turn the predicted follow-up prompt off", async () => {
     await agent.newSession({
