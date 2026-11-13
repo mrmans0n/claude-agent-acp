@@ -442,6 +442,56 @@ describe("tool-call diff content", () => {
   });
 });
 
+describe("client-neutral diff patches", () => {
+  it.each([
+    { declaration: { version: 1 }, form: "neutral" },
+    { declaration: { version: 2 }, form: "neutral" },
+    { declaration: true, form: undefined },
+    { declaration: "1", form: undefined },
+    { declaration: [1], form: undefined },
+    { declaration: null, form: undefined },
+    { declaration: {}, form: undefined },
+    { declaration: { version: 0 }, form: undefined },
+    { declaration: { version: 1.5 }, form: undefined },
+    { declaration: { version: "1" }, form: undefined },
+  ])("opts in with $declaration", ({ declaration, form }) => {
+    const capabilities = ClientCapabilities.from({ _meta: { diffPatch: declaration } });
+
+    expect(capabilities.diffPatch).toBe(form !== undefined);
+    expect(capabilities.neutralDiffPatch).toBe(form !== undefined);
+  });
+
+  it("takes the neutral form over the AIR form, and the v2 form over both", () => {
+    const meta = {
+      diffPatch: { version: 1 },
+      jetbrains: { air: { version: 1, capabilities: ["diffPatch"] } },
+    };
+
+    expect(ClientCapabilities.from({ _meta: meta }).patchForm).toBe("neutral");
+    expect(ClientCapabilities.from({ _meta: meta }, { v2: true })).toMatchObject({
+      neutralDiffPatch: false,
+      patchForm: "v2",
+    });
+  });
+
+  it("puts the patch of the AIR form at top-level _meta.diffPatch", async () => {
+    const filePath = await temporaryFile("old\n");
+    const input = { file_path: filePath, old_string: "old", new_string: "new" };
+    const air = await previewPatchContent("Edit", input, undefined, "air");
+    const neutral = await previewPatchContent("Edit", input, undefined, "neutral");
+
+    expect(neutral).toEqual([
+      {
+        type: "diff",
+        path: filePath,
+        oldText: null,
+        newText: "",
+        _meta: { diffPatch: { version: 1, format: "git_patch", text: patchText(air) } },
+      },
+    ]);
+  });
+});
+
 describe("ACP v2 diffs", () => {
   const hunk = { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["-a", "+b"] };
   const v2 = new ClientCapabilities(false, false, false, undefined, true);
@@ -652,19 +702,34 @@ describe("Write tool calls for an existing file", () => {
     expect(result).toBeUndefined();
   });
 
-  it("shows a created file that cannot have a patch in the hook result", async () => {
-    // No approval ran, and CRLF text has no exact patch, so the hook is the
-    // only report that shows the created file.
-    const filePath = await temporaryFile("a\r\nb\r\n");
-    const result = await new WriteReporter().hookResult(
-      { type: "create", filePath, content: "a\r\nb\r\n", structuredPatch: [], originalFile: null },
-      { capabilities: air },
-    );
+  it.each([
+    { form: "AIR", capabilities: air },
+    {
+      form: "neutral",
+      capabilities: ClientCapabilities.from({ _meta: { diffPatch: { version: 1 } } }),
+    },
+  ])(
+    "shows a created file that cannot have a patch in the $form hook result",
+    async ({ capabilities }) => {
+      // No approval ran, and CRLF text has no exact patch, so the hook is the
+      // only report that shows the created file.
+      const filePath = await temporaryFile("a\r\nb\r\n");
+      const result = await new WriteReporter().hookResult(
+        {
+          type: "create",
+          filePath,
+          content: "a\r\nb\r\n",
+          structuredPatch: [],
+          originalFile: null,
+        },
+        { capabilities },
+      );
 
-    expect(result.content).toEqual([
-      { type: "diff", path: filePath, oldText: null, newText: "a\r\nb\r\n" },
-    ]);
-  });
+      expect(result.content).toEqual([
+        { type: "diff", path: filePath, oldText: null, newText: "a\r\nb\r\n" },
+      ]);
+    },
+  );
 
   it("shows in the approval that the Write overwrites a file whose text is unknown", async () => {
     const filePath = await temporaryFile(Buffer.from([0x61, 0x00, 0x62, 0x0a]));

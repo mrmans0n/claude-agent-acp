@@ -966,7 +966,119 @@ describe.skipIf(baselineDir)("ACP scenarios", () => {
       );
     });
   });
+
+  describe("client-neutral diffPatch", () => {
+    /** Runs a scenario for a plain or AIR client that also opts into the neutral diff patch. */
+    async function runNeutral(name: string, base: "plain" | "air" = "plain"): Promise<Recorded[]> {
+      resetIds();
+      const profile: Profile = {
+        name: base,
+        capabilities: {
+          ...PROFILES[base].capabilities,
+          _meta: { ...PROFILES[base].capabilities._meta, diffPatch: { version: 1 } },
+        },
+      };
+      const scenario = SCENARIOS.find((candidate) => candidate.name === name)!;
+      return (await runScenario(Agent, profile, scenario)).raw;
+    }
+    const initializeMeta = (recorded: Recorded[]) =>
+      (recorded.find((record) => record.kind === "initialize")!.payload as Record<string, any>)
+        ._meta;
+    const patch = (text: string) => ({ version: 1, format: "git_patch", text });
+
+    it("advertises the git patch format only to a client that opts in", async () => {
+      expect(initializeMeta(await runNeutral("session-setup")).diffPatch).toEqual({
+        version: 1,
+        format: "git_patch",
+      });
+      expect(initializeMeta(run("plain", "session-setup").raw)?.diffPatch).toBeUndefined();
+      expect(initializeMeta(run("air", "session-setup").raw)?.diffPatch).toBeUndefined();
+    });
+
+    it("previews the Edit patch in the permission request, without the file text in rawInput", async () => {
+      const recorded = await runNeutral("edit-with-permission");
+      const [request] = permissionRequests(recorded);
+
+      expect(request.toolCall.rawInput).toEqual({ file_path: expect.stringMatching(/app\.ts$/) });
+      expect(request.toolCall.content).toEqual([
+        {
+          type: "diff",
+          path: expect.stringMatching(/app\.ts$/),
+          oldText: null,
+          newText: "",
+          _meta: {
+            diffPatch: patch(
+              expect.stringContaining(
+                "@@ -1,3 +1,3 @@\n line 1\n-const value = 1;\n+const value = 2;\n line 3\n",
+              ),
+            ),
+          },
+        },
+      ]);
+      for (const report of toolCallReports(recorded, "toolu_edit")) {
+        expect(report.rawInput ?? {}).not.toHaveProperty("old_string");
+        expect(report.rawInput ?? {}).not.toHaveProperty("new_string");
+      }
+    });
+
+    it("sends the final Write patch, without the file text in rawInput", async () => {
+      const reports = toolCallReports(await runNeutral("write-existing"), "toolu_write");
+
+      expect(neutralDiffPatches(reports)).toEqual([
+        patch(expect.stringContaining("-export const x = 0;\n+export const x = 1;\n")),
+      ]);
+      expect(reports.filter((report) => report.rawInput !== undefined).length).toBeGreaterThan(0);
+      for (const report of reports) expect(report.rawInput ?? {}).not.toHaveProperty("content");
+    });
+
+    it("keeps the file text out of the Edit and Write toolResponse", async () => {
+      const hookResponse = (recorded: Recorded[], toolCallId: string) =>
+        toolCallReports(recorded, toolCallId).find(
+          (report) => report._meta?.claudeCode?.toolResponse !== undefined,
+        )?._meta?.claudeCode?.toolResponse;
+
+      expect(hookResponse(await runNeutral("write-existing"), "toolu_write")).toEqual({
+        type: "update",
+        filePath: expect.stringMatching(/old\.ts$/),
+      });
+      expect(hookResponse(await runNeutral("edit-with-permission"), "toolu_edit")).toEqual({
+        filePath: expect.stringMatching(/app\.ts$/),
+        userModified: false,
+        replaceAll: false,
+      });
+      // A client that did not opt in keeps the whole toolResponse.
+      expect(hookResponse(run("plain", "edit-with-permission").raw, "toolu_edit")).toMatchObject({
+        oldString: "const value = 1;",
+        newString: "const value = 2;",
+        originalFile: "line 1\nconst value = 1;\nline 3\n",
+        structuredPatch: expect.any(Array),
+      });
+    });
+
+    it("sends only the neutral form to a client that also declares the AIR diffPatch", async () => {
+      const recorded = await runNeutral("edit-with-permission", "air");
+
+      expect(initializeMeta(await runNeutral("session-setup", "air"))).toMatchObject({
+        diffPatch: { version: 1, format: "git_patch" },
+        // The AIR capability list stays that of an AIR client.
+        jetbrains: { air: { capabilities: expect.arrayContaining(["diffPatch"]) } },
+      });
+      expect(neutralDiffPatches(permissionRequests(recorded))).toEqual([
+        patch(expect.stringContaining("+const value = 2;\n")),
+      ]);
+      expect(
+        metaObjects(recorded).filter(({ meta }) => (meta as any).jetbrains?.air?.diffPatch),
+      ).toEqual([]);
+    });
+  });
 });
+
+/** The `_meta.diffPatch` of every diff block in a message. */
+function neutralDiffPatches(value: unknown): Record<string, unknown>[] {
+  return metaObjects(value)
+    .map(({ meta }) => meta.diffPatch)
+    .filter((patch): patch is Record<string, unknown> => !!patch && typeof patch === "object");
+}
 
 /** A Write that changes the file on disk before its PostToolUse hook runs. */
 function writtenFileScenario(): Scenario {
