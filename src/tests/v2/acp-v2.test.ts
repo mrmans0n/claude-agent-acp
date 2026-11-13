@@ -573,6 +573,19 @@ describe("ACP protocol routing", () => {
     expect(response._meta?.sessionFailure).toBeUndefined();
   });
 
+  it("ignores the client-neutral agent file-change report opt-in of a v2 client", async () => {
+    const { app, authUpdate } = v2Client();
+    const response = await app.connectWith(connectRouter(), async (agent) => {
+      const response = await initializeV2(agent, {
+        _meta: { agentFileChangeReport: { version: 1 } },
+      });
+      await authUpdate(1);
+      return response;
+    });
+
+    expect(response._meta?.agentFileChangeReport).toBeUndefined();
+  });
+
   it("does not advertise the AIR async tasks and goal extensions to a v2 AIR client", async () => {
     const { app, authUpdate } = v2Client();
     const response = await app.connectWith(connectRouter(), async (agent) => {

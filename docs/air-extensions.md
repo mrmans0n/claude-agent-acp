@@ -1177,6 +1177,7 @@ It returns `{ "stopped": false }` for an unknown, finished, or already stopping 
 
 Standard ACP describes a change from one tool call. It has no complete file list for one prompt turn.
 The version 1 `agentFileChangeReport` extension adds that list.
+A client that is not AIR can get the same list, see [Client-neutral agent file-change report](#client-neutral-agent-file-change-report).
 
 ### Request
 
@@ -1253,6 +1254,64 @@ A report failure does not change the prompt outcome.
 The client must match the request id.
 It must ignore a duplicate, stale, malformed, or unavailable report.
 Rollback is outside this extension.
+
+### Client-neutral agent file-change report
+
+Any client can get the same report with top-level `_meta` keys in place of `_meta.jetbrains.air`.
+It opts in at `initialize` with `clientCapabilities._meta.agentFileChangeReport: { "version": 1 }`.
+Only an object whose `version` is an integer of at least 1 opts in; `true`, a string, an array, `null`, a missing `version`, `0` or a fraction enables nothing.
+
+The `initialize` response of an opted-in client carries the agent side at top level, under ACP v1 only:
+
+```json
+{
+  "_meta": {
+    "agentFileChangeReport": { "version": 1 }
+  }
+}
+```
+
+As for AIR, the opt-in enables SDK file checkpointing for the session (see [Claude source](#claude-source)).
+A client without the opt-in or the AIR capability gets no checkpointing.
+
+The client adds the request to `session/prompt`, with the rules of [Request](#request):
+
+```json
+{
+  "_meta": {
+    "agentFileChangeReportRequest": { "version": 1, "requestId": "a-unique-request-id" }
+  }
+}
+```
+
+The report goes in a `session_info_update` before the `PromptResponse`, with the fields, limits and timing of [Report](#report) and [Unavailable report](#unavailable-report), and one more field:
+
+```json
+{
+  "sessionUpdate": "session_info_update",
+  "_meta": {
+    "agentFileChangeReport": {
+      "version": 1,
+      "requestId": "a-unique-request-id",
+      "status": "reported",
+      "paths": ["/workspace/src/App.ts"],
+      "declaredComplete": false,
+      "truncated": false,
+      "uncertainty": "The list covers Claude file tools and subagent file edits. It misses edits made by shell commands, generators and background work."
+    }
+  }
+}
+```
+
+| Field         | Type   | Meaning                                                                                                                                                                |
+| ------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `uncertainty` | string | A fixed text on every `status: "reported"` report, which says what the list can miss. The client shows it as a caveat and does not parse it. It counts in the 256 KiB. |
+
+- The `unavailable` report has no `uncertainty`.
+- An empty `paths` is not evidence of a turn without changes.
+- A client that declares both the AIR `agentFileChangeReport` and the neutral opt-in gets the neutral form only. Its AIR capability list is unchanged, and the adapter reads the request only at top level.
+- The AIR report has no `uncertainty`, and an AIR client's top-level request is ignored.
+- ACP v2 ignores the opt-in. A v2 AIR client keeps the AIR form, and any other v2 client gets no report and no checkpointing.
 
 ## Session failure
 
