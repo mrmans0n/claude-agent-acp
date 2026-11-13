@@ -559,6 +559,18 @@ describe("ACP protocol routing", () => {
     expect(response.batchGet).toMatchObject({ code: -32601 });
   });
 
+  it("does not advertise settleAtResult to a v2 client", async () => {
+    const { app, authUpdate } = v2Client();
+    const response = await app.connectWith(connectRouter(), async (agent) => {
+      const response = await initializeV2(agent, { _meta: { settleAtResult: true } });
+      await authUpdate(1);
+      return response;
+    });
+
+    // The opt-in is served by the v1 agent only.
+    expect(response._meta ?? {}).not.toHaveProperty("settleAtResult");
+  });
+
   it("negotiates a v2 client down to v1 when limited to v1", async () => {
     // On the raw stream, since the v2 client app cannot read the v1 response
     // that a real client would switch to v1 on.
