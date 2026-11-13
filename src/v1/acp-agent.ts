@@ -345,6 +345,7 @@ import {
   NEUTRAL_PERMISSION_PRESENTATION_KEY,
   NEUTRAL_QUESTION_CUSTOM_ANSWER_KEY,
   NEUTRAL_RECOMMENDED_CONFIG_VALUE_KEY,
+  NEUTRAL_COMMAND_PRESENTATION_KEY,
   NEUTRAL_DIFF_PATCH_KEY,
   NEUTRAL_PLAN_FILE_KEY,
   NEUTRAL_SESSION_FAILURE_KEY,
@@ -468,7 +469,7 @@ import {
   type StreamedToolInputCache,
   type ToolUseCache,
 } from "../sdk-to-acp.js";
-import { getAvailableSlashCommands } from "../slash-commands.js";
+import { getAvailableSlashCommands, type SkillRecords } from "../slash-commands.js";
 
 /** Claude CLI emits this synthetic result when an interrupted cycle ends on
  *  queued user input before producing any assistant content. It is a hand-off
@@ -2000,6 +2001,9 @@ export class ClaudeAcpAgent {
             : {}),
           ...(this.toolCallCapabilities.neutralRecommendedConfigValue
             ? { [NEUTRAL_RECOMMENDED_CONFIG_VALUE_KEY]: neutralPresentationCapability() }
+            : {}),
+          ...(this.toolCallCapabilities.neutralCommandPresentation
+            ? { [NEUTRAL_COMMAND_PRESENTATION_KEY]: neutralPresentationCapability() }
             : {}),
         }),
       ),
@@ -5165,10 +5169,11 @@ export class ClaudeAcpAgent {
                     availableCommands: getAvailableSlashCommands(
                       message.commands,
                       session.terminalSlashCommands,
-                      this.toolCallCapabilities.air.client ? session.cwd : undefined,
+                      this.toolCallCapabilities.presentsSkills ? session.cwd : undefined,
                       session.skillPaths,
                       session.query,
                       session.skillFiles,
+                      this.skillRecords(),
                     ),
                   },
                 });
@@ -9276,18 +9281,27 @@ export class ClaudeAcpAgent {
     return getAvailableSlashCommands(
       commands,
       session.terminalSlashCommands,
-      this.toolCallCapabilities.air.client ? session.cwd : undefined,
+      this.toolCallCapabilities.presentsSkills ? session.cwd : undefined,
       (session.skillPaths ??= new Map()),
       session.query,
       session.skillFiles,
+      this.skillRecords(),
     );
+  }
+
+  /** The forms in which skill commands carry their kind and `SKILL.md` path. */
+  private skillRecords(): SkillRecords {
+    return {
+      air: this.toolCallCapabilities.air.client,
+      neutral: this.toolCallCapabilities.neutralCommandPresentation,
+    };
   }
 
   /**
    * Reads the skill files from Claude Code's own skill list
    * (`getContextUsage().skills.skillFrontmatter`) and, when they differ from
    * the last read, re-publishes the slash commands with the skill paths. Only
-   * for AIR clients, the only ones that use the paths.
+   * for clients that get the paths: AIR and a neutral commandPresentation client.
    *
    * Callers do not await it: the control request takes about 1 s on the first
    * call, and it must not delay the turn or the first command list. A trigger
@@ -9296,7 +9310,7 @@ export class ClaudeAcpAgent {
    */
   private async refreshSkillFiles(sessionId: string): Promise<void> {
     const session = this.sessions[sessionId];
-    if (!session || !this.toolCallCapabilities.air.client) return;
+    if (!session || !this.toolCallCapabilities.presentsSkills) return;
     if (typeof session.query.getContextUsage !== "function") return;
     if (session.skillFilesRefreshing) {
       session.skillFilesRerun = true;

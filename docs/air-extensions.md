@@ -2207,6 +2207,12 @@ Each session mode and each value of the mode config option carries `_meta.jetbra
 
 The adapter sends the key only to an AIR client.
 
+### Client-neutral command presentation
+
+A client that isn't AIR can opt in with `clientCapabilities._meta.commandPresentation: { "version": 1 }`, an object whose `version` is an integer of at least 1, and gets `_meta.commandPresentation: { "version": 1 }` back from `initialize`. ACP v2 ignores the opt-in.
+
+A skill command then carries `_meta.commandPresentation: { "version": 1, "kind": "skill", "skillPath": "<absolute SKILL.md path>" }`, found as for the AIR `kind` and `skillPath` keys. A skill without a file, such as one bundled with Claude Code, has `kind` only. Built-in commands and MCP prompts carry no record, and no command carries an `action`. A client that declares AIR too gets both records.
+
 ## Removed keys
 
 These keys moved into the AIR namespace. Goal is also available at the old top-level key when a non-AIR client opts in.
