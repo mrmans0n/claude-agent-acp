@@ -562,6 +562,17 @@ describe("ACP protocol routing", () => {
     expect(response._meta?.planFile).toBeUndefined();
   });
 
+  it("ignores the client-neutral session failure opt-in of a v2 client", async () => {
+    const { app, authUpdate } = v2Client();
+    const response = await app.connectWith(connectRouter(), async (agent) => {
+      const response = await initializeV2(agent, { _meta: { sessionFailure: { version: 1 } } });
+      await authUpdate(1);
+      return response;
+    });
+
+    expect(response._meta?.sessionFailure).toBeUndefined();
+  });
+
   it("does not advertise the AIR async tasks and goal extensions to a v2 AIR client", async () => {
     const { app, authUpdate } = v2Client();
     const response = await app.connectWith(connectRouter(), async (agent) => {
