@@ -100,7 +100,7 @@ import {
   toGoalSnapshot,
 } from "./goal-extension.js";
 import { checklistPlanUpdate, resetPlanUpdates, type SubagentChecklists } from "../plans.js";
-import { PromptSuggestions } from "../prompt-suggestions.js";
+import { PROMPT_SUGGESTIONS_META_KEY, PromptSuggestions } from "../prompt-suggestions.js";
 import { savedSessionStatus, SESSION_STATUS_CAPABILITY } from "../session-status.js";
 import {
   applyInitialConfigOptions,
@@ -348,6 +348,7 @@ import {
   NEUTRAL_COMMAND_PRESENTATION_KEY,
   NEUTRAL_LOAD_REPLAY_END_KEY,
   loadReplayEndRequestId,
+  promptSuggestionsRequestId,
   NEUTRAL_DIFF_PATCH_KEY,
   NEUTRAL_PLAN_FILE_KEY,
   NEUTRAL_SESSION_FAILURE_KEY,
@@ -2010,6 +2011,9 @@ export class ClaudeAcpAgent {
           ...(this.toolCallCapabilities.neutralLoadReplayEnd
             ? { [NEUTRAL_LOAD_REPLAY_END_KEY]: neutralPresentationCapability() }
             : {}),
+          ...(this.toolCallCapabilities.neutralPromptSuggestions
+            ? { [PROMPT_SUGGESTIONS_META_KEY]: neutralPresentationCapability() }
+            : {}),
         }),
       ),
     };
@@ -2665,6 +2669,12 @@ export class ClaudeAcpAgent {
       // then keeps the ordering it has without this feature.
       const cleared = session.promptSuggestions?.clear();
       if (cleared) await this.publishPromptSuggestion(params.sessionId, cleared);
+      // A client of the neutral form asks for the prediction of this turn by id.
+      session.promptSuggestions?.prompted(
+        this.toolCallCapabilities.neutralPromptSuggestions
+          ? promptSuggestionsRequestId(params._meta)
+          : undefined,
+      );
     }
 
     // A `/remote-control` command still in flight answers into the session's
@@ -3010,8 +3020,8 @@ export class ClaudeAcpAgent {
   /**
    * Sends the `_meta` of a session's {@link PromptSuggestions}: the follow-up
    * prompt the CLI predicted for the next turn, or the clear of the one the
-   * client holds. Only AIR renders it, so only an AIR session has the state;
-   * see `docs/air-extensions.md`.
+   * client holds. Only AIR and a client of the client-neutral form read it,
+   * so only their sessions have the state; see `docs/air-extensions.md`.
    */
   private async publishPromptSuggestion(
     sessionId: string,
@@ -10154,12 +10164,14 @@ export class ClaudeAcpAgent {
       // `perTaskStopAffordance` wins.
       ...(subagentForm(this.clientCapabilities) === "rfd" ? { perTaskStopAffordance: true } : {}),
       // One predicted follow-up prompt per turn, published as
-      // `session_info_update._meta.promptSuggestions`. It rides the turn's own
-      // prompt cache, and the user can turn it off in settings.json
-      // (`promptSuggestionEnabled`) or with CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false.
-      // Before `userProvidedOptions`, so a client that passes
-      // `promptSuggestions: false` keeps it off.
-      promptSuggestions: true,
+      // `session_info_update._meta.promptSuggestions`, for a client that reads
+      // it (AIR or the client-neutral opt-in); no other client gets one, so
+      // none pays for it. It rides the turn's own prompt cache, and the user
+      // can turn it off in settings.json (`promptSuggestionEnabled`) or with
+      // CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false. Before
+      // `userProvidedOptions`, so a client that passes `promptSuggestions:
+      // false` keeps it off.
+      promptSuggestions: this.toolCallCapabilities.predictsPrompts,
       ...userProvidedOptions,
       // Claude Code uses the same checkpoint store for /rewind. Enable it only
       // for clients that negotiated per-turn file-change reports; this avoids
@@ -10655,8 +10667,8 @@ export class ClaudeAcpAgent {
           settingsManager.getApiKeyHelper(configuredSettingsObject),
         )?.kind,
         fileChangeReporter,
-        ...(this.toolCallCapabilities.air.client
-          ? { promptSuggestions: new PromptSuggestions() }
+        ...(this.toolCallCapabilities.predictsPrompts
+          ? { promptSuggestions: new PromptSuggestions(this.toolCallCapabilities.air.client) }
           : {}),
       };
       const registered = this.sessions[sessionId];

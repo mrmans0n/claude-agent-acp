@@ -15436,6 +15436,7 @@ describe("logout", () => {
     "recommendedConfigValue",
     "commandPresentation",
     "loadReplayEnd",
+    "promptSuggestions",
   ])("client-neutral %s advert", (key) => {
     it("advertises version 1 to a client that opts in with any version, with no AIR key", async () => {
       const response = await createMockAgent().initialize({
