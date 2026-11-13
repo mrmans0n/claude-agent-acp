@@ -342,7 +342,9 @@ import { RetractedToolCalls } from "../tool-calls/retracted.js";
 import {
   ClientCapabilities as ToolCallClientCapabilities,
   NEUTRAL_DIFF_PATCH_KEY,
+  NEUTRAL_PLAN_FILE_KEY,
   neutralDiffPatchCapability,
+  neutralPlanFileCapability,
 } from "../tool-calls/client-capabilities.js";
 import {
   AcpToolCallRenderer,
@@ -1775,7 +1777,7 @@ export class ClaudeAcpAgent {
       applyUltracode: (session, enabled) => this.applyUltracode(session, enabled),
       sessionUpdate: (notification) => this.client.sessionUpdate(notification),
       supportsPlanOperations: () => this.clientCapabilities?.plan != null,
-      isAirClient: () => this.toolCallCapabilities.air.client,
+      linksPlanToReview: () => this.toolCallCapabilities.linksPlanToReview,
       ensureConsumer: (session, id) => this.ensureConsumer(session, id),
       logError: (message, error) => this.logger.error(message, error),
       destroyReplacement: (id, session) => {
@@ -1963,6 +1965,10 @@ export class ClaudeAcpAgent {
           // ACP v1 only: a v2 client gets the v2 patch form (`ClientCapabilities.from`).
           ...(this.toolCallCapabilities.neutralDiffPatch
             ? { [NEUTRAL_DIFF_PATCH_KEY]: neutralDiffPatchCapability() }
+            : {}),
+          // ACP v1 only, like the neutral diff patch (`ClientCapabilities.from`).
+          ...(this.toolCallCapabilities.neutralPlanFile
+            ? { [NEUTRAL_PLAN_FILE_KEY]: neutralPlanFileCapability() }
             : {}),
         }),
       ),

@@ -15,11 +15,15 @@ import {
 } from "../air-extension.js";
 import { exitPlanModeRawOutput } from "../exit-plan.js";
 import { isAbortedToolResult, type ToolResultMeta } from "../tool-result-meta.js";
-import { ClientCapabilities } from "./client-capabilities.js";
+import { ClientCapabilities, NEUTRAL_PLAN_FILE_KEY } from "./client-capabilities.js";
 import { resultText, textContent, toAcpContentUpdate, toolResponseMarkers } from "./content.js";
 import type { ToolResultContext, ToolResultFacts, ToolUse, ToolUseFacts } from "./facts.js";
 import { reporterFor } from "./reporters/index.js";
-import { resolveSkillPath } from "./reporters/interaction.js";
+import {
+  neutralPlanFile,
+  resolveSkillPath,
+  type NeutralPlanFile,
+} from "./reporters/interaction.js";
 import { shellDescription } from "./reporters/bash.js";
 import { grepPath } from "./reporters/search.js";
 
@@ -144,6 +148,9 @@ export type ToolUpdateMeta = {
     exit_code: number | null;
     signal: string | null;
   };
+  /* The client-neutral plan file of an ExitPlanMode, for a client that opted
+     into it (`docs/air-extensions.md#client-neutral-plan-file`). */
+  planFile?: NeutralPlanFile;
 };
 
 /** The result fields of a tool call report, before the status and the tool name. */
@@ -321,7 +328,7 @@ export class AcpToolCallRenderer {
   partialRefinement(toolUse: Pick<ToolUse, "id" | "name">, input: unknown, cwd?: string) {
     const facts = this.facts({ name: toolUse.name, input }, cwd);
     return {
-      _meta: this.toolUseMeta({ name: toolUse.name, input }, cwd),
+      _meta: this.toolUseMeta({ id: toolUse.id, name: toolUse.name, input }, cwd),
       toolCallId: toolUse.id,
       sessionUpdate: "tool_call_update",
       ...(this.capabilities.air.client
@@ -354,6 +361,8 @@ export class AcpToolCallRenderer {
     } = {},
   ): RequestPermissionRequest["toolCall"] {
     const facts = this.facts(toolUse, options.cwd);
+    const planFile = this.planFileMeta(toolUse);
+    const meta = planFile.planFile ? { ...options.meta, ...planFile } : options.meta;
     if (!this.capabilities.air.client) {
       // The upstream shape: the whole tool call again. A v2 client also gets
       // the exact preview patch, which the tool call does not show, but not the
@@ -375,7 +384,7 @@ export class AcpToolCallRenderer {
         content:
           content.length === 0 && options.fallbackContent ? options.fallbackContent : content,
         ...(facts.locations !== undefined || options.extraLocations?.length ? { locations } : {}),
-        ...(options.meta ? { _meta: options.meta } : {}),
+        ...(meta ? { _meta: meta } : {}),
       };
     }
     return {
@@ -386,7 +395,7 @@ export class AcpToolCallRenderer {
       ...(options.extraLocations?.length
         ? { locations: [...(facts.locations ?? []), ...options.extraLocations] }
         : {}),
-      ...(options.meta ? { _meta: options.meta } : {}),
+      ...(meta ? { _meta: meta } : {}),
     };
   }
 
@@ -532,6 +541,7 @@ export class AcpToolCallRenderer {
       _meta: {
         claudeCode: { toolName: toolUse.name, ...(options.nonExecution ?? {}) },
         ...(resultMeta?.terminal_exit ? { terminal_exit: resultMeta.terminal_exit } : {}),
+        ...this.planFileMeta(toolUse),
       } satisfies ToolUpdateMeta,
       toolCallId: toolUse.id,
       sessionUpdate: "tool_call_update",
@@ -823,7 +833,10 @@ export class AcpToolCallRenderer {
    * standard `title`, which clients use as the command preview. Every other
    * client gets only the upstream tool name.
    */
-  toolUseMeta(toolUse: { name: string; input?: unknown }, cwd?: string): ToolUpdateMeta {
+  toolUseMeta(
+    toolUse: { id?: string; name: string; input?: unknown },
+    cwd?: string,
+  ): ToolUpdateMeta {
     const input =
       toolUse.input !== null && typeof toolUse.input === "object"
         ? (toolUse.input as Record<string, unknown>)
@@ -835,7 +848,10 @@ export class AcpToolCallRenderer {
     const skillName =
       toolUse.name === "Skill" && typeof input.skill === "string" ? input.skill : undefined;
     const subagent = toolUse.name === "Agent" || toolUse.name === "Task";
-    if (!this.capabilities.air.client) return { claudeCode: { toolName: toolUse.name } };
+    const planFile = this.planFileMeta(toolUse);
+    if (!this.capabilities.air.client) {
+      return { claudeCode: { toolName: toolUse.name }, ...planFile };
+    }
     let meta: Record<string, unknown> = { claudeCode: { toolName: toolUse.name } };
     if (description) meta = withAirMeta(meta, AIR_COMMAND_TITLE_KEY, description);
     if (subagent) meta = withAirMeta(meta, AIR_SUBAGENT_KEY, true);
@@ -848,7 +864,24 @@ export class AcpToolCallRenderer {
     }
     const mcp = mcpToolName(toolUse.name);
     if (mcp) meta = withAirMeta(meta, AIR_MCP_KEY, mcp);
-    return meta as ToolUpdateMeta;
+    return { ...meta, ...planFile } as ToolUpdateMeta;
+  }
+
+  /**
+   * The client-neutral `_meta.planFile` of an ExitPlanMode report, for a
+   * client that opted into it, once the input holds the plan. It sits next to
+   * the plan text: `rawInput` and `content` stay those of a client without it.
+   */
+  private planFileMeta(toolUse: {
+    id?: string;
+    name: string;
+    input?: unknown;
+  }): Pick<ToolUpdateMeta, "planFile"> {
+    if (!this.capabilities.neutralPlanFile || toolUse.name !== "ExitPlanMode" || !toolUse.id) {
+      return {};
+    }
+    const planFile = neutralPlanFile(toolUse.id, toolUse.input);
+    return planFile ? { [NEUTRAL_PLAN_FILE_KEY]: planFile } : {};
   }
 }
 

@@ -45,7 +45,25 @@ export class ClientCapabilities {
      * v1 reads the opt-in.
      */
     readonly neutralDiffPatch: boolean = false,
+    /**
+     * The client opted into the client-neutral plan file
+     * (`clientCapabilities._meta.planFile`). An ExitPlanMode report carries
+     * `_meta.planFile` with the plan ID, the plan file, and the digest of the
+     * plan, next to the plan text that every client that is not AIR gets. The
+     * approved plan then has the ID of its review. A client that declares
+     * AIR's `planFile` too gets the neutral form only. Only ACP v1 reads the
+     * opt-in.
+     */
+    readonly neutralPlanFile: boolean = false,
   ) {}
+
+  /**
+   * Whether the approved plan of an ExitPlanMode has the ID of its review,
+   * `plan-mode:<tool-call ID>`: for AIR and a neutral planFile client.
+   */
+  get linksPlanToReview(): boolean {
+    return this.air.client || this.neutralPlanFile;
+  }
 
   /** The form of a diff that carries an exact patch, for a client with {@link diffPatch} or {@link v2}. */
   get patchForm(): PatchForm {
@@ -60,6 +78,8 @@ export class ClientCapabilities {
     const terminalOutputDelta = meta?.["terminal_output_delta"] === true;
     // ACP v2 has its own patch form and ignores the neutral opt-in.
     const neutralDiffPatch = !v2 && clientOptsIntoNeutralDiffPatch(capabilities);
+    // A client that declares both plan file forms gets the neutral one.
+    const neutralPlanFile = !v2 && clientOptsIntoNeutralPlanFile(capabilities);
     return new ClientCapabilities(
       v2 || terminalOutputDelta || meta?.["terminal_output"] === true,
       terminalOutputDelta,
@@ -70,10 +90,12 @@ export class ClientCapabilities {
           capabilities,
           AIR_RAW_INPUT_RENDERING_CAPABILITY,
         ),
-        planFile: clientSupportsAirCapability(capabilities, AIR_PLAN_FILE_CAPABILITY),
+        planFile:
+          !neutralPlanFile && clientSupportsAirCapability(capabilities, AIR_PLAN_FILE_CAPABILITY),
       },
       v2,
       neutralDiffPatch,
+      neutralPlanFile,
     );
   }
 }
@@ -97,6 +119,25 @@ export function clientOptsIntoNeutralDiffPatch(capabilities: unknown): boolean {
 /** The agent side of the client-neutral diff patch, for the initialize `_meta`. */
 export function neutralDiffPatchCapability(): { version: number; format: "git_patch" } {
   return { version: NEUTRAL_DIFF_PATCH_VERSION, format: "git_patch" };
+}
+
+/** The top-level `_meta` key of the client-neutral plan file. */
+export const NEUTRAL_PLAN_FILE_KEY = "planFile";
+export const NEUTRAL_PLAN_FILE_VERSION = 1;
+
+/** Whether `initialize.clientCapabilities._meta.planFile` is an object whose
+ *  `version` is an integer of at least 1. */
+export function clientOptsIntoNeutralPlanFile(capabilities: unknown): boolean {
+  const meta = recordOrUndefined(recordOrUndefined(capabilities)?._meta);
+  const version = recordOrUndefined(meta?.[NEUTRAL_PLAN_FILE_KEY])?.version;
+  return (
+    typeof version === "number" && Number.isInteger(version) && version >= NEUTRAL_PLAN_FILE_VERSION
+  );
+}
+
+/** The agent side of the client-neutral plan file, for the initialize `_meta`. */
+export function neutralPlanFileCapability(): { version: number } {
+  return { version: NEUTRAL_PLAN_FILE_VERSION };
 }
 
 function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
