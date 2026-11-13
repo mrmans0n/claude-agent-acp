@@ -1116,6 +1116,19 @@ RUN_INTEGRATION_TESTS=true npx vitest run src/tests/model-presentation.test.ts
 Review the changes to the Opus entries and labels before you update the version guard.
 The live test only initializes the SDK. It sends no model prompt.
 
+### Client-neutral form
+
+A client that isn't AIR can opt in with `clientCapabilities._meta.recommendedConfigValue: { "version": 1 }`, an object whose `version` is an integer of at least 1, and gets `_meta.recommendedConfigValue: { "version": 1 }` back from `initialize`. ACP v2 ignores the opt-in.
+
+The model selector then carries `_meta.recommendedConfigValue: { "version": 1, "value": "sonnet" }`.
+The value is the row that exactly matches the `resolvedModel` of the SDK `default` entry. Without an exact match there is no record.
+
+This form only names a row. The `default` rows stay, `currentValue` doesn't change, labels and effort settings behave as without the opt-in, and nothing is applied to the SDK.
+
+There is no effort record, because the SDK reports no recommended effort. The `medium` of the AIR form is the adapter's own choice, and the SDK's automatic effort can differ from it.
+
+A client that declares AIR too gets both records.
+
 ## Async tasks
 
 Claude can run work in the background, for example a backgrounded Bash command or a workflow.
