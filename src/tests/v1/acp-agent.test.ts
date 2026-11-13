@@ -15397,7 +15397,7 @@ describe("logout", () => {
     });
   });
 
-  describe.each(["permissionPresentation", "questionCustomAnswer"])(
+  describe.each(["permissionPresentation", "questionCustomAnswer", "recommendedConfigValue"])(
     "client-neutral %s advert",
     (key) => {
       it("advertises version 1 to a client that opts in with any version, with no AIR key", async () => {
@@ -31431,6 +31431,44 @@ describe("agent selection config option", () => {
       const modelOption = options.find((o) => o.id === "model");
       const defaultEntry = (modelOption as any).options.find((o: any) => o.value === "default");
       expect(defaultEntry.description).toBe("claude-opus-5-20251201");
+    });
+
+    it("names the running default's row for a client of the neutral recommendation", () => {
+      const modelInfos = [
+        {
+          value: "default",
+          displayName: "Default",
+          description: "",
+          resolvedModel: "claude-sonnet-5",
+        },
+        {
+          value: "sonnet",
+          displayName: "Sonnet",
+          description: "",
+          resolvedModel: "claude-sonnet-5",
+        },
+      ];
+      const options = buildConfigOptions(
+        modes,
+        {
+          currentModelId: "default",
+          availableModels: modelInfos.map((info) => ({
+            modelId: info.value,
+            name: info.displayName,
+          })),
+        },
+        modelInfos as any,
+        undefined,
+        [],
+        "default",
+        undefined,
+        { useRecommendedValue: false, useNeutralRecommendedValue: true },
+      );
+      const modelOption = options.find((o) => o.id === "model");
+      expect(modelOption?._meta).toEqual({
+        recommendedConfigValue: { version: 1, value: "sonnet" },
+      });
+      expect(modelOption?.currentValue).toBe("default");
     });
 
     it("leaves description undefined when default model has no resolvedModel", () => {

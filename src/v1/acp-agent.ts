@@ -344,6 +344,7 @@ import {
   NEUTRAL_AGENT_FILE_CHANGE_REPORT_KEY,
   NEUTRAL_PERMISSION_PRESENTATION_KEY,
   NEUTRAL_QUESTION_CUSTOM_ANSWER_KEY,
+  NEUTRAL_RECOMMENDED_CONFIG_VALUE_KEY,
   NEUTRAL_DIFF_PATCH_KEY,
   NEUTRAL_PLAN_FILE_KEY,
   NEUTRAL_SESSION_FAILURE_KEY,
@@ -1996,6 +1997,9 @@ export class ClaudeAcpAgent {
             : {}),
           ...(this.toolCallCapabilities.neutralQuestionCustomAnswer
             ? { [NEUTRAL_QUESTION_CUSTOM_ANSWER_KEY]: neutralPresentationCapability() }
+            : {}),
+          ...(this.toolCallCapabilities.neutralRecommendedConfigValue
+            ? { [NEUTRAL_RECOMMENDED_CONFIG_VALUE_KEY]: neutralPresentationCapability() }
             : {}),
         }),
       ),
@@ -9535,6 +9539,7 @@ export class ClaudeAcpAgent {
         },
         {
           useRecommendedValue,
+          useNeutralRecommendedValue: this.toolCallCapabilities.neutralRecommendedConfigValue,
         },
         {
           // Like Fast mode, the toggle hides on models without ultracode
@@ -10493,6 +10498,7 @@ export class ClaudeAcpAgent {
         fastMode,
         {
           useRecommendedValue,
+          useNeutralRecommendedValue: this.toolCallCapabilities.neutralRecommendedConfigValue,
         },
         ultracode,
       );

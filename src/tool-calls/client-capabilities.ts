@@ -69,6 +69,13 @@ export class ClientCapabilities {
      * `_meta.questionCustomAnswer`. Only ACP v1 reads the opt-in.
      */
     readonly neutralQuestionCustomAnswer: boolean = false,
+    /**
+     * The client opted into the client-neutral recommended config value
+     * (`clientCapabilities._meta.recommendedConfigValue`). The model selector
+     * carries `_meta.recommendedConfigValue`, and its rows and current value do
+     * not change. Only ACP v1 reads the opt-in.
+     */
+    readonly neutralRecommendedConfigValue: boolean = false,
   ) {}
 
   /**
@@ -112,6 +119,7 @@ export class ClientCapabilities {
       neutralPlanFile,
       !v2 && clientOptsIntoNeutralVersion(capabilities, NEUTRAL_PERMISSION_PRESENTATION_KEY),
       !v2 && clientOptsIntoNeutralVersion(capabilities, NEUTRAL_QUESTION_CUSTOM_ANSWER_KEY),
+      !v2 && clientOptsIntoNeutralVersion(capabilities, NEUTRAL_RECOMMENDED_CONFIG_VALUE_KEY),
     );
   }
 }
@@ -202,6 +210,8 @@ export function neutralAgentFileChangeReportCapability(): { version: number } {
 export const NEUTRAL_PERMISSION_PRESENTATION_KEY = "permissionPresentation";
 /** The top-level `_meta` key of the client-neutral question custom answer. */
 export const NEUTRAL_QUESTION_CUSTOM_ANSWER_KEY = "questionCustomAnswer";
+/** The top-level `_meta` key of the client-neutral recommended config value. */
+export const NEUTRAL_RECOMMENDED_CONFIG_VALUE_KEY = "recommendedConfigValue";
 
 /** The agent side of a client-neutral presentation contract, for the initialize `_meta`. */
 export function neutralPresentationCapability(): { version: number } {
