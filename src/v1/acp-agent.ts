@@ -339,7 +339,11 @@ import { backgroundedBashToolCall, withRunningTerminal } from "../tool-calls/bac
 import { ChangedMetaClient, ClientConnection } from "./client-connection.js";
 import { ToolCallFieldTracker } from "../tool-calls/field-tracker.js";
 import { RetractedToolCalls } from "../tool-calls/retracted.js";
-import { ClientCapabilities as ToolCallClientCapabilities } from "../tool-calls/client-capabilities.js";
+import {
+  ClientCapabilities as ToolCallClientCapabilities,
+  NEUTRAL_DIFF_PATCH_KEY,
+  neutralDiffPatchCapability,
+} from "../tool-calls/client-capabilities.js";
 import {
   AcpToolCallRenderer,
   isFinalToolCallStatus,
@@ -1955,6 +1959,10 @@ export class ClaudeAcpAgent {
           // The v2 agent advertises it too (`v2/agent.ts`).
           ...(clientOptsIntoNeutralForkPoint(this.clientCapabilities)
             ? { [NEUTRAL_FORK_POINT_KEY]: neutralForkPointCapability() }
+            : {}),
+          // ACP v1 only: a v2 client gets the v2 patch form (`ClientCapabilities.from`).
+          ...(this.toolCallCapabilities.neutralDiffPatch
+            ? { [NEUTRAL_DIFF_PATCH_KEY]: neutralDiffPatchCapability() }
             : {}),
         }),
       ),
@@ -8995,7 +9003,7 @@ export class ClaudeAcpAgent {
       const durableChangeSet = normalizeDurablePermissionChangeSet(suggestions, noPersistentRule);
       const capabilities = this.toolCallCapabilities;
       const previewContent = capabilities.diffPatch
-        ? await previewPatchContent(toolName, toolInput, session.cwd, "air")
+        ? await previewPatchContent(toolName, toolInput, session.cwd, capabilities.patchForm)
         : undefined;
       const presentation = buildClaudePermissionPresentation({
         toolName,
