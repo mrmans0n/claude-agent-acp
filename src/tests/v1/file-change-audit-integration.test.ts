@@ -8,6 +8,7 @@ import type { AcpClient } from "../../acp-client.js";
 import {
   AGENT_FILE_CHANGE_REPORT_CAPABILITY,
   type AgentFileChangeReportResult,
+  NEUTRAL_AGENT_FILE_CHANGE_REPORT_UNCERTAINTY,
 } from "../../file-change-audit.js";
 import type { Pushable } from "../../utils.js";
 
@@ -251,7 +252,10 @@ describe("native file-change report integration", () => {
     },
   };
 
-  async function createAgent(updates: SessionNotification[]) {
+  async function createAgent(
+    updates: SessionNotification[],
+    capabilities: Record<string, unknown> = negotiatedCapabilities,
+  ) {
     const client = {
       sessionUpdate: async (notification: SessionNotification) => void updates.push(notification),
       requestPermission: async () => ({ outcome: { outcome: "cancelled" } }),
@@ -265,7 +269,7 @@ describe("native file-change report integration", () => {
     });
     await agent.initialize({
       protocolVersion: 1,
-      clientCapabilities: negotiatedCapabilities,
+      clientCapabilities: capabilities,
     });
     const { sessionId } = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
     return { agent, sessionId };
@@ -284,6 +288,15 @@ describe("native file-change report integration", () => {
       const report = meta?.jetbrains?.air?.agentFileChangeReport;
       return report ? [report] : [];
     });
+  }
+
+  /** The session-info `_meta` of a notification, when it holds a report in either form. */
+  function reportedMeta(notification: SessionNotification): Record<string, any> | undefined {
+    if (notification.update.sessionUpdate !== "session_info_update") return undefined;
+    const meta = notification.update._meta as Record<string, any> | undefined;
+    return meta?.agentFileChangeReport || meta?.jetbrains?.air?.agentFileChangeReport
+      ? meta
+      : undefined;
   }
 
   function prompt(sessionId: string, requestId: string, text: string) {
@@ -324,6 +337,20 @@ describe("native file-change report integration", () => {
       },
     ]);
 
+    await agent.dispose();
+  });
+
+  it("keeps the exact bytes of an AIR report", async () => {
+    const updates: SessionNotification[] = [];
+    const { agent, sessionId } = await createAgent(updates);
+
+    await agent.prompt(prompt(sessionId, "request-air", "Change a file"));
+
+    const update = updates.find((notification) => reportedMeta(notification) !== undefined);
+    const changed = JSON.stringify(path.join(process.cwd(), "src/changed.ts"));
+    expect(JSON.stringify(update?.update)).toBe(
+      `{"sessionUpdate":"session_info_update","_meta":{"jetbrains":{"air":{"version":1,"agentFileChangeReport":{"version":1,"requestId":"request-air","status":"reported","paths":[${changed}],"declaredComplete":false,"truncated":false}}}}}`,
+    );
     await agent.dispose();
   });
 
@@ -443,5 +470,205 @@ describe("native file-change report integration", () => {
       },
     ]);
     await agent.dispose();
+  });
+
+  describe("client-neutral form", () => {
+    const optIn = { agentFileChangeReport: { version: 1 } };
+    const neutralCapabilities = { _meta: optIn };
+    const bothCapabilities = { _meta: { ...negotiatedCapabilities._meta, ...optIn } };
+
+    function neutralPrompt(sessionId: string, requestId: unknown, text = "Change a file") {
+      return {
+        sessionId,
+        prompt: [{ type: "text" as const, text }],
+        _meta: { agentFileChangeReportRequest: { version: 1, requestId } },
+      };
+    }
+
+    /** Every report in the updates, with the form that it came in. */
+    function reportsByForm(updates: SessionNotification[]) {
+      return updates.flatMap((notification) => {
+        const meta = reportedMeta(notification);
+        return meta ? [meta] : [];
+      });
+    }
+
+    const reportedChange = (requestId: string, paths: string[]) => ({
+      version: 1,
+      requestId,
+      status: "reported",
+      paths: paths.map((file) => path.join(process.cwd(), file)),
+      declaredComplete: false,
+      truncated: false,
+      uncertainty: NEUTRAL_AGENT_FILE_CHANGE_REPORT_UNCERTAINTY,
+    });
+
+    it("enables checkpointing and reports at top level before the prompt response", async () => {
+      const updates: SessionNotification[] = [];
+      const { agent, sessionId } = await createAgent(updates, neutralCapabilities);
+      let reportsAtResponse = 0;
+
+      await agent
+        .prompt(neutralPrompt(sessionId, "request-neutral"))
+        .then(() => (reportsAtResponse = reportsByForm(updates).length));
+
+      expect(reportsAtResponse).toBe(1);
+      expect(observedOptions?.enableFileCheckpointing).toBe(true);
+      expect(rewindFiles).toHaveBeenCalledTimes(1);
+      expect(reportsByForm(updates)).toEqual([
+        { agentFileChangeReport: reportedChange("request-neutral", ["src/changed.ts"]) },
+      ]);
+      await agent.dispose();
+    });
+
+    it("adds a subagent edit to the list", async () => {
+      scenario = "subagentEdit";
+      const updates: SessionNotification[] = [];
+      const { agent, sessionId } = await createAgent(updates, neutralCapabilities);
+
+      await agent.prompt(neutralPrompt(sessionId, "request-subagent"));
+
+      expect(reportsByForm(updates)).toEqual([
+        {
+          agentFileChangeReport: reportedChange("request-subagent", ["README.md", "GEMINI.md"]),
+        },
+      ]);
+      await agent.dispose();
+    });
+
+    it("reports providerError for a turn that resolves with a typed failure", async () => {
+      scenario = "providerError";
+      const updates: SessionNotification[] = [];
+      const { agent, sessionId } = await createAgent(updates, {
+        _meta: { ...optIn, sessionFailure: { version: 1 } },
+      });
+
+      await expect(
+        agent.prompt(neutralPrompt(sessionId, "request-error", "Fail")),
+      ).resolves.toMatchObject({ stopReason: "end_turn" });
+
+      expect(rewindFiles).not.toHaveBeenCalled();
+      expect(reportsByForm(updates)).toEqual([
+        {
+          agentFileChangeReport: {
+            version: 1,
+            requestId: "request-error",
+            status: "unavailable",
+            reason: "providerError",
+          },
+        },
+      ]);
+      await agent.dispose();
+    });
+
+    it("reports providerError for a turn that rejects", async () => {
+      scenario = "providerError";
+      const updates: SessionNotification[] = [];
+      const { agent, sessionId } = await createAgent(updates, neutralCapabilities);
+
+      await expect(
+        agent.prompt(neutralPrompt(sessionId, "request-reject", "Fail")),
+      ).rejects.toThrow();
+
+      expect(rewindFiles).not.toHaveBeenCalled();
+      expect(reportsByForm(updates)).toEqual([
+        {
+          agentFileChangeReport: {
+            version: 1,
+            requestId: "request-reject",
+            status: "unavailable",
+            reason: "providerError",
+          },
+        },
+      ]);
+      await agent.dispose();
+    });
+
+    it("reports cancelled without checkpoint inspection", async () => {
+      scenario = "waitForCancel";
+      const updates: SessionNotification[] = [];
+      const { agent, sessionId } = await createAgent(updates, neutralCapabilities);
+      const result = agent.prompt(neutralPrompt(sessionId, "request-cancel", "Wait"));
+      await turnActivated;
+
+      await agent.cancel({ sessionId });
+      await expect(result).resolves.toMatchObject({ stopReason: "cancelled" });
+
+      expect(rewindFiles).not.toHaveBeenCalled();
+      expect(reportsByForm(updates)).toEqual([
+        {
+          agentFileChangeReport: {
+            version: 1,
+            requestId: "request-cancel",
+            status: "unavailable",
+            reason: "cancelled",
+          },
+        },
+      ]);
+      await agent.dispose();
+    });
+
+    it("ignores a malformed request, and the turn still ends normally", async () => {
+      const updates: SessionNotification[] = [];
+      const { agent, sessionId } = await createAgent(updates, neutralCapabilities);
+
+      await expect(
+        agent.prompt(neutralPrompt(sessionId, "contains spaces")),
+      ).resolves.toMatchObject({ stopReason: "end_turn" });
+
+      expect(rewindFiles).not.toHaveBeenCalled();
+      expect(reportsByForm(updates)).toEqual([]);
+      await agent.dispose();
+    });
+
+    it("gives a client that declares both forms only the neutral report", async () => {
+      const updates: SessionNotification[] = [];
+      const { agent, sessionId } = await createAgent(updates, bothCapabilities);
+
+      await agent.prompt(neutralPrompt(sessionId, "request-both"));
+
+      expect(observedOptions?.enableFileCheckpointing).toBe(true);
+      expect(reportsByForm(updates)).toEqual([
+        { agentFileChangeReport: reportedChange("request-both", ["src/changed.ts"]) },
+      ]);
+      await agent.dispose();
+    });
+
+    it("does not read the AIR request of a client that declares both forms", async () => {
+      const updates: SessionNotification[] = [];
+      const { agent, sessionId } = await createAgent(updates, bothCapabilities);
+
+      await agent.prompt(prompt(sessionId, "request-air-place", "Change a file"));
+
+      expect(rewindFiles).not.toHaveBeenCalled();
+      expect(reportsByForm(updates)).toEqual([]);
+      await agent.dispose();
+    });
+
+    it("does not read the top-level request of an AIR client", async () => {
+      const updates: SessionNotification[] = [];
+      const { agent, sessionId } = await createAgent(updates);
+
+      await agent.prompt(neutralPrompt(sessionId, "request-neutral-place"));
+
+      expect(rewindFiles).not.toHaveBeenCalled();
+      expect(reportsByForm(updates)).toEqual([]);
+      await agent.dispose();
+    });
+
+    it.each([
+      ["a client without the opt-in", {}],
+      ["a malformed opt-in", { _meta: { agentFileChangeReport: true } }],
+    ])("sends no report and enables no checkpointing for %s", async (_label, capabilities) => {
+      const updates: SessionNotification[] = [];
+      const { agent, sessionId } = await createAgent(updates, capabilities);
+
+      await agent.prompt(neutralPrompt(sessionId, "request-ignored"));
+
+      expect(observedOptions?.enableFileCheckpointing).toBeUndefined();
+      expect(rewindFiles).not.toHaveBeenCalled();
+      expect(reportsByForm(updates)).toEqual([]);
+      await agent.dispose();
+    });
   });
 });
