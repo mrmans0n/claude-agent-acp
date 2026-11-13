@@ -51,3 +51,74 @@ export function promptSuggestionsMeta(
   };
   return { [PROMPT_SUGGESTIONS_META_KEY]: value };
 }
+
+/**
+ * The prediction a session holds on the client, and whether an arriving
+ * `prompt_suggestion` still answers the turn the user waits on. Both cores
+ * keep one per session and send the `_meta` that its methods return as a
+ * `session_info_update`, to an AIR client, and on ACP v1 to a client of the
+ * client-neutral form too. Undefined: nothing to send.
+ */
+export class PromptSuggestions {
+  /** The last text sent (`null` after a clear). Undefined until the first send. */
+  private published: string | null | undefined;
+  /**
+   * Set at a turn's result, cleared when the next prompt arrives. A
+   * prediction that the next prompt outran (sent before the prediction was
+   * read off the stream) follows a turn that is answered already, so it is
+   * dropped instead of published mid-turn.
+   */
+  private expected = false;
+  /** The `_meta.promptSuggestions.id` of the client prompt whose turn the next
+   *  prediction answers, for a client of the client-neutral form. */
+  private requestId: string | undefined;
+
+  /**
+   * @param everyTurn The client takes the prediction of every turn, as AIR
+   *   does. A client of the client-neutral form alone gets only the
+   *   prediction of a prompt that named `_meta.promptSuggestions.id`.
+   */
+  constructor(private readonly everyTurn = true) {}
+
+  /** A client prompt came, naming `requestId` to ask for its turn's prediction, or none. */
+  prompted(requestId: string | undefined): void {
+    this.requestId = requestId;
+  }
+
+  /** A result came: the CLI predicts the next prompt right after it. */
+  resultArrived(): void {
+    this.expected = true;
+  }
+
+  /** The `_meta` of the CLI's `prompt_suggestion`, if it answers the last result and changes what the client holds. */
+  suggested(raw: string | null | undefined): Record<string, unknown> | undefined {
+    if (!this.expected) return undefined;
+    this.expected = false;
+    // One prediction per request: a later turn's prediction (an autonomous
+    // cycle) does not answer the prompt that asked.
+    const requestId = this.requestId;
+    this.requestId = undefined;
+    if (!this.everyTurn && requestId === undefined) return undefined;
+    return this.publish(promptSuggestionText(raw), requestId);
+  }
+
+  /**
+   * The `_meta` that clears the prediction: a client prompt spent it, or a
+   * `conversation_reset` dropped the transcript it came from. It also drops
+   * a prediction still in flight for the last result. Undefined when the
+   * client holds none.
+   */
+  clear(): Record<string, unknown> | undefined {
+    this.expected = false;
+    return this.publish(null);
+  }
+
+  private publish(text: string | null, requestId?: string): Record<string, unknown> | undefined {
+    // An unchanged prediction is not sent again. A prediction that answers a
+    // request always goes out: the client waits for that id, even for an
+    // empty list or a repeated text.
+    if (requestId === undefined && (this.published ?? null) === text) return undefined;
+    this.published = text;
+    return promptSuggestionsMeta(text, requestId);
+  }
+}

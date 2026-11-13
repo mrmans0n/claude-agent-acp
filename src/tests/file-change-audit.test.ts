@@ -13,6 +13,7 @@ import {
   NEUTRAL_AGENT_FILE_CHANGE_REPORT_UNCERTAINTY,
   type NativeFileChangeReporter,
   recordSubagentFileEdits,
+  supportsAgentFileChangeReport,
 } from "../file-change-audit.js";
 
 function createSupport(options: {
@@ -365,22 +366,26 @@ describe("client-neutral agent file-change report", () => {
   const neutral = { agentFileChangeReport: { version: 1 } };
 
   it.each([
-    ["no capability", {}, false, undefined],
-    ["the opt-in", { _meta: neutral }, false, "neutral"],
-    [
-      "a later opt-in version",
-      { _meta: { agentFileChangeReport: { version: 2 } } },
-      false,
-      "neutral",
-    ],
-    ["the AIR capability", { _meta: air }, false, "air"],
-    ["both forms", { _meta: { ...air, ...neutral } }, false, "neutral"],
-    ["the opt-in on ACP v2", { _meta: neutral }, true, undefined],
-    ["both forms on ACP v2", { _meta: { ...air, ...neutral } }, true, "air"],
-    ["the AIR capability on ACP v2", { _meta: air }, true, "air"],
-  ])("selects the form for %s", (_label, capabilities, v2, form) => {
-    expect(agentFileChangeReportForm(capabilities, v2)).toBe(form);
+    ["no capability", {}, undefined],
+    ["the opt-in", { _meta: neutral }, "neutral"],
+    ["a later opt-in version", { _meta: { agentFileChangeReport: { version: 2 } } }, "neutral"],
+    ["the AIR capability", { _meta: air }, "air"],
+    ["both forms", { _meta: { ...air, ...neutral } }, "neutral"],
+  ])("selects the form for %s", (_label, capabilities, form) => {
+    expect(agentFileChangeReportForm(capabilities)).toBe(form);
   });
+
+  // The v2 agent (`v2/air.ts`) serves only the AIR form, with this check.
+  it.each([
+    ["the opt-in", { _meta: neutral }, false],
+    ["both forms", { _meta: { ...air, ...neutral } }, true],
+    ["the AIR capability", { _meta: air }, true],
+  ])(
+    "reads only the AIR capability for the v2 agent with %s",
+    (_label, capabilities, supported) => {
+      expect(supportsAgentFileChangeReport(capabilities)).toBe(supported);
+    },
+  );
 
   it.each([
     ["boolean", true],
