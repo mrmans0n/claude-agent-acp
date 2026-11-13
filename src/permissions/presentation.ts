@@ -97,19 +97,11 @@ export function buildClaudePermissionPresentation(
   const decisionReason = humanText(value.decisionReason, 4_000);
   const description = decisionReason ? `Reason: ${decisionReason}` : undefined;
   const blockedPath = humanText(value.blockedPath, 4_096, true);
-  const permission = {
-    version: 1,
-    title,
-    ...(description ? { description } : {}),
-    // The CLI's own hint, forwarded so a client that can pre-select an option
-    // keeps the decline focused; the option order already leads with the
-    // reject options when this is set.
-    ...(value.defaultToNo === true ? { defaultToNo: true } : {}),
-  };
+  const permission = { title, description, defaultToNo: value.defaultToNo };
   const permissionMeta = {
-    ...(capabilities.air.client ? withAirMeta(undefined, AIR_PERMISSION_KEY, permission) : {}),
+    ...(capabilities.air.client ? airPermissionMeta(permission) : {}),
     ...(capabilities.neutralPermissionPresentation
-      ? { [NEUTRAL_PERMISSION_PRESENTATION_KEY]: permission }
+      ? { [NEUTRAL_PERMISSION_PRESENTATION_KEY]: permissionRecord(permission) }
       : {}),
   };
   const extraLocations =
@@ -140,5 +132,81 @@ export function buildClaudePermissionPresentation(
     // A client that is not AIR and did not opt in gets no record.
     ...(title && Object.keys(permissionMeta).length > 0 ? { _meta: permissionMeta } : {}),
     ...(capabilities.v2 ? { title, ...(description ? { description } : {}) } : {}),
+  };
+}
+
+/**
+ * The `_meta.jetbrains.air.permission` of a permission request, from the
+ * heading and explanation that {@link buildClaudePermissionPresentation}
+ * built. The v2 core adds it for an AIR client, whose tool calls it
+ * renders without the AIR tool call contract.
+ */
+export function airPermissionMeta({
+  title,
+  description,
+  defaultToNo,
+}: {
+  title: string;
+  description?: string;
+  defaultToNo?: boolean;
+}): Record<string, unknown> {
+  return withAirMeta(
+    undefined,
+    AIR_PERMISSION_KEY,
+    permissionRecord({ title, description, defaultToNo }),
+  );
+}
+
+/**
+ * The permission presentation record: AIR's `permission`, and the
+ * `_meta.permissionPresentation` of a client that opted into the neutral form.
+ */
+function permissionRecord({
+  title,
+  description,
+  defaultToNo,
+}: {
+  title: string;
+  description?: string;
+  defaultToNo?: boolean;
+}) {
+  return {
+    version: 1,
+    title,
+    ...(description ? { description } : {}),
+    // The CLI's own hint, forwarded so a client that can pre-select an
+    // option keeps the decline focused; the option order already leads with
+    // the reject options when this is set.
+    ...(defaultToNo === true ? { defaultToNo: true } : {}),
+  };
+}
+
+/**
+ * The `_meta.claudeCode` of a permission request's tool call: which MCP
+ * server serves an `mcp__*` tool and where its definition came from
+ * (`mcpServer`, SDK 0.3.274+), so a client can key trust on `source`, and,
+ * for clients other than AIR, the tool name and the Agent or Task call of a
+ * subagent's request. Undefined when there is nothing to add.
+ */
+export function permissionToolCallMeta({
+  toolName,
+  parentToolUseId,
+  mcpServer,
+  airClient,
+}: {
+  toolName: string;
+  parentToolUseId: string | undefined;
+  mcpServer: { name: string; source: string } | undefined;
+  airClient: boolean;
+}): { claudeCode: Record<string, unknown> } | undefined {
+  if (!mcpServer && !(parentToolUseId && !airClient)) return undefined;
+  // The name is the config key as authored: untrusted text, so it rides
+  // `_meta` rather than the title.
+  return {
+    claudeCode: {
+      ...(airClient ? {} : { toolName }),
+      ...(parentToolUseId && !airClient ? { parentToolUseId } : {}),
+      ...(mcpServer ? { mcpServer: { name: mcpServer.name, source: mcpServer.source } } : {}),
+    },
   };
 }

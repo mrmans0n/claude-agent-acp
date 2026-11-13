@@ -68,7 +68,8 @@ export type FileChangeReportUnavailableReason =
   "cancelled" | "timeout" | "invalidOutput" | "notReported" | "providerError";
 
 type NativeFileChangeReporterOptions = {
-  form: AgentFileChangeReportForm;
+  /** The form of the reports. AIR when omitted: the v2 agent serves only that form. */
+  form?: AgentFileChangeReportForm;
   cwd: string;
   additionalDirectories: string[];
   publish: (result: AgentFileChangeReportResult) => Promise<void>;
@@ -91,7 +92,7 @@ export type NativeFileChangeReporter = {
 /** The request ID on a prompt `_meta`, read only from the place of the negotiated form. */
 export function agentFileChangeReportRequestId(
   meta: unknown,
-  form: AgentFileChangeReportForm,
+  form: AgentFileChangeReportForm = "air",
 ): string | undefined {
   const source =
     form === "neutral"
@@ -119,21 +120,24 @@ export function agentFileChangeReportRequestId(
 /**
  * The form that the client negotiated, or undefined when it gets no report and
  * no file checkpointing. A client that declares both forms gets the neutral
- * one. Only ACP v1 reads the neutral opt-in.
+ * one. Only the v1 agent reads the neutral opt-in; the v2 agent checks
+ * {@link supportsAgentFileChangeReport} alone (`v2/air.ts`).
  */
 export function agentFileChangeReportForm(
   capabilities: unknown,
-  v2 = false,
 ): AgentFileChangeReportForm | undefined {
-  if (!v2 && clientOptsIntoNeutralAgentFileChangeReport(capabilities)) return "neutral";
-  return clientSupportsAirCapability(capabilities, AGENT_FILE_CHANGE_REPORT_CAPABILITY)
-    ? "air"
-    : undefined;
+  if (clientOptsIntoNeutralAgentFileChangeReport(capabilities)) return "neutral";
+  return supportsAgentFileChangeReport(capabilities) ? "air" : undefined;
+}
+
+/** Whether the client declared the AIR `agentFileChangeReport` capability. */
+export function supportsAgentFileChangeReport(capabilities: unknown): boolean {
+  return clientSupportsAirCapability(capabilities, AGENT_FILE_CHANGE_REPORT_CAPABILITY);
 }
 
 export function agentFileChangeReportMeta(
   result: AgentFileChangeReportResult,
-  form: AgentFileChangeReportForm,
+  form: AgentFileChangeReportForm = "air",
 ): Record<string, unknown> {
   return form === "neutral"
     ? { [NEUTRAL_AGENT_FILE_CHANGE_REPORT_KEY]: result }
@@ -146,11 +150,12 @@ const FILE_EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
  * Adds to `turn.editedPaths` the `file_path` (`notebook_path` for NotebookEdit)
  * of each successful file-tool edit among the tool results of a subagent
  * message. Root-agent messages (`parentToolUseId === null`) are skipped: the
- * checkpoint already tracks their files. Must run before `toAcpNotifications`
- * drops the tool use cache entries.
+ * checkpoint already tracks their files. A turn that v1 marked `settled`
+ * records nothing. Must run before `toAcpNotifications` drops the tool use
+ * cache entries.
  */
 export function recordSubagentFileEdits(
-  turn: (NativeFileChangeReportTurn & { settled: boolean }) | null | undefined,
+  turn: (NativeFileChangeReportTurn & { settled?: boolean }) | null | undefined,
   parentToolUseId: string | null,
   content: unknown,
   toolUses: Record<string, { name: string; input: unknown } | undefined>,
