@@ -542,6 +542,23 @@ describe("ACP protocol routing", () => {
     expect(response._meta ?? {}).not.toHaveProperty("contextUsage");
   });
 
+  it("does not advertise the client-neutral session index to a v2 client", async () => {
+    const { app, authUpdate } = v2Client();
+    const response = await app.connectWith(connectRouter(), async (agent) => {
+      const response = await initializeV2(agent, { _meta: { sessionIndex: { version: 1 } } });
+      await authUpdate(1);
+      const batchGet = await agent.request("_session/batch_get", { sessionIds: [] }).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      return { ...response, batchGet };
+    });
+
+    // Only the v1 agent serves the session index methods.
+    expect(response._meta ?? {}).not.toHaveProperty("sessionIndex");
+    expect(response.batchGet).toMatchObject({ code: -32601 });
+  });
+
   it("negotiates a v2 client down to v1 when limited to v1", async () => {
     // On the raw stream, since the v2 client app cannot read the v1 response
     // that a real client would switch to v1 on.
