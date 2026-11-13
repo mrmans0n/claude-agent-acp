@@ -489,12 +489,54 @@ describe("ACP protocol routing", () => {
     expect(response.capabilities?.providers).toEqual({});
     // Not `_session/steering`, which v1 advertises in the top-level `_meta`.
     expect(response._meta?.steering).toBeUndefined();
+    // The neutral fork point only for a client that opts in.
+    expect(response._meta?.forkPoint).toBeUndefined();
     expect(response.authMethods?.length).toBeGreaterThan(0);
     for (const method of response.authMethods ?? []) {
       expect(method).not.toHaveProperty("id");
       expect(method).toMatchObject({ methodId: expect.any(String), type: "terminal" });
       expect((method as v2.AuthMethodTerminal).args?.[0]).toBe("--cli");
     }
+  });
+
+  it("advertises the client-neutral fork point to a v2 client that opts in", async () => {
+    const { app, authUpdate } = v2Client();
+    const response = await app.connectWith(connectRouter(), async (agent) => {
+      const response = await initializeV2(agent, { _meta: { forkPoint: { version: 1 } } });
+      await authUpdate(1);
+      return response;
+    });
+
+    expect(response._meta?.forkPoint).toEqual({ version: 1, boundary: "message" });
+  });
+
+  it("serves the client-neutral fork point on session/fork to a v2 client that opts in", async () => {
+    const { app, authUpdate } = v2Client();
+    const fork = await app.connectWith(connectRouter(), async (agent) => {
+      await initializeV2(agent, { _meta: { forkPoint: { version: 1 } } });
+      const { sessionId } = await agent.request(v2.methods.agent.session.new, { cwd });
+      vi.mocked(forkSession).mockClear();
+      vi.mocked(getSessionMessages).mockResolvedValueOnce([
+        transcriptEntry("user", "question-uuid", { role: "user", content: "Question" }),
+        transcriptEntry("assistant", "answer-uuid", {
+          id: "msg_answer",
+          role: "assistant",
+          content: [{ type: "text", text: "Answer" }],
+        }),
+      ] as unknown as Awaited<ReturnType<typeof getSessionMessages>>);
+      const fork = await agent.request(v2.methods.agent.session.fork, {
+        sessionId,
+        cwd,
+        _meta: { forkPoint: { messageId: "msg_answer" } },
+      });
+      await authUpdate(1);
+      expect(forkSession).toHaveBeenCalledWith(sessionId, { upToMessageId: "answer-uuid" });
+      return fork;
+    });
+
+    expect(fork._meta).toEqual({
+      forkPoint: { boundary: "message", messageId: "msg_answer", matchedBy: "id" },
+    });
   });
 
   it("does not advertise the AIR async tasks and goal extensions to a v2 AIR client", async () => {
