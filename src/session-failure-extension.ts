@@ -12,6 +12,11 @@ import {
   clientSupportsAirCapability,
   withAirMeta,
 } from "./air-extension.js";
+import {
+  clientOptsIntoNeutralSessionFailure,
+  NEUTRAL_SESSION_FAILURE_KEY,
+  NEUTRAL_SESSION_FAILURE_VERSION,
+} from "./tool-calls/client-capabilities.js";
 
 export function airSessionFailureCapabilityMeta(...additionalCapabilities: string[]) {
   return airCapabilityMeta(AIR_SESSION_FAILURE_CAPABILITY, ...additionalCapabilities);
@@ -166,8 +171,30 @@ const AIR_FAILURE_POLICY: Record<
   },
 };
 
-export function sessionFailureMeta(failure: PublishedSessionFailure) {
-  return withAirMeta(undefined, AIR_SESSION_FAILURE_CAPABILITY, {
+/**
+ * Where a client reads its typed failure records: `_meta.jetbrains.air` or
+ * top-level `_meta`. Both forms select the same typed lane, and only
+ * {@link sessionFailureMeta} tells them apart.
+ */
+export type SessionFailureForm = "air" | "neutral";
+
+/**
+ * The form of the typed failure lane that the client negotiated, or undefined
+ * when it stays on the JSON-RPC and transcript lane. A client that declares
+ * both forms gets the neutral one. Only the v1 agent reads the lane, so
+ * only ACP v1 reads the neutral opt-in.
+ */
+export function sessionFailureForm(
+  capabilities?: ClientCapabilities,
+): SessionFailureForm | undefined {
+  if (clientOptsIntoNeutralSessionFailure(capabilities)) return "neutral";
+  return clientSupportsAirCapability(capabilities, AIR_SESSION_FAILURE_CAPABILITY)
+    ? "air"
+    : undefined;
+}
+
+export function sessionFailureMeta(failure: PublishedSessionFailure, form: SessionFailureForm) {
+  const record = {
     id: failure.id,
     revision: failure.revision,
     category: failure.category,
@@ -176,7 +203,16 @@ export function sessionFailureMeta(failure: PublishedSessionFailure) {
     ...(failure.details ? { details: failure.details } : {}),
     ...(failure.reason ? { reason: failure.reason } : {}),
     actions: failure.actions,
-  });
+  };
+  return form === "neutral"
+    ? {
+        [NEUTRAL_SESSION_FAILURE_KEY]: {
+          version: NEUTRAL_SESSION_FAILURE_VERSION,
+          ...record,
+          kind: failure.kind,
+        },
+      }
+    : withAirMeta(undefined, AIR_SESSION_FAILURE_CAPABILITY, record);
 }
 
 /** `getSessionMessages` deliberately exposes only the API message and strips
@@ -235,10 +271,6 @@ export function activeUsageLimitMessage(
   return active;
 }
 
-export function supportsAirSessionFailures(capabilities?: ClientCapabilities): boolean {
-  return clientSupportsAirCapability(capabilities, AIR_SESSION_FAILURE_CAPABILITY);
-}
-
 function sessionFailureRecoveryPolicy(
   kind: ClaudeFailureKind,
   turnId?: string,
@@ -258,13 +290,13 @@ function sessionFailureRecoveryPolicy(
   }
 }
 
-/** Owns the AIR failure lifecycle for both the live consumer and history replay.
+/** Owns the typed failure lifecycle for both the live consumer and history replay.
  *  Published revisions become active only after delivery succeeds; recovery only
  *  removes internal active state because transcript records are historical. */
 export class SessionFailureController {
   private readonly sessionId: string;
   private readonly state: SessionFailureState;
-  private readonly capabilities?: ClientCapabilities;
+  private readonly form?: SessionFailureForm;
   private readonly isCurrent: () => boolean;
   private readonly sendUpdate: (notification: SessionNotification) => Promise<void>;
   private readonly logger: Logger;
@@ -279,17 +311,13 @@ export class SessionFailureController {
   }) {
     this.sessionId = options.sessionId;
     this.state = options.state;
-    this.capabilities = options.capabilities;
+    this.form = sessionFailureForm(options.capabilities);
     this.isCurrent = options.isCurrent;
     this.sendUpdate = options.sendUpdate;
     this.logger = options.logger;
   }
 
-  private isSupported(): boolean {
-    return supportsAirSessionFailures(this.capabilities);
-  }
-
-  private async emit(failure: PublishedSessionFailure): Promise<boolean> {
+  private async emit(failure: PublishedSessionFailure, form: SessionFailureForm): Promise<boolean> {
     if (!this.isCurrent()) {
       this.logger.error(
         `Session ${this.sessionId}: ignored AIR session failure from a stale consumer`,
@@ -301,7 +329,7 @@ export class SessionFailureController {
         sessionId: this.sessionId,
         update: {
           sessionUpdate: "session_info_update",
-          _meta: sessionFailureMeta(failure),
+          _meta: sessionFailureMeta(failure, form),
         },
       });
       return true;
@@ -346,7 +374,7 @@ export class SessionFailureController {
   async clear(
     shouldClear: (failure: PublishedSessionFailure) => boolean = () => true,
   ): Promise<boolean> {
-    if (!this.isSupported()) return true;
+    if (!this.form) return true;
     this.state.lastNotice = undefined;
     for (const failure of [...this.state.active.values()]) {
       if (!shouldClear(failure)) continue;
@@ -359,7 +387,7 @@ export class SessionFailureController {
     kind: ClaudeFailureKind,
     failureOptions: SessionFailureOptions = {},
   ): Promise<PublishedSessionFailure | undefined> {
-    if (!this.isSupported() || !this.isCurrent()) return undefined;
+    if (!this.form || !this.isCurrent()) return undefined;
     const policy = AIR_FAILURE_POLICY[kind];
     const title = failureOptions.title || policy.fallbackTitle;
     if (kind === "advisory") {
@@ -414,8 +442,8 @@ export class SessionFailureController {
     failureOptions: SessionFailureOptions = {},
   ): Promise<void> {
     const failure = await this.prepare(kind, failureOptions);
-    if (!failure) return;
-    if (await this.emit(failure)) this.recordActive(failure);
+    if (!failure || !this.form) return;
+    if (await this.emit(failure, this.form)) this.recordActive(failure);
   }
 
   async restore(
@@ -424,7 +452,7 @@ export class SessionFailureController {
     title: string,
     active = true,
   ): Promise<boolean> {
-    if (!this.isSupported() || !this.isCurrent()) return false;
+    if (!this.form || !this.isCurrent()) return false;
     const policy = AIR_FAILURE_POLICY[kind];
     const failure: PublishedSessionFailure = {
       id,
@@ -436,7 +464,7 @@ export class SessionFailureController {
       actions: policy.actions,
       recoveryPolicy: sessionFailureRecoveryPolicy(kind),
     };
-    if (!(await this.emit(failure))) return false;
+    if (!(await this.emit(failure, this.form))) return false;
     this.state.revisions.set(failure.id, failure.revision);
     if (active) {
       this.state.active.set(failure.id, failure);
