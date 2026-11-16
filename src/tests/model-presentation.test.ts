@@ -238,6 +238,79 @@ describe("model option currentValue is one of its options", () => {
       ? option.options.map((entry) => ("value" in entry ? entry.value : entry.group))
       : [];
 
+  describe("client-neutral recommendation", () => {
+    const sonnet: ModelInfo = {
+      value: "sonnet",
+      resolvedModel: "claude-sonnet-5",
+      displayName: "Sonnet",
+      description: "",
+    };
+    const haiku: ModelInfo = {
+      value: "haiku",
+      resolvedModel: "claude-haiku-4-5",
+      displayName: "Haiku",
+      description: "",
+    };
+    const state = (currentModelId: string, infos: ModelInfo[]) => ({
+      currentModelId,
+      availableModels: infos.map((info) => ({
+        modelId: info.value,
+        name: info.displayName,
+        description: info.description,
+      })),
+    });
+
+    it.each(["default", "haiku"])(
+      "names the row of the running default and leaves current %s and the rows alone",
+      (current) => {
+        const defaultRow: ModelInfo = {
+          value: "default",
+          resolvedModel: "claude-sonnet-5",
+          displayName: "Default",
+          description: "",
+        };
+        const infos = [defaultRow, sonnet, haiku];
+        const option = buildModelConfigOption(state(current, infos), infos, false, true);
+        const plain = buildModelConfigOption(state(current, infos), infos, false);
+
+        expect(option._meta).toEqual({ recommendedConfigValue: { version: 1, value: "sonnet" } });
+        expect(option).toEqual({ ...plain, _meta: option._meta });
+        expect(option.currentValue).toBe(current);
+      },
+    );
+
+    it("sends no record when no row matches the running default exactly", () => {
+      const defaultRow: ModelInfo = {
+        value: "default",
+        resolvedModel: "claude-sonnet-6",
+        displayName: "Default",
+        description: "",
+      };
+      const infos = [defaultRow, sonnet, haiku];
+
+      expect(
+        buildModelConfigOption(state("default", infos), infos, false, true),
+      ).not.toHaveProperty("_meta");
+    });
+
+    it("sends both records to a client that declares AIR too", () => {
+      const defaultRow: ModelInfo = {
+        value: "default",
+        resolvedModel: "claude-sonnet-5",
+        displayName: "Default",
+        description: "",
+      };
+      const infos = [defaultRow, sonnet, haiku];
+
+      expect(
+        buildModelConfigOption(state("default", infos), infos, true, true)._meta,
+      ).toMatchObject({
+        recommendedConfigValue: { version: 1, value: "sonnet" },
+        jetbrains: { air: { recommendedValue: "sonnet" } },
+      });
+    });
+  });
+
   it("lists an off-list current model after the listed models", () => {
     const offList: ModelInfo = {
       value: "claude-opus-4-1",
