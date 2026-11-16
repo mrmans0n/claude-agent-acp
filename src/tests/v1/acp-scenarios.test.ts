@@ -21,6 +21,7 @@
  * `ACP_SCENARIO_BASELINE_DIR=<dir>`. Then copy `<dir>/plain` and `<dir>/zed`
  * to `src/tests/acp-scenarios/origin-main/`.
  */
+import type { SessionNotification } from "@agentclientprotocol/sdk/unstable";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -1325,6 +1326,57 @@ describe.skipIf(baselineDir)("ACP scenarios", () => {
         {
           sessionUpdate: "plan_update",
           plan: { type: "markdown", planId: "plan-mode:toolu_r_plan", content: plan },
+        },
+      ]);
+    });
+
+    it("links a plan approved with clearing the context to its review", async () => {
+      const sent: SessionNotification[] = [];
+      const agent = new Agent({
+        sessionUpdate: async (notification: SessionNotification) => {
+          sent.push(notification);
+        },
+      });
+      await agent.initialize({
+        protocolVersion: 1,
+        clientCapabilities: { plan: {}, _meta: { planFile: { version: 1 } } },
+      });
+      const session = (fields: Record<string, unknown>) => ({
+        cwd: "/test",
+        models: { currentModelId: "default", availableModels: [] },
+        currentAgent: "default",
+        accumulatedUsage: {},
+        accumulatedModelUsage: {},
+        fastModeEnabled: false,
+        ultracodeEnabled: false,
+        configOptions: [],
+        contextWindowSize: 200_000,
+        input: { push: vi.fn() },
+        ...fields,
+      });
+      const turn = { settled: false, promptUuid: "00000000-0000-4000-8000-00000000f201" };
+      const old = session({ activeTurn: turn, turnQueue: [turn] });
+      agent.sessions["plan-session"] = old;
+      // The agent's own clear-context path, without a Claude Code process.
+      vi.spyOn(agent, "closeQueryStream").mockImplementation(() => {});
+      vi.spyOn(agent, "ensureConsumer").mockImplementation(() => {});
+      vi.spyOn(agent, "createSession").mockImplementation(async (...args: unknown[]) => {
+        const { publicSessionId } = args[1] as { publicSessionId: string };
+        agent.sessions[publicSessionId] = session({});
+      });
+
+      await agent.exitPlan.restart("plan-session", old, {
+        toolUseId: "toolu_plan",
+        plan,
+        mode: "auto",
+      });
+
+      expect(
+        sent.map(({ update }) => update).filter((update) => update.sessionUpdate === "plan_update"),
+      ).toEqual([
+        {
+          sessionUpdate: "plan_update",
+          plan: { type: "markdown", planId: "plan-mode:toolu_plan", content: plan },
         },
       ]);
     });
