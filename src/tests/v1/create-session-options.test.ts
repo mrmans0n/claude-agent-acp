@@ -31,6 +31,8 @@ let initError: Error | undefined;
 let setModelImpl: ((model: string) => Promise<void>) | undefined;
 let interruptImpl: (() => Promise<undefined>) | undefined;
 let closeSpy: ReturnType<typeof vi.fn<() => void>>;
+/** What the stream sends before it waits for the query to close. */
+let liveMessages: Record<string, unknown>[] = [];
 let mcpServerStatusResult: () => Promise<Array<{ name: string; status: string }>>;
 let mcpAuthenticateImpl: (serverName: string) => Promise<{
   authUrl?: string;
@@ -56,6 +58,8 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async () => {
           streamClosed();
         },
         next: async () => {
+          const live = liveMessages.shift();
+          if (live) return { done: false as const, value: live };
           await closed;
           return { done: true as const, value: undefined };
         },
@@ -118,6 +122,7 @@ describe("createSession options merging", () => {
     contextUsageCalls = [];
     sessionMessages = [];
     sessionMessagesResult = async () => sessionMessages;
+    liveMessages = [];
     vi.mocked(getSessionMessages).mockClear();
     vi.mocked(forkSession).mockClear();
     initModels = undefined;
@@ -2655,6 +2660,120 @@ describe("createSession options merging", () => {
           await loading;
         },
       );
+
+      const NEUTRAL_END_CLIENT: ClientCapabilities = { _meta: { loadReplayEnd: { version: 1 } } };
+      const neutralEnd = (notification: SessionNotification) =>
+        (notification.update._meta as any)?.loadReplayEnd;
+
+      it.each([
+        [
+          "the neutral form",
+          NEUTRAL_END_CLIENT,
+          { loadReplayEnd: { id: "load-1" } },
+          { loadReplayEnd: { version: 1, id: "load-1" } },
+        ],
+        [
+          "the neutral form, for a load that names no id",
+          NEUTRAL_END_CLIENT,
+          { loadReplayEnd: { id: 7 } },
+          { loadReplayEnd: { version: 1 } },
+        ],
+        [
+          "both forms",
+          {
+            _meta: {
+              ...LOAD_REPLAY_END_CLIENT._meta,
+              loadReplayEnd: { version: 1 },
+            },
+          } as ClientCapabilities,
+          { loadReplayEnd: { id: "load-1" } },
+          {
+            jetbrains: { air: { version: 1, loadReplayEnd: true } },
+            loadReplayEnd: { version: 1, id: "load-1" },
+          },
+        ],
+      ])(
+        "sends one end event in %s, echoing the load's id",
+        async (_label, clientCapabilities, loadMeta, endMeta) => {
+          sessionMessages = [userMessage("u1", "first")];
+          const updates: SessionNotification[] = [];
+          let atResponse: SessionNotification[] = [];
+          await (
+            await endAgent(updates, undefined, clientCapabilities)
+          )
+            .loadSession({
+              sessionId: "replay-probe",
+              cwd: process.cwd(),
+              mcpServers: [],
+              _meta: loadMeta,
+            })
+            .then(() => (atResponse = [...updates]));
+
+          expect(atResponse.map(({ update }) => update.sessionUpdate)).toEqual([
+            "user_message_chunk",
+            "session_info_update",
+          ]);
+          expect(atResponse.at(-1)).toEqual({
+            sessionId: "replay-probe",
+            update: { sessionUpdate: "session_info_update", _meta: endMeta },
+          });
+          expect(updates.filter(neutralEnd)).toHaveLength(1);
+        },
+      );
+
+      it("echoes the load's id after the replay of a session that is already live", async () => {
+        const updates: SessionNotification[] = [];
+        const loadAgent = await endAgent(updates, undefined, NEUTRAL_END_CLIENT);
+        const { sessionId } = await loadAgent.newSession({ cwd: process.cwd(), mcpServers: [] });
+        sessionMessages = [userMessage("u1", "first")];
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        updates.length = 0;
+
+        await loadAgent.loadSession({
+          sessionId,
+          cwd: process.cwd(),
+          mcpServers: [],
+          _meta: { loadReplayEnd: { id: "load-2" } },
+        });
+
+        expect(updates.filter(neutralEnd).map(neutralEnd)).toEqual([{ version: 1, id: "load-2" }]);
+      });
+
+      // The reader of a loaded session starts after the response (#1623), so
+      // what Claude Code sends before the first prompt follows the end event.
+      it("ends the neutral replay before the live output of a loaded session", async () => {
+        sessionMessages = [userMessage("u1", "first")];
+        liveMessages = [
+          {
+            type: "assistant",
+            parent_tool_use_id: null,
+            uuid: "00000000-0000-4000-8000-00000000c001",
+            session_id: "replay-probe",
+            message: {
+              id: "msg_live",
+              role: "assistant",
+              model: "claude-sonnet-4-6",
+              content: [{ type: "text", text: "Live" }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          },
+        ];
+        const updates: SessionNotification[] = [];
+        const loadAgent = await endAgent(updates, undefined, NEUTRAL_END_CLIENT);
+
+        await loadAgent.loadSession({
+          sessionId: "replay-probe",
+          cwd: process.cwd(),
+          mcpServers: [],
+          _meta: { loadReplayEnd: { id: "load-3" } },
+        });
+        const isLive = ({ update }: SessionNotification) =>
+          update.sessionUpdate === "agent_message_chunk";
+        await vi.waitFor(() => expect(updates.some(isLive)).toBe(true));
+
+        expect(updates.filter(neutralEnd).map(neutralEnd)).toEqual([{ version: 1, id: "load-3" }]);
+        expect(updates.findIndex(neutralEnd)).toBeLessThan(updates.findIndex(isLive));
+      });
 
       it("sends the end event for an empty history", async () => {
         sessionMessages = [];
