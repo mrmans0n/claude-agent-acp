@@ -490,6 +490,65 @@ describe("client-neutral diff patches", () => {
       },
     ]);
   });
+
+  it.each([
+    {
+      name: "Edit",
+      toolResponse: {
+        oldString: "old",
+        newString: "new",
+        originalFile: "line 1\nold\n",
+        userModified: false,
+        replaceAll: false,
+      },
+      kept: { userModified: false, replaceAll: false },
+    },
+    {
+      name: "Write",
+      toolResponse: { type: "update", content: "line 1\nnew\n", originalFile: "line 1\nold\n" },
+      kept: { type: "update" },
+    },
+  ])(
+    "keeps the gitDiff out of a neutral client's $name toolResponse",
+    async ({ name, toolResponse, kept }) => {
+      const filePath = await temporaryFile("line 1\nnew\n");
+      // Claude Code's FileEditOutput and FileWriteOutput (SDK 0.3.325) can carry
+      // the change again as a git diff.
+      const response = {
+        ...toolResponse,
+        filePath,
+        structuredPatch: [
+          {
+            oldStart: 1,
+            oldLines: 2,
+            newStart: 1,
+            newLines: 2,
+            lines: [" line 1", "-old", "+new"],
+          },
+        ],
+        gitDiff: {
+          filename: "file.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          changes: 2,
+          patch: "@@ -1,2 +1,2 @@\n line 1\n-old\n+new\n",
+        },
+      };
+      const hookResponse = async (capabilities: Record<string, unknown>) =>
+        (
+          (await AcpToolCallRenderer.for(capabilities).hookResult({ id: "t", name }, response))
+            ?._meta as { claudeCode?: { toolResponse?: unknown } } | undefined
+        )?.claudeCode?.toolResponse;
+
+      expect(await hookResponse({ _meta: { diffPatch: { version: 1 } } })).toEqual({
+        ...kept,
+        filePath,
+      });
+      // A client that did not opt in keeps the whole toolResponse.
+      expect(await hookResponse({})).toEqual(response);
+    },
+  );
 });
 
 describe("ACP v2 diffs", () => {
