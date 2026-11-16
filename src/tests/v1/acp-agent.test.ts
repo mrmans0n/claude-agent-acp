@@ -15436,6 +15436,7 @@ describe("logout", () => {
     "recommendedConfigValue",
     "commandPresentation",
     "loadReplayEnd",
+    "promptSuggestions",
   ])("client-neutral %s advert", (key) => {
     it("advertises version 1 to a client that opts in with any version, with no AIR key", async () => {
       const response = await createMockAgent().initialize({
@@ -15743,6 +15744,51 @@ describe("session/fork", () => {
       expect(response.usage).toMatchObject({ inputTokens: 7, outputTokens: 3 });
     },
   );
+
+  // The reader runs from setup (#1623), so a cron cycle that Claude Code runs
+  // before the first prompt predicts after its own result, for no request.
+  it("gives a neutral promptSuggestions client only the prediction of the prompt that asked", async () => {
+    const state = (state: "running" | "idle") => ({
+      type: "system",
+      subtype: "session_state_changed",
+      state,
+      uuid: randomUUID(),
+      session_id: "resumed-id",
+    });
+    const suggestion = (text: string) => ({
+      type: "prompt_suggestion",
+      suggestion: text,
+      uuid: randomUUID(),
+      session_id: "resumed-id",
+    });
+    const { agent, updates } = forkingAgent(
+      (prompt) => [
+        userEcho(prompt),
+        state("running"),
+        successfulResultMessage(),
+        suggestion("Run the tests"),
+        state("idle"),
+      ],
+      [state("running"), successfulResultMessage(), suggestion("Check the cron"), state("idle")],
+    );
+    await initializeClient(agent, { _meta: { promptSuggestions: { version: 1 } } });
+    await agent.resumeSession({ sessionId: "resumed-id", cwd: "/workspace", mcpServers: [] });
+    await vi.waitFor(() => expect(agent.sessions["resumed-id"].lastSessionState).toBe("idle"));
+    const predictions = () =>
+      updates.flatMap(({ update }) => {
+        const meta = update.sessionUpdate === "session_info_update" ? (update._meta as any) : {};
+        return meta?.promptSuggestions ? [meta.promptSuggestions] : [];
+      });
+
+    await agent.prompt({
+      sessionId: "resumed-id",
+      prompt: [{ type: "text", text: "go on" }],
+      _meta: { promptSuggestions: { id: "prompt-1" } },
+    });
+
+    await vi.waitFor(() => expect(predictions()).toHaveLength(1));
+    expect(predictions()).toEqual([{ suggestions: [{ text: "Run the tests" }], id: "prompt-1" }]);
+  });
 
   // The reader runs from setup (#1623), so the init that Claude Code sends
   // before the first prompt starts the skill file read at once.
