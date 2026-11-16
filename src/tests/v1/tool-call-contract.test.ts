@@ -88,6 +88,43 @@ describe("ClientCapabilities", () => {
       planFile: false,
     });
   });
+
+  it.each([
+    { declaration: { version: 1 }, optsIn: true },
+    { declaration: { version: 2 }, optsIn: true },
+    { declaration: true, optsIn: false },
+    { declaration: "1", optsIn: false },
+    { declaration: [1], optsIn: false },
+    { declaration: null, optsIn: false },
+    { declaration: {}, optsIn: false },
+    { declaration: { version: 0 }, optsIn: false },
+    { declaration: { version: 1.5 }, optsIn: false },
+    { declaration: { version: "1" }, optsIn: false },
+  ])("opts into the client-neutral plan file with $declaration", ({ declaration, optsIn }) => {
+    const capabilities = ToolCallCapabilities.from({ _meta: { planFile: declaration } });
+    expect(capabilities.neutralPlanFile).toBe(optsIn);
+    expect(capabilities.linksPlanToReview).toBe(optsIn);
+  });
+
+  it("links the approved plan to its review for AIR and a neutral planFile client", () => {
+    const neutral = { _meta: { planFile: { version: 1 } } };
+    expect(ToolCallCapabilities.from({}).linksPlanToReview).toBe(false);
+    expect(ToolCallCapabilities.from(plainAir).linksPlanToReview).toBe(true);
+    // ACP v2 ignores the opt-in.
+    expect(ToolCallCapabilities.from(neutral, { v2: true })).toMatchObject({
+      neutralPlanFile: false,
+      linksPlanToReview: false,
+    });
+  });
+
+  it("takes the neutral plan file over the AIR planFile", () => {
+    const capabilities = ToolCallCapabilities.from({
+      _meta: { ...air._meta, planFile: { version: 1 } },
+    });
+    expect(capabilities.neutralPlanFile).toBe(true);
+    // The AIR form goes: no path in place of the plan text, no clear call.
+    expect(capabilities.air).toMatchObject({ client: true, planFile: false });
+  });
 });
 
 describe("the ACP tool call contract", () => {
@@ -530,6 +567,82 @@ describe("the ACP tool call contract", () => {
         });
         expect(call.rawInput).toEqual(withFile);
         expect(updates.every((update) => !("rawInput" in update))).toBe(true);
+      });
+
+      describe("for a client-neutral planFile client", () => {
+        const neutral: ClientCapabilities = { _meta: { planFile: { version: 1 } } };
+        /** The hex SHA-256 of the UTF-8 text "1. Do it". */
+        const digest = "74a9508d2e6c3d0a1d8d79cfce27c96d98a6a16c9f06d2e48b6c22866073ae06";
+
+        it("sends the plan ID, the plan file, and the digest next to the plan text", () => {
+          const withFile = { plan: "1. Do it", planFilePath };
+          const { call, updates } = report(neutral, "ExitPlanMode", withFile, {
+            content: "User has approved your plan.",
+            structured: { plan: "1. Do it", isAgent: false, filePath: planFilePath },
+          });
+          const planFile = {
+            version: 1,
+            planId: "plan-mode:t",
+            path: planFilePath,
+            sha256: digest,
+          };
+          expect(call).toMatchObject({
+            _meta: { claudeCode: { toolName: "ExitPlanMode" }, planFile },
+            rawInput: withFile,
+            content: [{ type: "content", content: { type: "text", text: "1. Do it" } }],
+          });
+          // No clear call: the result is the only update.
+          expect(updates).toHaveLength(1);
+          expect(updates[0]).toMatchObject({ status: "completed", _meta: { planFile } });
+          expect(updates[0]).not.toHaveProperty("rawInput");
+        });
+
+        it.each([
+          { plan: "1. Do it", sha256: digest },
+          // The exact UTF-8 text: no trimming, multi-byte characters.
+          {
+            plan: "Plan ✓",
+            sha256: "cd6615c7c821f4cae7a564f062e82bde9cedc0511f23a205f3f2100d611101d3",
+          },
+        ])("digests the exact plan text $plan", ({ plan, sha256 }) => {
+          expect(report(neutral, "ExitPlanMode", { plan }).call._meta.planFile.sha256).toBe(sha256);
+        });
+
+        it("leaves out the path when the input names no regular file", () => {
+          const directory = { plan: "1. Do it", planFilePath: dir };
+          const relative = { plan: "1. Do it", planFilePath: "plan.md" };
+          const missing = { plan: "1. Do it", planFilePath: path.join(dir, "missing.md") };
+          for (const input of [{ plan: "1. Do it" }, missing, directory, relative]) {
+            const { call } = report(neutral, "ExitPlanMode", input);
+            expect(call._meta.planFile).toEqual({
+              version: 1,
+              planId: "plan-mode:t",
+              sha256: digest,
+            });
+            expect(call.rawInput).toEqual(input);
+          }
+        });
+
+        it("sends no plan file while the input has no plan", () => {
+          expect(report(neutral, "ExitPlanMode", {}).call._meta).not.toHaveProperty("planFile");
+          expect(report({}, "ExitPlanMode", { plan: "1. Do it" }).call._meta).not.toHaveProperty(
+            "planFile",
+          );
+        });
+
+        it("sends only the neutral form to a client that also declares the AIR planFile", () => {
+          const both: ClientCapabilities = {
+            _meta: { ...planFileAir._meta, planFile: { version: 1 } },
+          };
+          const withFile = { plan: "1. Do it", planFilePath };
+          const { call, updates } = report(both, "ExitPlanMode", withFile, {
+            content: "User has approved your plan.",
+          });
+          expect(call._meta.planFile).toMatchObject({ planId: "plan-mode:t", path: planFilePath });
+          expect(call.rawInput).toEqual(withFile);
+          expect(updates).toHaveLength(1);
+          expect(updates[0]._meta.planFile).toMatchObject({ planId: "plan-mode:t" });
+        });
       });
     });
   });
