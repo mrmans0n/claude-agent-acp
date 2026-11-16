@@ -5,6 +5,7 @@ import { constants } from "node:fs";
 import { type FileHandle, open } from "node:fs/promises";
 import path from "node:path";
 import { AIR_DIFF_PATCH_CAPABILITY, withAirMeta } from "./air-extension.js";
+import { NEUTRAL_DIFF_PATCH_KEY } from "./tool-calls/client-capabilities.js";
 import { normalizeWriteInput } from "./tool-calls/reporters/file-edit.js";
 
 /**
@@ -82,9 +83,9 @@ interface FilePatch {
 
 /**
  * The diff that carries an exact patch: AIR's `diffPatch` extension of a v1
- * diff, or an ACP v2 diff.
+ * diff, the client-neutral `diffPatch` of a v1 diff, or an ACP v2 diff.
  */
-export type PatchForm = "air" | "v2";
+export type PatchForm = "air" | "neutral" | "v2";
 
 /**
  * How a git patch names its file. `git` is git's own form: the leading slash
@@ -686,9 +687,15 @@ function exactPatch(
 
 /** The content that carries a patch, in the given form. */
 function patchContent(filePath: string, patch: FilePatch, form: PatchForm): ToolCallContent {
-  return form === "v2"
-    ? v2DiffContent(filePath, patch.change, patch.hunks)
+  if (form === "v2") return v2DiffContent(filePath, patch.change, patch.hunks);
+  return form === "neutral"
+    ? neutralPatchContent(filePath, patch)
     : airPatchContent(filePath, patch);
+}
+
+/** The `diffPatch` payload of a change, in both v1 forms. */
+function diffPatchPayload(filePath: string, { change, hunks }: FilePatch) {
+  return { version: 1, format: "git_patch", text: gitPatchText(filePath, change, hunks) };
 }
 
 /**
@@ -697,17 +704,28 @@ function patchContent(filePath: string, patch: FilePatch, form: PatchForm): Tool
  * `oldText: null` and `newText: ""` only satisfy the ACP schema. The adapter
  * sends this form only to a client that advertised `diffPatch`.
  */
-function airPatchContent(filePath: string, { change, hunks }: FilePatch): ToolCallContent {
+function airPatchContent(filePath: string, patch: FilePatch): ToolCallContent {
   return {
     type: "diff",
     path: filePath,
     oldText: null,
     newText: "",
-    _meta: withAirMeta(undefined, AIR_DIFF_PATCH_CAPABILITY, {
-      version: 1,
-      format: "git_patch",
-      text: gitPatchText(filePath, change, hunks),
-    }),
+    _meta: withAirMeta(undefined, AIR_DIFF_PATCH_CAPABILITY, diffPatchPayload(filePath, patch)),
+  };
+}
+
+/**
+ * A diff block in the client-neutral patch form: the payload of the AIR form
+ * at top-level `_meta.diffPatch`. The adapter sends this form only to a client
+ * that opted in with `clientCapabilities._meta.diffPatch`.
+ */
+function neutralPatchContent(filePath: string, patch: FilePatch): ToolCallContent {
+  return {
+    type: "diff",
+    path: filePath,
+    oldText: null,
+    newText: "",
+    _meta: { [NEUTRAL_DIFF_PATCH_KEY]: diffPatchPayload(filePath, patch) },
   };
 }
 
