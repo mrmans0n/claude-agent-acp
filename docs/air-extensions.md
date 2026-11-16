@@ -1263,7 +1263,8 @@ They are not assistant text and not temporary banners.
 ### Activation
 
 The extension is active when the client declares `sessionFailure`.
-Without it, the existing JSON-RPC errors and transcript text stay unchanged.
+A client that is not AIR can get the same lane, see [Client-neutral session failure](#client-neutral-session-failure).
+Without either, the existing JSON-RPC errors and transcript text stay unchanged.
 
 ### Record
 
@@ -1403,6 +1404,62 @@ Each match is replayed as a typed record at its original position.
 The latest match stays active until a later real model answer proves recovery.
 For a client with the capability, replay suppresses the duplicate assistant text and uses the stored Claude text as `title`.
 A client without the capability gets the original transcript and no typed record.
+
+### Client-neutral session failure
+
+Any client can get the typed failure lane with top-level `_meta.sessionFailure` in place of `_meta.jetbrains.air.sessionFailure`.
+It opts in at `initialize` with `clientCapabilities._meta.sessionFailure: { "version": 1 }`.
+Only an object whose `version` is an integer of at least 1 opts in; `true`, a string, an array, `null`, a missing `version`, `0` or a fraction enables nothing.
+
+The `initialize` response of an opted-in client carries the agent side at top level, under ACP v1 only:
+
+```json
+{
+  "_meta": {
+    "sessionFailure": { "version": 1 }
+  }
+}
+```
+
+The opt-in selects the behavior, not only the place of the payload.
+Everything in this section applies as it does for AIR:
+
+- A terminal failure ends the turn with `stopReason: end_turn` and the record on `PromptResponse._meta`, not with a JSON-RPC rejection.
+- A rejection that still goes out, such as that of a queued turn after a transport loss, has no raw detail.
+- The assistant text of a provider failure is not sent as well as the record.
+- An `api_retry` is a warning record that a terminal failure updates in place.
+- A model fallback notice is an advisory record, unless the client declares `session.notices`.
+- `session/load` replays a usage limit as a record and leaves out the duplicate text.
+- An authentication failure stays the ACP `authRequired` error and gets no record.
+
+The record goes in a `session_info_update` or on the `PromptResponse`, with the fields of [Record](#record) and two more:
+
+```json
+{
+  "_meta": {
+    "sessionFailure": {
+      "version": 1,
+      "id": "prompt-uuid:error",
+      "revision": 1,
+      "category": "limit",
+      "severity": "error",
+      "title": "You've hit your individual spend limit · run /usage-credits to ask your admin for a higher limit",
+      "actions": [],
+      "kind": "quota_exhausted"
+    }
+  }
+}
+```
+
+| Field     | Type    | Meaning                                                                                                                                                                                                                                                                     |
+| --------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version` | integer | Equals `1`.                                                                                                                                                                                                                                                                 |
+| `kind`    | string  | The internal failure kind of the adapter: `access_denied`, `advisory`, `bad_request`, `budget_exhausted`, `context_exhausted`, `internal_error`, `overloaded`, `provider_error`, `quota_exhausted`, `rate_limited`, `transport_lost`, or `worker_shutdown`. An open string. |
+
+- The client ignores a `kind` that it does not know, and must not infer actions from it.
+- A client that declares both the AIR `sessionFailure` and the neutral opt-in gets the neutral form only. Its AIR capability list is unchanged.
+- The AIR record has no `version` and no `kind`.
+- ACP v2 ignores the opt-in. A v2 AIR client keeps the AIR form, and any other v2 client gets no record.
 
 ## Native subagent sessions
 
