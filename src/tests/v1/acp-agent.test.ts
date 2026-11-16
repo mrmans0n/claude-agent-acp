@@ -15597,8 +15597,9 @@ describe("session/fork", () => {
   const modes = { currentModeId: "plan", availableModes: [] };
 
   /** An agent whose sessions start without Claude Code: each one gets a
-   *  scripted query that runs `turn` for every prompt. */
-  function forkingAgent(turn: (prompt: any) => any[] = () => []) {
+   *  scripted query that runs `turn` for every prompt, after it sent `backlog`
+   *  with no prompt open. */
+  function forkingAgent(turn: (prompt: any) => any[] = () => [], backlog: any[] = []) {
     const updates: SessionNotification[] = [];
     const agent = new ClaudeAcpAgent(
       { sessionUpdate: async (n: SessionNotification) => updates.push(n) } as unknown as AcpClient,
@@ -15612,6 +15613,7 @@ describe("session/fork", () => {
         const sessionId = options.resume as string;
         const input = new Pushable<any>();
         async function* answer() {
+          yield* backlog;
           for await (const prompt of input) yield* turn(prompt);
         }
         agent.sessions[sessionId] = mockSessionState(
@@ -15690,6 +15692,172 @@ describe("session/fork", () => {
 
     expect(createSession).toHaveBeenCalledTimes(1);
     expect(agent.sessions["fork-id"]).toBe(forked);
+  });
+
+  // After a bridge restart, Claude Code runs a cron cycle and a background
+  // task's follow-up before the first prompt. Nothing read the stream until
+  // then, and the prompt took the cron cycle's result as its own.
+  it.each(["resumeSession", "loadSession"] as const)(
+    "reads what Claude Code sends before the first prompt after %s (#1621)",
+    async (method) => {
+      const state = (state: "running" | "idle") => ({
+        type: "system",
+        subtype: "session_state_changed",
+        state,
+        uuid: randomUUID(),
+        session_id: "resumed-id",
+      });
+      const usage = (input: number, output: number) => ({
+        input_tokens: input,
+        output_tokens: output,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      });
+      const { agent } = forkingAgent(
+        (prompt) => [
+          userEcho(prompt),
+          state("running"),
+          successfulResultMessage({ usage: usage(7, 3) }),
+          state("idle"),
+        ],
+        [
+          // A cron prompt: its result has no origin.
+          state("running"),
+          successfulResultMessage({ usage: usage(111, 11) }),
+          state("idle"),
+          state("running"),
+          successfulResultMessage({ origin: { kind: "task-notification" }, usage: usage(222, 22) }),
+          state("idle"),
+        ],
+      );
+      // Only a load replays the transcript.
+      if (method === "loadSession") vi.mocked(getSessionMessages).mockResolvedValueOnce([]);
+      await agent[method]({ sessionId: "resumed-id", cwd: "/workspace", mcpServers: [] });
+      // The reader starts after the response.
+      await vi.waitFor(() => expect(agent.sessions["resumed-id"].lastSessionState).toBe("idle"));
+
+      const response = await agent.prompt({
+        sessionId: "resumed-id",
+        prompt: [{ type: "text", text: "go on" }],
+      });
+
+      expect(response.usage).toMatchObject({ inputTokens: 7, outputTokens: 3 });
+    },
+  );
+
+  // The reader runs from setup (#1623), so a cron cycle that Claude Code runs
+  // before the first prompt predicts after its own result, for no request.
+  it("gives a neutral promptSuggestions client only the prediction of the prompt that asked", async () => {
+    const state = (state: "running" | "idle") => ({
+      type: "system",
+      subtype: "session_state_changed",
+      state,
+      uuid: randomUUID(),
+      session_id: "resumed-id",
+    });
+    const suggestion = (text: string) => ({
+      type: "prompt_suggestion",
+      suggestion: text,
+      uuid: randomUUID(),
+      session_id: "resumed-id",
+    });
+    const { agent, updates } = forkingAgent(
+      (prompt) => [
+        userEcho(prompt),
+        state("running"),
+        successfulResultMessage(),
+        suggestion("Run the tests"),
+        state("idle"),
+      ],
+      [state("running"), successfulResultMessage(), suggestion("Check the cron"), state("idle")],
+    );
+    await initializeClient(agent, { _meta: { promptSuggestions: { version: 1 } } });
+    await agent.resumeSession({ sessionId: "resumed-id", cwd: "/workspace", mcpServers: [] });
+    await vi.waitFor(() => expect(agent.sessions["resumed-id"].lastSessionState).toBe("idle"));
+    const predictions = () =>
+      updates.flatMap(({ update }) => {
+        const meta = update.sessionUpdate === "session_info_update" ? (update._meta as any) : {};
+        return meta?.promptSuggestions ? [meta.promptSuggestions] : [];
+      });
+
+    await agent.prompt({
+      sessionId: "resumed-id",
+      prompt: [{ type: "text", text: "go on" }],
+      _meta: { promptSuggestions: { id: "prompt-1" } },
+    });
+
+    await vi.waitFor(() => expect(predictions()).toHaveLength(1));
+    expect(predictions()).toEqual([{ suggestions: [{ text: "Run the tests" }], id: "prompt-1" }]);
+  });
+
+  // The reader runs from setup (#1623), so the init that Claude Code sends
+  // before the first prompt starts the skill file read at once.
+  it("sends a neutral commandPresentation client the skill records of the init before the first prompt", async () => {
+    const { agent, updates } = forkingAgent(
+      () => [],
+      [{ type: "system", subtype: "init", session_id: "resumed-id" }],
+    );
+    await initializeClient(agent, { _meta: { commandPresentation: { version: 1 } } });
+
+    await agent.resumeSession({ sessionId: "resumed-id", cwd: "/workspace", mcpServers: [] });
+    // Before the setup's timer starts the reader.
+    Object.assign(agent.sessions["resumed-id"].query, {
+      supportedCommands: async () => [
+        { name: "simplify", description: "Simplify", argumentHint: "", builtin: true },
+      ],
+      getContextUsage: async () => ({
+        skills: { skillFrontmatter: [{ name: "simplify", source: "built-in" }] },
+      }),
+    });
+
+    await vi.waitFor(() =>
+      expect(updates).toContainEqual({
+        sessionId: "resumed-id",
+        update: {
+          sessionUpdate: "available_commands_update",
+          availableCommands: expect.arrayContaining([
+            expect.objectContaining({
+              name: "simplify",
+              _meta: { commandPresentation: { version: 1, kind: "skill" } },
+            }),
+          ]),
+        },
+      }),
+    );
+  });
+
+  // The reader runs from setup (#1623), so a stream loss before the first
+  // prompt reaches a client on the neutral typed lane at once.
+  it("reports a stream loss before the first prompt in the neutral session failure form", async () => {
+    const lost = {
+      [Symbol.iterator]: () => ({
+        next: (): IteratorResult<any> => {
+          throw new Error("private transport URL and token");
+        },
+      }),
+    };
+    const { agent, updates } = forkingAgent(() => [], lost as unknown as any[]);
+    await initializeClient(agent, { _meta: { sessionFailure: { version: 1 } } });
+
+    await agent.resumeSession({ sessionId: "resumed-id", cwd: "/workspace", mcpServers: [] });
+
+    await vi.waitFor(() =>
+      expect(updates).toContainEqual({
+        sessionId: "resumed-id",
+        update: {
+          sessionUpdate: "session_info_update",
+          _meta: {
+            sessionFailure: expect.objectContaining({
+              version: 1,
+              kind: "transport_lost",
+              category: "connection",
+              actions: ["new_session"],
+            }),
+          },
+        },
+      }),
+    );
+    expect(JSON.stringify(updates)).not.toContain("private transport URL and token");
   });
 
   it("fails when the forked session cannot start", async () => {
@@ -27299,6 +27467,38 @@ describe("deferred settlement for live background subagents (issues #864/#866)",
         ]);
       });
 
+      // A scheduler fire is not an autonomous origin: its result has no
+      // `origin`, so it takes the user lane with no turn to claim it.
+      it("ends the task at the result of the cycle that a fire started (#1620)", async () => {
+        const { agent, asyncTaskUpdates } = await airAgent();
+        injectGeneratorSession(agent, (input) => {
+          async function* messageGenerator() {
+            const iter = input[Symbol.asyncIterator]();
+            yield userEcho((await iter.next()).value);
+            yield running();
+            yield assistantText("working");
+            yield resultMessage();
+            // The overdue ScheduleWakeup fires at once, before the prompt's idle.
+            yield lifecycleStarted({ wakeup_source: "loop_wakeup" });
+            yield assistantText("That wakeup was stale");
+            yield resultMessage();
+            // One idle covers both results.
+            yield idle();
+          }
+          return messageGenerator();
+        });
+
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "go" }] });
+        await agent.sessions["test-session"]?.consumer;
+
+        // The stream ending closes an open task as failed, so a task that only the
+        // end of the stream ended would not be completed.
+        expect(asyncTaskUpdates().map((update) => update.state ?? update.sessionUpdate)).toEqual([
+          "async_task_spawned",
+          "completed",
+        ]);
+      });
+
       it("leaves the task as before for a started frame without a known wakeup source", async () => {
         const updates = await autonomousTurn((afterRunning) =>
           afterRunning
@@ -31643,6 +31843,81 @@ describe("agent selection config option", () => {
       expect(session.currentAgent).toBe("default");
       const agentOption = session.configOptions.find((o) => o.id === "agent");
       expect(agentOption?.currentValue).toBe("default");
+    });
+  });
+
+  describe("switching the model", () => {
+    it("keeps the neutral recommendation on the model option that a model switch rebuilds", async () => {
+      const agent = new ClaudeAcpAgent({ sessionUpdate: async () => {} } as unknown as AcpClient, {
+        log: () => {},
+        error: () => {},
+      });
+      await initializeClient(agent, { _meta: { recommendedConfigValue: { version: 1 } } });
+      const modelInfos = [
+        {
+          value: "default",
+          displayName: "Default",
+          description: "",
+          resolvedModel: "claude-sonnet-5",
+        },
+        {
+          value: "sonnet",
+          displayName: "Sonnet",
+          description: "",
+          resolvedModel: "claude-sonnet-5",
+        },
+        {
+          value: "haiku",
+          displayName: "Haiku",
+          description: "",
+          resolvedModel: "claude-haiku-4-5",
+        },
+      ];
+      const models = {
+        currentModelId: "default",
+        availableModels: modelInfos.map((info) => ({
+          modelId: info.value,
+          name: info.displayName,
+        })),
+      };
+      function* idle() {}
+      const query = Object.assign(idle(), {
+        setModel: vi.fn(async () => {}),
+        applyFlagSettings: vi.fn(async () => {}),
+        getContextUsage: vi.fn(async () => ({ rawMaxTokens: 200_000 })),
+        interrupt: vi.fn(),
+        close: vi.fn(),
+      });
+      agent.sessions["model-session"] = mockSessionState(
+        {
+          query,
+          input: new Pushable(),
+          models,
+          modelInfos,
+          configOptions: buildConfigOptions(
+            baseModes,
+            models,
+            modelInfos,
+            undefined,
+            [],
+            "default",
+          ),
+        },
+        agent,
+        "model-session",
+      );
+
+      const { configOptions } = await agent.setSessionConfigOption({
+        sessionId: "model-session",
+        configId: "model",
+        value: "haiku",
+      });
+
+      // The rebuilt row list and current value stay those of a plain client.
+      const model = configOptions.find((option) => option.id === "model");
+      expect(query.setModel).toHaveBeenCalledWith("haiku");
+      expect(model?.currentValue).toBe("haiku");
+      expect(model?._meta).toEqual({ recommendedConfigValue: { version: 1, value: "sonnet" } });
     });
   });
 });

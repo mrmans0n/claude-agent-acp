@@ -521,6 +521,28 @@ describe("native file-change report integration", () => {
       await agent.dispose();
     });
 
+    // session/load sets up the reporter in the negotiated form, as session/new does.
+    it("reports at top level on the first prompt of a loaded session", async () => {
+      const updates: SessionNotification[] = [];
+      const { agent } = await createAgent(updates, neutralCapabilities);
+      const loadedId = randomUUID();
+
+      await agent.loadSession({ sessionId: loadedId, cwd: process.cwd(), mcpServers: [] });
+      await agent.prompt(neutralPrompt(loadedId, "request-loaded"));
+
+      expect(observedOptions?.resume).toBe(loadedId);
+      expect(observedOptions?.enableFileCheckpointing).toBe(true);
+      expect(
+        updates
+          .filter((notification) => notification.sessionId === loadedId)
+          .flatMap((n) => {
+            const meta = reportedMeta(n);
+            return meta ? [meta] : [];
+          }),
+      ).toEqual([{ agentFileChangeReport: reportedChange("request-loaded", ["src/changed.ts"]) }]);
+      await agent.dispose();
+    });
+
     it("adds a subagent edit to the list", async () => {
       scenario = "subagentEdit";
       const updates: SessionNotification[] = [];

@@ -5,7 +5,7 @@ import {
   SessionNotification,
 } from "@agentclientprotocol/sdk/unstable";
 import type { ClientCapabilities } from "@agentclientprotocol/sdk/unstable";
-import { getSessionMessages, type Options } from "@anthropic-ai/claude-agent-sdk";
+import { forkSession, getSessionMessages, type Options } from "@anthropic-ai/claude-agent-sdk";
 import type { ClaudeAcpAgent as ClaudeAcpAgentType } from "../../v1/acp-agent.js";
 import type { AcpClient } from "../../acp-client.js";
 import type { AcpSessionNotification } from "../../acp-subagents.js";
@@ -15,6 +15,9 @@ import { startupFailure } from "../helpers.js";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+
+/** The session that the mocked SDK `forkSession` makes. */
+const FORK_ID = "3d0f7a52-9b1e-4c7d-8e2a-6f4b5c1d0e9a";
 
 let capturedOptions: Options | undefined;
 let contextUsageResult: (() => Promise<{ rawMaxTokens: number; model?: string }>) | undefined;
@@ -28,6 +31,8 @@ let initError: Error | undefined;
 let setModelImpl: ((model: string) => Promise<void>) | undefined;
 let interruptImpl: (() => Promise<undefined>) | undefined;
 let closeSpy: ReturnType<typeof vi.fn<() => void>>;
+/** What the stream sends before it waits for the query to close. */
+let liveMessages: Record<string, unknown>[] = [];
 let mcpServerStatusResult: () => Promise<Array<{ name: string; status: string }>>;
 let mcpAuthenticateImpl: (serverName: string) => Promise<{
   authUrl?: string;
@@ -43,9 +48,21 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async () => {
     ...actual,
     query: (args: { prompt: unknown; options: Options }) => {
       capturedOptions = args.options;
+      // Like Claude Code's, the stream stays open until the query is closed.
+      let streamClosed = () => {};
+      const closed = new Promise<void>((resolve) => (streamClosed = resolve));
       return makeMockQuery({
         interrupt: () => (interruptImpl ? interruptImpl() : Promise.resolve(undefined)),
-        close: () => closeSpy(),
+        close: () => {
+          closeSpy();
+          streamClosed();
+        },
+        next: async () => {
+          const live = liveMessages.shift();
+          if (live) return { done: false as const, value: live };
+          await closed;
+          return { done: true as const, value: undefined };
+        },
         initializationResult: async () => {
           await initGate;
           if (initError) throw initError;
@@ -61,6 +78,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async () => {
       });
     },
     getSessionMessages: vi.fn(() => sessionMessagesResult()),
+    forkSession: vi.fn(async () => ({ sessionId: FORK_ID })),
   };
 });
 
@@ -104,7 +122,9 @@ describe("createSession options merging", () => {
     contextUsageCalls = [];
     sessionMessages = [];
     sessionMessagesResult = async () => sessionMessages;
+    liveMessages = [];
     vi.mocked(getSessionMessages).mockClear();
+    vi.mocked(forkSession).mockClear();
     initModels = undefined;
     initGate = undefined;
     initError = undefined;
@@ -1581,7 +1601,7 @@ describe("createSession options merging", () => {
       errors.mockRestore();
     });
 
-    it.each(["newSession", "loadSession", "resumeSession"] as const)(
+    it.each(["newSession", "loadSession", "resumeSession", "unstable_forkSession"] as const)(
       "%s rejects two entries of one configId before it starts a query",
       async (method) => {
         await expect(
@@ -1599,6 +1619,8 @@ describe("createSession options merging", () => {
           data: { configId: "mode" },
         });
         expect(capturedOptions).toBeUndefined();
+        // A fork copies no transcript either.
+        expect(forkSession).not.toHaveBeenCalled();
       },
     );
 
@@ -1626,6 +1648,24 @@ describe("createSession options merging", () => {
         expect(updates.map((u) => u.update.sessionUpdate)).not.toContain("config_option_update");
       },
     );
+
+    it("sets the configOptions of a session/fork on the fork, without an update", async () => {
+      const response = await agent.unstable_forkSession({
+        sessionId: "7f1c5b0e-3c53-4c0c-9d0a-0d6c1f0a2b11",
+        cwd,
+        mcpServers: [],
+        configOptions: [
+          { configId: "model", value: "claude-haiku-4-5" },
+          { configId: "mode", value: "plan" },
+        ],
+      });
+
+      expect(response.sessionId).toBe(FORK_ID);
+      expect(capturedOptions).toMatchObject({ resume: FORK_ID });
+      expect(values(response)).toMatchObject({ model: "claude-haiku-4-5", mode: "plan" });
+      expect(response.modes?.currentModeId).toBe("plan");
+      expect(updates.filter((u) => u.sessionId === FORK_ID)).toEqual([]);
+    });
 
     it("leaves the warning of an Auto mode fallback for the first prompt", async () => {
       const response = await agent.newSession({
@@ -2712,6 +2752,42 @@ describe("createSession options merging", () => {
         });
 
         expect(updates.filter(neutralEnd).map(neutralEnd)).toEqual([{ version: 1, id: "load-2" }]);
+      });
+
+      // The reader of a loaded session starts after the response (#1623), so
+      // what Claude Code sends before the first prompt follows the end event.
+      it("ends the neutral replay before the live output of a loaded session", async () => {
+        sessionMessages = [userMessage("u1", "first")];
+        liveMessages = [
+          {
+            type: "assistant",
+            parent_tool_use_id: null,
+            uuid: "00000000-0000-4000-8000-00000000c001",
+            session_id: "replay-probe",
+            message: {
+              id: "msg_live",
+              role: "assistant",
+              model: "claude-sonnet-4-6",
+              content: [{ type: "text", text: "Live" }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          },
+        ];
+        const updates: SessionNotification[] = [];
+        const loadAgent = await endAgent(updates, undefined, NEUTRAL_END_CLIENT);
+
+        await loadAgent.loadSession({
+          sessionId: "replay-probe",
+          cwd: process.cwd(),
+          mcpServers: [],
+          _meta: { loadReplayEnd: { id: "load-3" } },
+        });
+        const isLive = ({ update }: SessionNotification) =>
+          update.sessionUpdate === "agent_message_chunk";
+        await vi.waitFor(() => expect(updates.some(isLive)).toBe(true));
+
+        expect(updates.filter(neutralEnd).map(neutralEnd)).toEqual([{ version: 1, id: "load-3" }]);
+        expect(updates.findIndex(neutralEnd)).toBeLessThan(updates.findIndex(isLive));
       });
 
       it("sends the end event for an empty history", async () => {

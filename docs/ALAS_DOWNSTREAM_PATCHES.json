@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "baseTag": "v0.107.0",
+  "baseTag": "v0.107.2",
   "patches": [
     {
       "name": "goal-capability-opt-in",
@@ -11,11 +11,10 @@
       "tests": ["src/tests/v1/acp-agent.test.ts"],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.102.0",
-        "toTag": "v0.107.0",
-        "originalCommit": "72c08026539006157f7cd80b006e5a01262acae8",
-        "decision": "adapt",
-        "replacementCommit": "68546359389119235ac854a39ffd88045eb03f53"
+        "fromTag": "v0.107.0",
+        "toTag": "v0.107.2",
+        "originalCommit": "68546359389119235ac854a39ffd88045eb03f53",
+        "decision": "retain"
       },
       "retiredCommits": [
         "60749d07ff50308ef96c5251152a8d4986fe680f",
@@ -42,11 +41,10 @@
       "tests": ["src/tests/async-tasks.test.ts", "src/tests/v1/acp-agent.test.ts"],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.102.0",
-        "toTag": "v0.107.0",
-        "originalCommit": "374911daa9a00f103d8d6a16e32a75c639a64724",
-        "decision": "adapt",
-        "replacementCommit": "b7c1126db9d3549162b04964add612eac25c7d40"
+        "fromTag": "v0.107.0",
+        "toTag": "v0.107.2",
+        "originalCommit": "b7c1126db9d3549162b04964add612eac25c7d40",
+        "decision": "retain"
       },
       "retiredCommits": [
         "3e098c71628cc7d5927ee8a3d794faa433dce12d",
@@ -99,11 +97,10 @@
         "ae96867b0666c2d6ae29efd05ae60690d9747f57"
       ],
       "lastResolution": {
-        "fromTag": "v0.102.0",
-        "toTag": "v0.107.0",
-        "originalCommit": "ae96867b0666c2d6ae29efd05ae60690d9747f57",
-        "decision": "adapt",
-        "replacementCommit": "a9ae768536fb31478b27c7f3fc8b631bcadd180e"
+        "fromTag": "v0.107.0",
+        "toTag": "v0.107.2",
+        "originalCommit": "a9ae768536fb31478b27c7f3fc8b631bcadd180e",
+        "decision": "retain"
       }
     },
     {
@@ -127,11 +124,10 @@
       ],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.102.0",
-        "toTag": "v0.107.0",
-        "originalCommit": "dff2b8b693965471b4e025f6144134dd77c23d40",
-        "decision": "adapt",
-        "replacementCommit": "71b2d83cde153aa668c3c40105e9ccdd5704ae32"
+        "fromTag": "v0.107.0",
+        "toTag": "v0.107.2",
+        "originalCommit": "71b2d83cde153aa668c3c40105e9ccdd5704ae32",
+        "decision": "retain"
       },
       "retiredCommits": [
         "325c503f05cd7fb9ed98b7a05192b8afb6c8e164",
@@ -159,11 +155,10 @@
         "1dcdf19fb5d792a3d154c8b7a91dca7574de4284"
       ],
       "lastResolution": {
-        "fromTag": "v0.102.0",
-        "toTag": "v0.107.0",
-        "originalCommit": "1dcdf19fb5d792a3d154c8b7a91dca7574de4284",
-        "decision": "adapt",
-        "replacementCommit": "32c3016624adff737fa05872397e2e1a12075190"
+        "fromTag": "v0.107.0",
+        "toTag": "v0.107.2",
+        "originalCommit": "32c3016624adff737fa05872397e2e1a12075190",
+        "decision": "retain"
       }
     },
     {
@@ -216,7 +211,7 @@
     {
       "name": "neutral-fork-point",
       "identityCommit": "57d8f5f9f6f9f1bc29c1e2d1b96b090fb1943759",
-      "commit": "040b0ccc182ec64dad0678ea1c74376199272cfc",
+      "commit": "3c6fa2dae4c4e1ea093198fd29f1b3cc80e73e60",
       "upstreamPr": null,
       "files": [
         "docs/air-extensions.md",
@@ -232,20 +227,21 @@
       "disposition": "active",
       "retiredCommits": [
         "57d8f5f9f6f9f1bc29c1e2d1b96b090fb1943759",
-        "41b37d6df80428f4a9eb9dfa54e5a51c752d4fe4"
+        "41b37d6df80428f4a9eb9dfa54e5a51c752d4fe4",
+        "040b0ccc182ec64dad0678ea1c74376199272cfc"
       ],
       "lastResolution": {
-        "fromTag": "v0.102.0",
-        "toTag": "v0.107.0",
-        "originalCommit": "41b37d6df80428f4a9eb9dfa54e5a51c752d4fe4",
+        "fromTag": "v0.107.0",
+        "toTag": "v0.107.2",
+        "originalCommit": "040b0ccc182ec64dad0678ea1c74376199272cfc",
         "decision": "adapt",
-        "replacementCommit": "040b0ccc182ec64dad0678ea1c74376199272cfc"
+        "replacementCommit": "3c6fa2dae4c4e1ea093198fd29f1b3cc80e73e60"
       }
     },
     {
       "name": "neutral-diff-patch",
       "identityCommit": "02b732ee3e12c65f702a743401af97a334dfce9f",
-      "commit": "8250f80af743230201b7a16c619a33c73add9527",
+      "commit": "ad03ebfd89a2d99ff399a4fd538893de0d24f63d",
       "upstreamPr": null,
       "files": [
         "docs/air-extensions.md",
@@ -262,18 +258,21 @@
       ],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.102.0",
-        "toTag": "v0.107.0",
-        "originalCommit": "02b732ee3e12c65f702a743401af97a334dfce9f",
+        "fromTag": "v0.107.0",
+        "toTag": "v0.107.2",
+        "originalCommit": "8250f80af743230201b7a16c619a33c73add9527",
         "decision": "adapt",
-        "replacementCommit": "8250f80af743230201b7a16c619a33c73add9527"
+        "replacementCommit": "ad03ebfd89a2d99ff399a4fd538893de0d24f63d"
       },
-      "retiredCommits": ["02b732ee3e12c65f702a743401af97a334dfce9f"]
+      "retiredCommits": [
+        "02b732ee3e12c65f702a743401af97a334dfce9f",
+        "8250f80af743230201b7a16c619a33c73add9527"
+      ]
     },
     {
       "name": "neutral-plan-file",
       "identityCommit": "c89808edcdfcddf7fdc6c8a8fd99e6c3532e1c8d",
-      "commit": "b258ec55935952cc70d969064ad973a9f5f93695",
+      "commit": "cd95630e05bcf61da824e50711852981ab63dfb3",
       "upstreamPr": null,
       "files": [
         "docs/air-extensions.md",
@@ -293,18 +292,21 @@
       ],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.102.0",
-        "toTag": "v0.107.0",
-        "originalCommit": "c89808edcdfcddf7fdc6c8a8fd99e6c3532e1c8d",
+        "fromTag": "v0.107.0",
+        "toTag": "v0.107.2",
+        "originalCommit": "b258ec55935952cc70d969064ad973a9f5f93695",
         "decision": "adapt",
-        "replacementCommit": "b258ec55935952cc70d969064ad973a9f5f93695"
+        "replacementCommit": "cd95630e05bcf61da824e50711852981ab63dfb3"
       },
-      "retiredCommits": ["c89808edcdfcddf7fdc6c8a8fd99e6c3532e1c8d"]
+      "retiredCommits": [
+        "c89808edcdfcddf7fdc6c8a8fd99e6c3532e1c8d",
+        "b258ec55935952cc70d969064ad973a9f5f93695"
+      ]
     },
     {
       "name": "neutral-session-failure",
       "identityCommit": "11faafe89f8de72118ce60df09e1ae480c4499bc",
-      "commit": "c4f7f902f275711c2befc2aad31a76a3790bd557",
+      "commit": "da1c6ae9bd3f3e322d7f1c7e1e2035ed1b7c81fa",
       "upstreamPr": null,
       "files": [
         "docs/air-extensions.md",
@@ -320,18 +322,21 @@
       ],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.102.0",
-        "toTag": "v0.107.0",
-        "originalCommit": "11faafe89f8de72118ce60df09e1ae480c4499bc",
+        "fromTag": "v0.107.0",
+        "toTag": "v0.107.2",
+        "originalCommit": "c4f7f902f275711c2befc2aad31a76a3790bd557",
         "decision": "adapt",
-        "replacementCommit": "c4f7f902f275711c2befc2aad31a76a3790bd557"
+        "replacementCommit": "da1c6ae9bd3f3e322d7f1c7e1e2035ed1b7c81fa"
       },
-      "retiredCommits": ["11faafe89f8de72118ce60df09e1ae480c4499bc"]
+      "retiredCommits": [
+        "11faafe89f8de72118ce60df09e1ae480c4499bc",
+        "c4f7f902f275711c2befc2aad31a76a3790bd557"
+      ]
     },
     {
       "name": "neutral-agent-file-change-report",
       "identityCommit": "48f68190febed509f4fa8d24d62b742430a714e7",
-      "commit": "bd1e7418ebfbdb7ced468f11465ff2428c1f5dd6",
+      "commit": "c9210a8e781d7ccd1a93fd148be63c79e7ea51f5",
       "upstreamPr": null,
       "files": [
         "docs/air-extensions.md",
@@ -348,18 +353,21 @@
       ],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.102.0",
-        "toTag": "v0.107.0",
-        "originalCommit": "48f68190febed509f4fa8d24d62b742430a714e7",
+        "fromTag": "v0.107.0",
+        "toTag": "v0.107.2",
+        "originalCommit": "bd1e7418ebfbdb7ced468f11465ff2428c1f5dd6",
         "decision": "adapt",
-        "replacementCommit": "bd1e7418ebfbdb7ced468f11465ff2428c1f5dd6"
+        "replacementCommit": "c9210a8e781d7ccd1a93fd148be63c79e7ea51f5"
       },
-      "retiredCommits": ["48f68190febed509f4fa8d24d62b742430a714e7"]
+      "retiredCommits": [
+        "48f68190febed509f4fa8d24d62b742430a714e7",
+        "bd1e7418ebfbdb7ced468f11465ff2428c1f5dd6"
+      ]
     },
     {
       "name": "neutral-permission-presentation",
       "identityCommit": "591bd918a4540fc37f7cfd1d7eae42636bf723f9",
-      "commit": "d6505c6854d047ed680f081d5396cf4d1257fed5",
+      "commit": "35f3aa60dfe9f40cf56ea079767d78ef26874e74",
       "upstreamPr": null,
       "files": [
         "docs/air-extensions.md",
@@ -376,18 +384,21 @@
       ],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.102.0",
-        "toTag": "v0.107.0",
-        "originalCommit": "591bd918a4540fc37f7cfd1d7eae42636bf723f9",
+        "fromTag": "v0.107.0",
+        "toTag": "v0.107.2",
+        "originalCommit": "d6505c6854d047ed680f081d5396cf4d1257fed5",
         "decision": "adapt",
-        "replacementCommit": "d6505c6854d047ed680f081d5396cf4d1257fed5"
+        "replacementCommit": "35f3aa60dfe9f40cf56ea079767d78ef26874e74"
       },
-      "retiredCommits": ["591bd918a4540fc37f7cfd1d7eae42636bf723f9"]
+      "retiredCommits": [
+        "591bd918a4540fc37f7cfd1d7eae42636bf723f9",
+        "d6505c6854d047ed680f081d5396cf4d1257fed5"
+      ]
     },
     {
       "name": "neutral-recommended-config-value",
       "identityCommit": "6fdbdcc5bbc42124daa06ad60b81f85d7abbe758",
-      "commit": "27bb4fa76406dcc52a1b48eecd910dde38692eb4",
+      "commit": "d624582edb5f42d06da02fe0800cbfbd5483ebd8",
       "upstreamPr": null,
       "files": [
         "docs/air-extensions.md",
@@ -403,18 +414,21 @@
       ],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.102.0",
-        "toTag": "v0.107.0",
-        "originalCommit": "6fdbdcc5bbc42124daa06ad60b81f85d7abbe758",
+        "fromTag": "v0.107.0",
+        "toTag": "v0.107.2",
+        "originalCommit": "27bb4fa76406dcc52a1b48eecd910dde38692eb4",
         "decision": "adapt",
-        "replacementCommit": "27bb4fa76406dcc52a1b48eecd910dde38692eb4"
+        "replacementCommit": "d624582edb5f42d06da02fe0800cbfbd5483ebd8"
       },
-      "retiredCommits": ["6fdbdcc5bbc42124daa06ad60b81f85d7abbe758"]
+      "retiredCommits": [
+        "6fdbdcc5bbc42124daa06ad60b81f85d7abbe758",
+        "27bb4fa76406dcc52a1b48eecd910dde38692eb4"
+      ]
     },
     {
       "name": "neutral-command-presentation",
       "identityCommit": "f0575103dc41baca51afee91ae9a63f8805412d3",
-      "commit": "e07754fd0d7ca34b00ab559fa1c412346bde0c9a",
+      "commit": "667f8c833c135ea5ae12ad0e3c5c331cb844a271",
       "upstreamPr": null,
       "files": [
         "docs/air-extensions.md",
@@ -425,18 +439,21 @@
       "tests": ["src/tests/v1/acp-agent.test.ts", "src/tests/v2/acp-v2.test.ts"],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.102.0",
-        "toTag": "v0.107.0",
-        "originalCommit": "f0575103dc41baca51afee91ae9a63f8805412d3",
+        "fromTag": "v0.107.0",
+        "toTag": "v0.107.2",
+        "originalCommit": "e07754fd0d7ca34b00ab559fa1c412346bde0c9a",
         "decision": "adapt",
-        "replacementCommit": "e07754fd0d7ca34b00ab559fa1c412346bde0c9a"
+        "replacementCommit": "667f8c833c135ea5ae12ad0e3c5c331cb844a271"
       },
-      "retiredCommits": ["f0575103dc41baca51afee91ae9a63f8805412d3"]
+      "retiredCommits": [
+        "f0575103dc41baca51afee91ae9a63f8805412d3",
+        "e07754fd0d7ca34b00ab559fa1c412346bde0c9a"
+      ]
     },
     {
       "name": "neutral-load-replay-end",
       "identityCommit": "dfb31b948a4a53f6da2feb4d23c2e3eca22193c9",
-      "commit": "710feeb54099c061b36dce6afcc23955cd74b9ac",
+      "commit": "4f85fd2e277c6b638c67d30bd9b923d545df134c",
       "upstreamPr": null,
       "files": [
         "docs/air-extensions.md",
@@ -450,18 +467,21 @@
       ],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.102.0",
-        "toTag": "v0.107.0",
-        "originalCommit": "dfb31b948a4a53f6da2feb4d23c2e3eca22193c9",
+        "fromTag": "v0.107.0",
+        "toTag": "v0.107.2",
+        "originalCommit": "710feeb54099c061b36dce6afcc23955cd74b9ac",
         "decision": "adapt",
-        "replacementCommit": "710feeb54099c061b36dce6afcc23955cd74b9ac"
+        "replacementCommit": "4f85fd2e277c6b638c67d30bd9b923d545df134c"
       },
-      "retiredCommits": ["dfb31b948a4a53f6da2feb4d23c2e3eca22193c9"]
+      "retiredCommits": [
+        "dfb31b948a4a53f6da2feb4d23c2e3eca22193c9",
+        "710feeb54099c061b36dce6afcc23955cd74b9ac"
+      ]
     },
     {
       "name": "neutral-prompt-suggestions",
       "identityCommit": "6f95b38665472c9c6a58a17a68654911cf5b387f",
-      "commit": "0bf8966a23f6fcba8bca6b4daec3aace7baa4556",
+      "commit": "eac0b71993a0393fadd45b2b758a3a0d0d9f55ac",
       "upstreamPr": null,
       "files": [
         "docs/air-extensions.md",
@@ -478,15 +498,16 @@
       ],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.102.0",
-        "toTag": "v0.107.0",
-        "originalCommit": "fcdcd009281a38df0c4fdba1a521fad85e473900",
+        "fromTag": "v0.107.0",
+        "toTag": "v0.107.2",
+        "originalCommit": "0bf8966a23f6fcba8bca6b4daec3aace7baa4556",
         "decision": "adapt",
-        "replacementCommit": "0bf8966a23f6fcba8bca6b4daec3aace7baa4556"
+        "replacementCommit": "eac0b71993a0393fadd45b2b758a3a0d0d9f55ac"
       },
       "retiredCommits": [
         "6f95b38665472c9c6a58a17a68654911cf5b387f",
-        "fcdcd009281a38df0c4fdba1a521fad85e473900"
+        "fcdcd009281a38df0c4fdba1a521fad85e473900",
+        "0bf8966a23f6fcba8bca6b4daec3aace7baa4556"
       ]
     }
   ],
