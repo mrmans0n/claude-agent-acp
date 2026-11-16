@@ -15397,6 +15397,79 @@ describe("logout", () => {
     });
   });
 
+  describe.each(["permissionPresentation", "questionCustomAnswer"])(
+    "client-neutral %s advert",
+    (key) => {
+      it("advertises version 1 to a client that opts in with any version, with no AIR key", async () => {
+        const response = await createMockAgent().initialize({
+          protocolVersion: 1,
+          clientCapabilities: { _meta: { [key]: { version: 2 } } },
+        });
+
+        expect(response._meta?.[key]).toEqual({ version: 1 });
+        expect(response._meta).not.toHaveProperty("jetbrains");
+      });
+
+      it.each([
+        ["no opt-in", {}],
+        ["the AIR client alone", AIR_CLIENT_CAPABILITIES],
+        ["boolean", { _meta: { [key]: true } }],
+        ["empty object", { _meta: { [key]: {} } }],
+        ["zero version", { _meta: { [key]: { version: 0 } } }],
+        ["fractional version", { _meta: { [key]: { version: 1.5 } } }],
+      ])("does not advertise it for %s", async (_label, clientCapabilities) => {
+        const response = await createMockAgent().initialize({
+          protocolVersion: 1,
+          clientCapabilities,
+        });
+
+        expect(response._meta).not.toHaveProperty(key);
+      });
+    },
+  );
+
+  it("marks the custom-answer field of an AskUserQuestion for a client that opted into questionCustomAnswer", async () => {
+    const elicitations: CreateElicitationRequest[] = [];
+    const agent = new ClaudeAcpAgent(
+      {
+        sessionUpdate: async () => {},
+        createElicitation: async (request: CreateElicitationRequest) => {
+          elicitations.push(request);
+          return { action: "accept", content: { question_0: "Fast", question_0_custom: "" } };
+        },
+      } as unknown as AcpClient,
+      { log: () => {}, error: () => {} },
+    );
+    agent.sessions["session-1"] = mockSessionState();
+    await initializeClient(agent, {
+      elicitation: { form: {} },
+      _meta: { questionCustomAnswer: { version: 1 } },
+    });
+
+    await agent.canUseTool("session-1")(
+      "AskUserQuestion",
+      {
+        questions: [
+          {
+            question: "Which mode?",
+            header: "Mode",
+            options: [
+              { label: "Fast", description: "Fast mode" },
+              { label: "Safe", description: "Safe mode" },
+            ],
+            multiSelect: false,
+          },
+        ],
+      },
+      { signal: new AbortController().signal, suggestions: [], toolUseID: "toolu_question" } as any,
+    );
+
+    const [elicitation] = elicitations as Extract<CreateElicitationRequest, { mode: "form" }>[];
+    expect(elicitation.requestedSchema.properties?.["question_0_custom"]?._meta).toEqual({
+      questionCustomAnswer: { version: 1, questionId: "question_0" },
+    });
+  });
+
   describe("client-neutral agent file-change report advert", () => {
     const optIn = { agentFileChangeReport: { version: 1 } };
 
