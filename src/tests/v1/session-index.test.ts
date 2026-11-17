@@ -868,6 +868,36 @@ describe("client-neutral session index", () => {
     });
   });
 
+  // The list filters are read from the client's namespace, and an invalid
+  // one is reported under it: the client never sent `_meta.jetbrains.air`.
+  it("rejects an invalid _meta.sessionIndex.list filter under the neutral path", async () => {
+    const session = await writeTranscript({ lastMessageAt: base });
+    const { agent } = await neutralAgent();
+
+    await expect(
+      agent.listSessions({ cwd: workspace, _meta: neutralListMeta({ archived: "bogus" }) }),
+    ).rejects.toMatchObject({
+      code: -32602,
+      data: { archived: "bogus" },
+      message: expect.stringContaining("`_meta.sessionIndex.list.archived`"),
+    });
+    await expect(
+      agent.listSessions({ cwd: workspace, _meta: neutralListMeta({ includeWorktrees: "yes" }) }),
+    ).rejects.toMatchObject({
+      code: -32602,
+      data: { includeWorktrees: "yes" },
+      message: expect.stringContaining("`_meta.sessionIndex.list.includeWorktrees`"),
+    });
+    // The same filters under the AIR namespace are not read for this client.
+    const page = await agent.listSessions({
+      cwd: workspace,
+      _meta: listMeta({ archived: "bogus", includeWorktrees: "yes" }),
+    });
+    expect(page.sessions.map((s) => [s.sessionId, indexRow(s).archived])).toEqual([
+      [session.id, false],
+    ]);
+  });
+
   it("renames, archives and unarchives, and reports the archive state under _meta.sessionIndex", async () => {
     const session = await writeTranscript({});
     const { agent, updates } = await neutralAgent();

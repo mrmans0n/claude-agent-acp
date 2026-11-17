@@ -188,8 +188,8 @@ import {
 } from "../auth-status.js";
 import { AuthStatusReporter, cliLogout } from "../auth-status-reporter.js";
 import { terminalAuthMethods as authMethodsForTerminal } from "../auth-methods.js";
-import { sdkMcpServers } from "../mcp-servers.js";
-import { claudeCliPath } from "../claude-cli.js";
+import { McpOverAcp, sdkMcpServers } from "../mcp-servers.js";
+import { claudeCliPath, mcpServersDelivery } from "../claude-cli.js";
 import { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { randomUUID } from "node:crypto";
 import type { Stats } from "node:fs";
@@ -202,6 +202,7 @@ import {
   answerUserDialog,
   ElicitationSupport,
   elicitUnlessWithdrawn,
+  isConfirmQuestion,
   REFUSAL_FALLBACK_DIALOG_KIND,
 } from "../elicitation.js";
 import {
@@ -332,7 +333,12 @@ import {
   type UsageSnapshot,
 } from "../session-usage.js";
 import { previewPatchContent } from "../diff.js";
-import { backgroundedBashToolCall, withRunningTerminal } from "../tool-calls/background.js";
+import {
+  backgroundedBashToolCall,
+  type StreamedTerminals,
+  withRunningTerminal,
+  withStreamedTerminal,
+} from "../tool-calls/background.js";
 import { ChangedMetaClient, ClientConnection } from "./client-connection.js";
 import { ToolCallFieldTracker } from "../tool-calls/field-tracker.js";
 import { RetractedToolCalls } from "../tool-calls/retracted.js";
@@ -874,7 +880,8 @@ type Turn = {
    *  `steeredSettle`. `steeredSettle` can already hold the interrupted cycle's
    *  outcome (or a held turn's, moved over by `steer()`) when the echo lands, so
    *  while this is set the recorded outcome predates the steered work and an
-   *  idle must not settle on it. */
+   *  idle must not settle on it. A result of an autonomous cycle that names
+   *  none of the turn's steers is not steered work, so it does not clear it. */
   steeredAwaitingResult?: boolean;
   /** What a steered turn settles with once its steered work has run: the outcome
    *  of its latest result, so its usage covers every cycle the turn ran. */
@@ -1927,6 +1934,8 @@ export class ClaudeAcpAgent {
         mcpCapabilities: {
           http: true,
           sse: true,
+          // Servers that the client serves over this connection (`mcp/message`).
+          acp: true,
         },
         auth: {
           logout: {},
@@ -4058,14 +4067,19 @@ export class ClaudeAcpAgent {
      *  calling settleActive directly bypasses the hold and re-opens the
      *  out-of-turn permission deadlock (issue #866) through its lane. For a
      *  client with `backgroundSubagents` this always settles now. */
-    const settleOrDefer = async (outcome: TurnOutcome) => {
+    const settleOrDefer = async (
+      outcome: TurnOutcome,
+      { steeredWork = true }: { steeredWork?: boolean } = {},
+    ) => {
       // No result ends a steered turn: the steer aborted the cycle this result
       // may belong to, and the steered one is still to come. Record the outcome
       // for the idle lane (see Turn.steeredEchoes); later cycles overwrite it,
       // so the last result and its usage win.
       if (isSteering(session.activeTurn)) {
         session.activeTurn.steeredSettle = outcome;
-        session.activeTurn.steeredAwaitingResult = false;
+        // Only a result of the steered work ends the wait for it (see
+        // Turn.steeredAwaitingResult).
+        if (steeredWork) session.activeTurn.steeredAwaitingResult = false;
         return;
       }
       if (
@@ -4220,6 +4234,12 @@ export class ClaudeAcpAgent {
       );
       if (results.length === 0) return;
       const resultCount = content.filter((block) => block.type === "tool_result").length;
+      const toolResultMeta = (message as { tool_result_meta?: unknown }).tool_result_meta;
+      // As for any tool result: the command's output is read no more, and the
+      // result's output replaces what the terminal showed, or follows it.
+      const streamedTerminals = await session.background.finishForeground(results, {
+        toolResultMeta,
+      });
       for (const notification of toAcpNotifications(
         results,
         "user",
@@ -4239,11 +4259,11 @@ export class ClaudeAcpAgent {
           messageId: messageIdForGrouping(message),
           // `tool_use_result` describes the one result of its message.
           toolUseResult: results.length === resultCount ? message.tool_use_result : undefined,
-          toolResultMeta: (message as { tool_result_meta?: unknown }).tool_result_meta,
+          toolResultMeta,
           cancelled: true,
         },
       )) {
-        await sendUpdate(notification);
+        await sendUpdate(withStreamedTerminal(notification, streamedTerminals));
       }
     };
 
@@ -5420,6 +5440,13 @@ export class ClaudeAcpAgent {
                   skip_transcript: message.skip_transcript,
                   tool_use_id: message.tool_use_id,
                 });
+                // A foreground command's terminal shows its output as it runs.
+                session.background.followForeground(message, {
+                  owner: session,
+                  capabilities: this.toolCallCapabilities,
+                  send: sendUpdate,
+                  logger: this.logger,
+                });
                 break;
               case "task_notification":
                 if (isLateTaskRun(session, message.task_id, message.run_id)) {
@@ -5765,6 +5792,10 @@ export class ClaudeAcpAgent {
               // commands whose shared or late result this is, even when the
               // result is the ACTIVE turn's (ensureActiveTurn never looks at
               // the map in that case).
+              // Whether this result names one of the turn's steers. The settle
+              // calls below read it too: a result of a cycle Claude Code started
+              // that names none of them is not the steered work's result.
+              let answersSteer = false;
               if (!isAutonomousResult) {
                 recordResultForOrphanCommands();
                 await ensureActiveTurn(message.user_message_uuid, message.user_message_uuids);
@@ -5782,7 +5813,6 @@ export class ClaudeAcpAgent {
                   const consumed =
                     message.user_message_uuids ??
                     (message.user_message_uuid !== undefined ? [message.user_message_uuid] : []);
-                  let answersSteer = false;
                   for (const uuid of consumed) {
                     steeredTurn.steeredEchoes.delete(uuid);
                     if (steeredTurn.steeredUuids?.has(uuid)) answersSteer = true;
@@ -6223,7 +6253,9 @@ export class ClaudeAcpAgent {
                 // settling it out from under them would strand their output
                 // and permission requests out-of-turn (issue #866's deadlock,
                 // through the refusal lane).
-                await settleOrDefer(turnOutcome(session, "refusal"));
+                await settleOrDefer(turnOutcome(session, "refusal"), {
+                  steeredWork: !startedByClaudeCode || answersSteer,
+                });
                 break;
               }
 
@@ -6411,7 +6443,9 @@ export class ClaudeAcpAgent {
                 await compaction.reset();
               }
               if (!session.cancelled) {
-                await settleOrDefer(turnOutcome(session, stopReason));
+                await settleOrDefer(turnOutcome(session, stopReason), {
+                  steeredWork: !startedByClaudeCode || answersSteer,
+                });
               }
             } finally {
               if (!isAutonomousResult) {
@@ -6993,6 +7027,7 @@ export class ClaudeAcpAgent {
             const acceptedPlanToolUseId = observeExitPlanToolResults(message, content, session);
             let backgroundedToolCalls: ReadonlySet<string> = new Set();
             let runningTerminal: string | undefined;
+            let streamedTerminals: StreamedTerminals = new Map();
             if (message.type === "user") {
               rememberResolvedToolNames(session, content);
               recordSubagentFileEdits(
@@ -7019,6 +7054,12 @@ export class ClaudeAcpAgent {
                 },
               );
               if (backgroundBashTask) await asyncTasks.taskBackgrounded(backgroundBashTask);
+              // The result's output replaces what a foreground command's
+              // terminal showed as the command ran, or follows it.
+              streamedTerminals = await session.background.finishForeground(content, {
+                backgrounded: backgroundBashTask?.toolCallId,
+                toolResultMeta: (message as { tool_result_meta?: unknown }).tool_result_meta,
+              });
               // The command's terminal runs until its task ends, unless the
               // task has ended already (a fast command can end before the tool
               // result comes).
@@ -7101,13 +7142,16 @@ export class ClaudeAcpAgent {
               // meta and are excluded there.
               await sendUpdate(
                 withRunningTerminal(
-                  backgroundedBashToolCall(
-                    acceptedPlanToolResult(notification, acceptedPlanToolUseId),
-                    backgroundedToolCalls,
-                    clientSupportsAirCapability(
-                      this.clientCapabilities,
-                      AIR_ASYNC_TASKS_CAPABILITY,
+                  withStreamedTerminal(
+                    backgroundedBashToolCall(
+                      acceptedPlanToolResult(notification, acceptedPlanToolUseId),
+                      backgroundedToolCalls,
+                      clientSupportsAirCapability(
+                        this.clientCapabilities,
+                        AIR_ASYNC_TASKS_CAPABILITY,
+                      ),
                     ),
+                    streamedTerminals,
                   ),
                   runningTerminal,
                 ),
@@ -7826,6 +7870,7 @@ export class ClaudeAcpAgent {
     session.contextCompaction = undefined;
     session.idleCompaction?.dispose();
     session.settingsManager.dispose();
+    session.background.queryClosed();
     session.input.end();
     session.query.close();
   }
@@ -8813,6 +8858,7 @@ export class ClaudeAcpAgent {
       params.toolCall.toolCallId,
       toolInput,
       parentToolUseId,
+      agentID,
       signal,
       params.sessionId,
       previewContent,
@@ -8861,12 +8907,13 @@ export class ClaudeAcpAgent {
     return sessionSignal ? AbortSignal.any([signal, sessionSignal]) : signal;
   }
 
-  /** Settle the tool call `ensureToolCallEmitted` emitted for a
-   *  SandboxNetworkAccess request once the request is answered. The callback
-   *  asks for permission and runs nothing, so the SDK never sends a
-   *  `tool_result` for its synthetic id, and the call would otherwise stay
-   *  pending in the client. */
-  private async settleSandboxNetworkCall(
+  /** Settle the tool call `ensureToolCallEmitted` emitted for a request that
+   *  no tool use of the stream stands for, once the request is answered: a
+   *  SandboxNetworkAccess request, or a question that Claude Code asks on its
+   *  own (see `isConfirmQuestion`). The callback asks and runs nothing, so the
+   *  SDK never sends a `tool_result` for its synthetic id, and the call would
+   *  otherwise stay pending in the client. */
+  private async settlePermissionOnlyCall(
     sessionId: string,
     toolCallSessionId: string,
     toolCallId: string,
@@ -8874,6 +8921,11 @@ export class ClaudeAcpAgent {
   ): Promise<void> {
     const session = this.sessions[sessionId];
     if (!session) return;
+    // Forgotten first, as `closeToolCall` does: a cancel later in the turn
+    // ends every tool call that is still recorded as emitted, and would end
+    // this one a second time.
+    session.emittedToolCalls.delete(toolCallId);
+    session.toolCallFields?.delete(toolCallId);
     const update: SessionNotification["update"] = {
       sessionUpdate: "tool_call_update",
       toolCallId,
@@ -8886,7 +8938,7 @@ export class ClaudeAcpAgent {
         await this.client.sessionUpdate({ sessionId: toolCallSessionId, update });
       }
     } catch (error) {
-      this.logger.error("Failed to settle the SandboxNetworkAccess tool call:", error);
+      this.logger.error(`Failed to settle the tool call ${toolCallId}:`, error);
     }
   }
 
@@ -8901,13 +8953,17 @@ export class ClaudeAcpAgent {
    *  always resolve. Since the streamed path never completes those calls, they
    *  are resolved at tool_result time instead (see `toAcpNotifications`).
    *  `parentToolUseId` attributes a subagent's tool call to the Agent/Task call
-   *  that spawned it, matching the streamed path's `_meta`. */
+   *  that spawned it, matching the streamed path's `_meta`. `agentID` is
+   *  `canUseTool`'s, set for every subagent's tool call, including a workflow
+   *  agent's, which has no `parentToolUseId`. Such a call is not recorded as
+   *  the turn's foreground work. */
   private async ensureToolCallEmitted(
     sessionId: string,
     toolName: string,
     toolCallId: string,
     toolInput: unknown,
     parentToolUseId?: string,
+    agentID?: string,
     signal?: AbortSignal,
     notificationSessionId: string = sessionId,
     previewContent?: ToolCallContent[],
@@ -8931,12 +8987,15 @@ export class ClaudeAcpAgent {
     }
     session.emittedToolCalls.add(toolCallId);
     if (parentToolUseId) recordToolCallParent(session, toolCallId, parentToolUseId);
-    // SandboxNetworkAccess is a permission-only callback, not an executing
-    // tool: the SDK does not send a tool_result for its synthetic id.
+    // A subagent's tool call is not the turn's foreground work, even when no
+    // parent was found for it: a workflow agent's tool_result never streams on
+    // the root query. SandboxNetworkAccess is a permission-only callback, not
+    // an executing tool: the SDK does not send a tool_result for its synthetic id.
     if (
-      !parentToolUseId &&
-      notificationSessionId === sessionId &&
-      toolName !== "SandboxNetworkAccess"
+      !agentID &&
+      toolName !== "SandboxNetworkAccess" &&
+      // Neither does it send one for a question that Claude Code asks on its own.
+      !isConfirmQuestion(toolCallId)
     ) {
       recordForegroundToolCall(session, toolCallId);
     }
@@ -8972,7 +9031,8 @@ export class ClaudeAcpAgent {
    * emitted tool call and of its requests: the subagent's child session once
    * it is announced, else the root session. In the rare SDK ordering where
    * the callback beats the spawning Agent/Task frame, the root keeps it; the
-   * later frame announces the child with its correct nested lineage.
+   * later frame announces the child with its correct nested lineage. A
+   * workflow agent gets no task_started, so the root always keeps its tool use.
    */
   private toolUseOwner(
     session: Session,
@@ -9087,7 +9147,8 @@ export class ClaudeAcpAgent {
         // defines a subagent's `agent_id` as its task id). Should the consumer
         // lose the race with task_started, the lookup misses and the request
         // goes out unattributed; log it so the miss is observable rather than
-        // silent.
+        // silent. A workflow agent's request always misses: it has no
+        // task_started.
         this.logger.log(
           `[claude-agent-acp] No parent tool_use recorded for subagent ${agentID}; ` +
             `sending the ${toolName} permission request unattributed`,
@@ -9107,10 +9168,11 @@ export class ClaudeAcpAgent {
           toolUseID,
           toolInput,
           parentToolUseId,
+          agentID,
           signal,
           permissionSessionId,
         );
-        return this.handleAskUserQuestion(
+        const answer = this.handleAskUserQuestion(
           sessionId,
           permissionSessionId,
           toolInput,
@@ -9118,6 +9180,28 @@ export class ClaudeAcpAgent {
           signal,
           agentID,
         );
+        if (!isConfirmQuestion(toolUseID)) return answer;
+        // No tool_result ends the tool call of such a question, so its answer
+        // does: also a declined form, which answers with nothing selected.
+        let answered = false;
+        try {
+          const result = await answer;
+          answered = result.behavior === "allow";
+          return result;
+        } finally {
+          // A request that Claude Code withdrew has no answer. A cancel ends
+          // the open tool calls of the work it stops (`closeOpenToolCalls`).
+          // Nothing ends the call when the SDK aborts `signal` while the
+          // turn goes on.
+          if (!signal.aborted) {
+            await this.settlePermissionOnlyCall(
+              sessionId,
+              permissionSessionId,
+              toolUseID,
+              answered,
+            );
+          }
+        }
       }
 
       // Do not auto-allow here based on the session's advertised mode. Claude
@@ -9179,6 +9263,9 @@ export class ClaudeAcpAgent {
         allowContextReset:
           !this.endsTurnsWithLiveSubagents() ||
           this.requestOwnerTurn(sessionId, session) !== undefined,
+        showClearContextOnPlanAccept: session.settingsManager.getShowClearContextOnPlanAccept(
+          session.effortSettingsOverride,
+        ),
         contextUsedPercent:
           session.contextUsedTokens === undefined || session.contextWindowSize <= 0
             ? undefined
@@ -9235,7 +9322,7 @@ export class ClaudeAcpAgent {
       const autoFallback = this.sessionModes.applyPermissionFallback(session, permissionResult);
       permissionResult = autoFallback.permissionResult;
       if (toolName === "SandboxNetworkAccess") {
-        await this.settleSandboxNetworkCall(
+        await this.settlePermissionOnlyCall(
           sessionId,
           permissionSessionId,
           toolUseID,
@@ -10052,6 +10139,11 @@ export class ClaudeAcpAgent {
       timing.phase("resume-transcript");
     }
 
+    // Before the settings watchers open: a failure here leaves nothing to dispose.
+    const mcpServers = await sdkMcpServers(params.mcpServers, (server) =>
+      this.client.mcpServerOverAcp(server),
+    );
+
     const input = new Pushable<SDKUserMessage>();
 
     const settingsManager = new SettingsManager(params.cwd, {
@@ -10059,8 +10151,6 @@ export class ClaudeAcpAgent {
     });
     await settingsManager.initialize();
     timing.phase("settings");
-
-    const mcpServers = sdkMcpServers(params.mcpServers);
 
     const customInstructions = airCustomInstructions(params._meta);
     const systemPrompt = sessionSystemPrompt(
@@ -10231,6 +10321,8 @@ export class ClaudeAcpAgent {
       // `userProvidedOptions`, so a client that passes `promptSuggestions:
       // false` keeps it off.
       promptSuggestions: this.toolCallCapabilities.predictsPrompts,
+      // Before `userProvidedOptions`, so a client's own `mcpServersDelivery` wins.
+      mcpServersDelivery: mcpServersDelivery(),
       ...userProvidedOptions,
       // Claude Code uses the same checkpoint store for /rewind. Enable it only
       // for clients that negotiated per-turn file-change reports; this avoids
@@ -11306,11 +11398,13 @@ export function v1AgentApp(
   onAgent: (agent: ClaudeAcpAgent) => void,
 ): AgentApp {
   let agent!: ClaudeAcpAgent;
+  const mcp = new McpOverAcp();
   const app = acpAgent({ name: "claude-code-acp" })
     .onConnect((connection) => {
-      agent = new ClaudeAcpAgent(new ClientConnection(connection.client), logger);
+      agent = new ClaudeAcpAgent(new ClientConnection(connection.client, mcp), logger);
       onAgent(agent);
     })
+    .onNotification(methods.agent.mcp.message, mcp.handleNotification)
     .onRequest(methods.agent.initialize, (ctx) => agent.initialize(ctx.params))
     .onRequest(methods.agent.session.new, (ctx) => agent.newSession(ctx.params))
     .onRequest(methods.agent.session.load, (ctx) => agent.loadSession(ctx.params))

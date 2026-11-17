@@ -16,7 +16,7 @@ This tool implements an ACP agent by using the official [Claude Agent SDK](https
 - Nested subagent transcripts
 - Interactive (and background) terminals
 - Custom [Slash commands](https://docs.anthropic.com/en/docs/claude-code/slash-commands)
-- Client MCP servers
+- Client MCP servers, including the ones that the client serves over the ACP connection ([MCP-over-ACP](https://agentclientprotocol.com/rfds/mcp-over-acp), `"type": "acp"`)
 - An Ultracode session config option, which turns on Claude Code's dynamic workflows for every task. It appears when dynamic workflows are enabled and the model supports ultracode (any model with `xhigh` effort)
 - `/mcp` in the chat: the MCP server status as a list. The adapter runs `/mcp reconnect`, `/mcp enable`, and `/mcp disable` through the SDK control API, because Claude Code refuses them in SDK mode. A reconnect of an ACP server that needs authentication starts MCP OAuth through URL elicitation
 - Session-scoped long-running goals for AIR through the [goal extension](docs/air-extensions.md#goal) under `_meta.jetbrains.air.goal`
@@ -46,6 +46,10 @@ Claude CLI (`claude`) it runs. Keep them in the same directory; a symlink to
 `claude-agent-acp` elsewhere works. To use a Claude CLI you already have
 instead, set `CLAUDE_CODE_EXECUTABLE`. On Alpine, install `libgcc` and
 `libstdc++` first.
+
+A CLI named with `CLAUDE_CODE_EXECUTABLE` gets a session's MCP servers on its
+command line, where other users of the machine can read their `env` and
+`headers`. The CLI that comes with the adapter gets them over stdin.
 
 To build one for your machine (needs [Bun](https://bun.sh)) and check it:
 

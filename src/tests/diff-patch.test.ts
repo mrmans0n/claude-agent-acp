@@ -474,6 +474,29 @@ describe("client-neutral diff patches", () => {
     });
   });
 
+  // v0.108.0 (#1419): an input field of the wrong type is no path. Such an
+  // Edit gets no diff, so the neutral client keeps its text in `rawInput`.
+  it("leaves the file text out of a neutral client's rawInput only when a diff holds it", () => {
+    const renderer = AcpToolCallRenderer.for({ _meta: { diffPatch: { version: 1 } } });
+    const valid = { file_path: "/repo/a.ts", old_string: "old", new_string: "new" };
+    const invalid = { file_path: 12345, old_string: "old", new_string: "new" };
+
+    const shown = renderer.toolCall({ id: "t1", name: "Edit", input: valid }) as any;
+    expect(shown.content).toEqual([
+      { type: "diff", path: "/repo/a.ts", oldText: "old", newText: "new" },
+    ]);
+    expect(shown.rawInput).toEqual({ file_path: "/repo/a.ts" });
+
+    const noPath = renderer.toolCall({ id: "t2", name: "Edit", input: invalid }) as any;
+    expect(noPath.title).toBe("Edit");
+    expect(noPath.locations).toEqual([]);
+    expect(noPath.content ?? []).toEqual([]);
+    expect(noPath.rawInput).toEqual(invalid);
+    expect(
+      renderer.permissionToolCall({ id: "t2", name: "Edit", input: invalid }).rawInput,
+    ).toEqual(invalid);
+  });
+
   it("puts the patch of the AIR form at top-level _meta.diffPatch", async () => {
     const filePath = await temporaryFile("old\n");
     const input = { file_path: filePath, old_string: "old", new_string: "new" };

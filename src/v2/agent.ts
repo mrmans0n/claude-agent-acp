@@ -17,6 +17,7 @@ import {
   type CompleteElicitationNotification,
   type CreateElicitationRequest,
   type CreateElicitationResponse,
+  type McpServer,
 } from "@agentclientprotocol/sdk/unstable";
 import * as v2 from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import {
@@ -32,7 +33,7 @@ import packageJson from "../../package.json" with { type: "json" };
 import { messageIdForGrouping } from "../sdk-to-acp.js";
 import type { Logger } from "../logger.js";
 import { customAgents } from "../session-config-options.js";
-import { claudeCliPath } from "../claude-cli.js";
+import { claudeCliPath, mcpServersDelivery } from "../claude-cli.js";
 import { clientSystemPrompt, sessionSystemPrompt } from "../client-system-prompt.js";
 import type { ElicitationSupport } from "../elicitation.js";
 import {
@@ -42,7 +43,7 @@ import {
   neutralForkPointCapability,
 } from "../fork-session.js";
 import { supportsMcpOAuth } from "../mcp-oauth.js";
-import { sdkMcpServers } from "../mcp-servers.js";
+import { McpOverAcp, sdkMcpServers } from "../mcp-servers.js";
 import { ALLOW_BYPASS, autoModeDisabled } from "../permissions/modes.js";
 import {
   readHistoryAcrossCompactions,
@@ -108,13 +109,15 @@ export function v2AgentApp(
   onAgent: (agent: AgentHandle) => void,
 ): v2.AgentApp {
   let agent!: V2Agent;
+  const mcp = new McpOverAcp();
   return (
     v2
       .agent({ name: "claude-code-acp" })
       .onConnect((connection) => {
-        agent = new V2Agent(connection.client, logger ?? console);
+        agent = new V2Agent(connection.client, logger ?? console, mcp);
         onAgent(agent);
       })
+      .onNotification(v2.methods.agent.mcp.message, mcp.handleNotification)
       .onRequest(v2.methods.agent.initialize, ({ params }) => agent.initialize(params))
       .onRequest(v2.methods.agent.auth.login, ({ params }) => agent.auth.login(params))
       .onRequest(v2.methods.agent.auth.logout, () => agent.auth.logout())
@@ -192,6 +195,8 @@ class V2Agent implements AgentHandle, SessionConnection {
   constructor(
     private readonly ctx: v2.AgentContext,
     readonly logger: Logger,
+    /** Serves the client's `acp` MCP servers to Claude Code (see `mcp-servers.ts`). */
+    private readonly mcp: McpOverAcp,
   ) {
     this.auth = new V2Auth(ctx, logger, {
       routeChanged: () => this.restarts.reroute(),
@@ -514,7 +519,7 @@ class V2Agent implements AgentHandle, SessionConnection {
       assertCwdOf(session, request.cwd, "resume it");
       await session.setMcpServers({
         ...clientOptions(params._meta)?.mcpServers,
-        ...sdkMcpServers(request.mcpServers),
+        ...(await this.sdkMcpServers(request.mcpServers)),
       });
       if (!sameDirectories(request.additionalDirectories ?? [], session.additionalDirectories)) {
         // The SDK cannot change them on a running query: it restarts with
@@ -969,6 +974,14 @@ class V2Agent implements AgentHandle, SessionConnection {
   }
 
   /**
+   * The SDK configs of a setup request's MCP servers. An `acp` server is
+   * served to Claude Code over this connection (see `mcp-servers.ts`).
+   */
+  private sdkMcpServers(servers: readonly McpServer[]) {
+    return sdkMcpServers(servers, (server) => this.mcp.sdkConfig(this.ctx, server));
+  }
+
+  /**
    * Starts the query of a session and builds its config. Its options are the
    * client's `_meta.claudeCode.options` under the ones this core controls.
    * The session is not active yet, and nothing of it goes out. The caller
@@ -988,6 +1001,8 @@ class V2Agent implements AgentHandle, SessionConnection {
   ) {
     const request = await validatedSetup(params);
     const client = clientOptions(params._meta);
+    // Before the settings watchers open: a failure here leaves nothing to dispose.
+    const mcpServers = { ...client?.mcpServers, ...(await this.sdkMcpServers(request.mcpServers)) };
     // After a provider change that is still listing its models.
     await this.auth.routeSettled();
     // The resumed transcript's last model and mode.
@@ -1029,8 +1044,6 @@ class V2Agent implements AgentHandle, SessionConnection {
       process.env.CLAUDE_CODE_THINKING_DISPLAY,
       this.logger,
     );
-    const mcpServers = { ...client?.mcpServers, ...sdkMcpServers(request.mcpServers) };
-
     const clientPrompt = clientSystemPrompt(request.systemPrompt);
     const input = new Pushable<SDKUserMessage>();
     // A client can turn the affordance off (`_meta.claudeCode.options`). Then
@@ -1064,6 +1077,8 @@ class V2Agent implements AgentHandle, SessionConnection {
       // AIR gets it, so no other client's session spends a request on it.
       // Before the client's options: `promptSuggestions: false` turns it off.
       ...(this.air.client ? { promptSuggestions: true } : {}),
+      // Before the client's options: its own `mcpServersDelivery` wins.
+      mcpServersDelivery: mcpServersDelivery(),
       ...client,
       // The checkpoints that AIR's file-change reports read (see
       // `file-changes.ts`), only for a client that declared them, as on v1.

@@ -635,6 +635,51 @@ describe("createSession options merging", () => {
     expect(capturedOptions!.promptSuggestions).toBe(false);
   });
 
+  it.each([
+    { name: "sends MCP servers as the CLI takes them", delivery: undefined },
+    { name: "lets a caller choose the MCP delivery", delivery: "initialize" as const },
+  ])("$name", async ({ delivery }) => {
+    await agent.newSession({
+      cwd: process.cwd(),
+      mcpServers: [],
+      ...(delivery && { _meta: { claudeCode: { options: { mcpServersDelivery: delivery } } } }),
+    });
+
+    // Unit runs name a CLI with CLAUDE_CODE_EXECUTABLE (see `vitest.config.ts`).
+    expect(capturedOptions!.mcpServersDelivery).toBe(delivery ?? "argv");
+  });
+
+  // v0.108.0 (#1647) sets the MCP delivery next to the predicted follow-up
+  // prompt, before the caller's options, which win over both.
+  it.each([
+    ["a client that reads predictions", { _meta: { promptSuggestions: { version: 1 } } }, true],
+    ["any other client", {}, false],
+  ])(
+    "sets the MCP delivery next to the predicted follow-up prompt of %s",
+    async (_label, clientCapabilities, predicts) => {
+      await agent.initialize({ protocolVersion: 1, clientCapabilities });
+      await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+      expect(capturedOptions).toMatchObject({
+        promptSuggestions: predicts,
+        mcpServersDelivery: "argv",
+      });
+
+      await agent.newSession({
+        cwd: process.cwd(),
+        mcpServers: [],
+        _meta: {
+          claudeCode: {
+            options: { promptSuggestions: !predicts, mcpServersDelivery: "initialize" },
+          },
+        },
+      });
+      expect(capturedOptions).toMatchObject({
+        promptSuggestions: !predicts,
+        mcpServersDelivery: "initialize",
+      });
+    },
+  );
+
   it("defaults tools to claude_code preset when not provided", async () => {
     await agent.newSession({
       cwd: process.cwd(),
@@ -2756,6 +2801,48 @@ describe("createSession options merging", () => {
         });
 
         expect(updates.filter(neutralEnd).map(neutralEnd)).toEqual([{ version: 1, id: "load-2" }]);
+      });
+
+      // v0.108.0 (#1645): a load resolves the MCP servers that the client
+      // serves over the ACP connection before Claude Code starts.
+      it("ends the neutral replay of a load whose MCP server the client serves over ACP", async () => {
+        sessionMessages = [userMessage("u1", "first")];
+        const updates: SessionNotification[] = [];
+        const mcpServerOverAcp = vi.fn(async (server: { name: string }) => ({
+          type: "http" as const,
+          url: `http://127.0.0.1:1/mcp/${server.name}`,
+        }));
+        const loadAgent = new ClaudeAcpAgent({
+          ...createMockClient(),
+          sessionUpdate: async (notification: SessionNotification) => {
+            updates.push(notification);
+          },
+          mcpServerOverAcp,
+        } as AcpClient);
+        await loadAgent.initialize({ protocolVersion: 1, clientCapabilities: NEUTRAL_END_CLIENT });
+        let atResponse: SessionNotification[] = [];
+
+        await loadAgent
+          .loadSession({
+            sessionId: "replay-probe",
+            cwd: process.cwd(),
+            mcpServers: [{ type: "acp", name: "tools", serverId: "server-1" }],
+            _meta: { loadReplayEnd: { id: "load-4" } },
+          })
+          .then(() => (atResponse = [...updates]));
+
+        expect(mcpServerOverAcp).toHaveBeenCalledTimes(1);
+        expect(capturedOptions!.mcpServers?.tools).toEqual({
+          type: "http",
+          url: "http://127.0.0.1:1/mcp/tools",
+        });
+        expect(atResponse.filter(neutralEnd).map(neutralEnd)).toEqual([
+          { version: 1, id: "load-4" },
+        ]);
+        // The session's reader starts after the response: let it start here,
+        // so that it does not read the next test's stream.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(updates.filter(neutralEnd)).toHaveLength(1);
       });
 
       // The reader of a loaded session starts after the response (#1623), so

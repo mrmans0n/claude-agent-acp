@@ -5408,6 +5408,7 @@ describe("permission request cancellation", () => {
       settingsManager: {
         dispose: vi.fn(),
         getApiKeyHelper: () => undefined,
+        getShowClearContextOnPlanAccept: () => false,
         getCwd: () => "/test",
       } as any,
       accumulatedUsage: {
@@ -6049,6 +6050,7 @@ describe("permission request cancellation", () => {
     } as unknown as AcpClient;
     const agent = new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
     const session = injectSession(agent, "session-1");
+    session.settingsManager.getShowClearContextOnPlanAccept = () => true;
     session.modes.availableModes = [
       { id: "default", name: "Manual" },
       { id: "acceptEdits", name: "Accept edits" },
@@ -6075,6 +6077,54 @@ describe("permission request cancellation", () => {
       plan: "Implement it",
       mode: "auto",
     });
+  });
+
+  // v0.108.0 (#1627): Claude Code's setting decides whether the request
+  // offers clearing the context. The neutral presentation record does not
+  // change with the options.
+  it("sends a neutral permissionPresentation client one ExitPlanMode record with and without clear-context options", async () => {
+    async function ask(showClearContextOnPlanAccept: boolean) {
+      let request: RequestPermissionRequest | undefined;
+      const agent = new ClaudeAcpAgent(
+        {
+          sessionUpdate: async () => {},
+          requestPermission: async (value: RequestPermissionRequest) => {
+            request = value;
+            return { outcome: { outcome: "selected", optionId: "reject" } };
+          },
+        } as unknown as AcpClient,
+        { log: () => {}, error: () => {} },
+      );
+      await initializeClient(agent, { _meta: { permissionPresentation: { version: 1 } } });
+      const session = injectSession(agent, "session-1");
+      session.settingsManager.getShowClearContextOnPlanAccept = () => showClearContextOnPlanAccept;
+      session.modes.availableModes = [
+        { id: "default", name: "Manual" },
+        { id: "acceptEdits", name: "Accept edits" },
+        { id: "auto", name: "Auto" },
+      ];
+      await agent.canUseTool("session-1")("ExitPlanMode", { plan: "Implement it" }, {
+        signal: new AbortController().signal,
+        suggestions: [],
+        toolUseID: "tool-plan",
+      } as any);
+      return request!;
+    }
+    const clearOptions = (request: RequestPermissionRequest) =>
+      request.options
+        .map((option) => option.optionId)
+        .filter((optionId) => optionId.startsWith("exit-plan-clear-"));
+
+    const off = await ask(false);
+    const on = await ask(true);
+
+    expect(clearOptions(off)).toEqual([]);
+    expect(clearOptions(on)).toEqual(["exit-plan-clear-auto"]);
+    for (const request of [off, on]) {
+      expect(request._meta).toEqual({
+        permissionPresentation: { version: 1, title: "Ready to code?" },
+      });
+    }
   });
 
   it("maps Claude presentation fields without reconstructing provider text or changing input", async () => {
@@ -12517,6 +12567,95 @@ describe("stop reason propagation", () => {
       expect(JSON.stringify(updates)).not.toContain("could not complete");
     });
 
+    // v0.108.0 (#1644): Claude Code's own confirmWithUser question is no
+    // unfinished tool call. The incomplete-tool failure of the typed lane
+    // stays for a tool that really got no result.
+    it("records an unfinished tool, but not a confirmWithUser question, in the neutral form", async () => {
+      async function turn(work: (agent: ClaudeAcpAgent) => Promise<any[]>) {
+        const updates: SessionNotification[] = [];
+        const agent = new ClaudeAcpAgent(
+          {
+            sessionUpdate: async (update: SessionNotification) => void updates.push(update),
+            createElicitation: async () => ({
+              action: "accept",
+              content: { question_0: "Download" },
+            }),
+          } as unknown as AcpClient,
+          { log: () => {}, error: () => {} },
+        );
+        await agent.initialize({
+          protocolVersion: 1,
+          clientCapabilities: { elicitation: { form: {} }, ...neutralCapabilities },
+        });
+        injectGeneratorSession(agent, (input) =>
+          (async function* () {
+            yield userEcho((await input[Symbol.asyncIterator]().next()).value);
+            yield* await work(agent);
+            yield createResultMessage({
+              subtype: "success",
+              stop_reason: "end_turn",
+              is_error: false,
+            });
+          })(),
+        );
+        const response = await agent.prompt(promptParams);
+        return { response, updates };
+      }
+
+      const stuck = await turn(async () => [
+        {
+          type: "assistant",
+          parent_tool_use_id: null,
+          uuid: randomUUID(),
+          session_id: "test-session",
+          message: {
+            id: "msg_stuck",
+            role: "assistant",
+            model: "claude-sonnet-4-20250514",
+            content: [
+              { type: "tool_use", id: "toolu_stuck", name: "Bash", input: { command: "ls" } },
+            ],
+            usage: { input_tokens: 0, output_tokens: 0 },
+          },
+        },
+      ]);
+      expect(stuck.response.stopReason).toBe("end_turn");
+      expect(neutralFromMeta(stuck.response._meta)).toMatchObject({
+        version: 1,
+        severity: "error",
+        kind: "internal_error",
+      });
+      expect(stuck.response._meta).not.toHaveProperty("jetbrains");
+
+      const confirmed = await turn(async (agent) => {
+        await agent.canUseTool("test-session")(
+          "AskUserQuestion",
+          {
+            questions: [
+              {
+                question: "Download report.pdf from Drive?",
+                header: "Download",
+                options: [
+                  { label: "Download", description: "" },
+                  { label: "Don't download", description: "" },
+                ],
+                multiSelect: false,
+              },
+            ],
+          },
+          {
+            toolUseID: "confirm_0b7c5f3e-5a7e-4d55-9a54-2f7f0a1c9e11",
+            signal: new AbortController().signal,
+            suggestions: [],
+          } as any,
+        );
+        return [];
+      });
+      expect(confirmed.response.stopReason).toBe("end_turn");
+      expect(neutralFromMeta(confirmed.response._meta)).toBeUndefined();
+      expect(JSON.stringify(confirmed.updates)).not.toContain("sessionFailure");
+    });
+
     it("updates a retry warning on session_info_update into the terminal failure", async () => {
       const { agent, updates } = await neutralAgent();
       injectSession(agent, [
@@ -14936,6 +15075,25 @@ describe("skill commands in available_commands_update", () => {
     });
   });
 
+  it("resolves the SKILL.md paths again after a commands_changed for a neutral client", async () => {
+    const missingPath = path.join(cwd, ".claude", "skills", "missing", "SKILL.md");
+    const commands = await advertisedCommands(
+      { _meta: { commandPresentation: { version: 1 } } },
+      async () => {
+        await mkdir(path.dirname(missingPath), { recursive: true });
+        await writeFile(missingPath, "# missing\n");
+      },
+    );
+
+    expect(commands.find((c) => c.name === "missing")?._meta).toEqual({
+      commandPresentation: { version: 1, kind: "skill", skillPath: missingPath },
+    });
+    expect(commands.find((c) => c.name === "review")?._meta).toEqual({
+      commandPresentation: { version: 1, kind: "skill", skillPath },
+    });
+    expect(commands.find((c) => c.name === "mcp:review")?._meta).toBeUndefined();
+  });
+
   it("marks a skill in the client-neutral form for a client that opts in", async () => {
     const neutral = await advertisedCommands({ _meta: { commandPresentation: { version: 1 } } });
     expect(neutral.find((c) => c.name === "review")?._meta).toEqual({
@@ -16226,6 +16384,7 @@ describe("session/close", () => {
       settingsManager: {
         dispose: vi.fn(),
         getApiKeyHelper: () => undefined,
+        getShowClearContextOnPlanAccept: () => false,
         getCwd: () => "/test",
       } as any,
       accumulatedUsage: {
@@ -16350,6 +16509,7 @@ describe("session/delete", () => {
       settingsManager: {
         dispose: vi.fn(),
         getApiKeyHelper: () => undefined,
+        getShowClearContextOnPlanAccept: () => false,
         getCwd: () => "/test",
       } as any,
       accumulatedUsage: {
@@ -16515,6 +16675,7 @@ describe("getOrCreateSession param change detection", () => {
       settingsManager: {
         dispose: vi.fn(),
         getApiKeyHelper: () => undefined,
+        getShowClearContextOnPlanAccept: () => false,
         getCwd: () => "/test",
       } as any,
       accumulatedUsage: {
@@ -20877,6 +21038,7 @@ describe("post-error recovery", () => {
       settingsManager: {
         dispose: vi.fn(),
         getApiKeyHelper: () => undefined,
+        getShowClearContextOnPlanAccept: () => false,
         getCwd: () => "/test",
       } as any,
       accumulatedUsage: {
@@ -21253,6 +21415,7 @@ describe("post-error recovery", () => {
       {
         settingsManager: {
           getApiKeyHelper: () => undefined,
+          getShowClearContextOnPlanAccept: () => false,
           getCwd: () => "/test",
           dispose: vi.fn(() => {
             throw new Error("dispose boom");
@@ -23971,6 +24134,370 @@ describe("terminal of a command in the background", () => {
     expect(bashResult?._meta ?? {}).not.toHaveProperty("jetbrains");
     expect(bashResult?._meta ?? {}).not.toHaveProperty("terminal_exit");
   });
+
+  // v0.108.0 (#1587) streams a foreground command's output to a client that
+  // appends chunks. When the command then goes to the background, its result
+  // (Claude Code's notice) follows what the terminal showed. The AIR marker
+  // still goes to AIR only, also on that streamed result.
+  it("appends a streamed command's background notice for a provider-neutral async-task client, without the AIR marker", async () => {
+    const BACKGROUND_NOTICE = "Command running in background with ID: fg1.";
+    const streamed = Promise.withResolvers<void>();
+    const ended = Promise.withResolvers<void>();
+    const updates: SessionNotification[] = [];
+    const agent = new ClaudeAcpAgent(
+      {
+        sessionUpdate: async (n: SessionNotification) => {
+          updates.push(n);
+          const meta = n.update._meta as Record<string, unknown> | undefined;
+          if (n.update.sessionUpdate === "tool_call_update" && meta?.terminal_output_delta) {
+            streamed.resolve();
+          }
+        },
+      } as AcpClient,
+      { log: () => {}, error: () => {} },
+    );
+    await initializeClient(agent, { _meta: { "async-tasks": true, terminal_output_delta: true } });
+    injectGeneratorSession(agent, (input: Pushable<any>) =>
+      (async function* () {
+        const iter = input[Symbol.asyncIterator]();
+        yield userEcho((await iter.next()).value);
+        yield {
+          type: "assistant",
+          parent_tool_use_id: null,
+          uuid: randomUUID(),
+          session_id: "test-session",
+          message: {
+            id: "msg_fg",
+            role: "assistant",
+            model: "claude-sonnet-4-20250514",
+            content: [
+              { type: "tool_use", id: "toolu_fg", name: "Bash", input: { command: "make test" } },
+            ],
+            usage: {
+              input_tokens: 0,
+              output_tokens: 0,
+              cache_read_input_tokens: 0,
+              cache_creation_input_tokens: 0,
+            },
+          },
+        };
+        yield taskEvent("task_started", {
+          task_id: "fg1",
+          task_type: "local_bash",
+          description: "make test",
+          tool_use_id: "toolu_fg",
+          is_backgrounded: false,
+        });
+        await streamed.promise;
+        // The user sends the running command to the background.
+        yield taskEvent("task_updated", { task_id: "fg1", patch: { is_backgrounded: true } });
+        yield {
+          type: "user",
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: "toolu_fg", content: BACKGROUND_NOTICE }],
+          },
+          tool_use_result: {
+            stdout: "",
+            stderr: "",
+            interrupted: false,
+            isImage: false,
+            backgroundTaskId: "fg1",
+          },
+          parent_tool_use_id: null,
+          uuid: randomUUID(),
+          session_id: "test-session",
+        };
+        yield successfulResultMessage();
+        yield idle;
+        await ended.promise;
+        yield taskEvent("task_notification", {
+          task_id: "fg1",
+          tool_use_id: "toolu_fg",
+          status: "completed",
+          output_file: "/tmp/tasks/fg1.output",
+          summary: 'Background command "make test" completed',
+        });
+      })(),
+    );
+    Object.assign(agent.sessions["test-session"]!.query, {
+      getTaskOutput: vi.fn(async () => ({ output: "line1\n", total_bytes: 6, truncated: false })),
+    });
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test it" }] });
+    const consumer = agent.sessions["test-session"]!.consumer;
+    ended.resolve();
+    await consumer;
+
+    const bashUpdates = updates
+      .map(({ update }) => update)
+      .filter(
+        (update) => update.sessionUpdate === "tool_call_update" && update.toolCallId === "toolu_fg",
+      );
+    const deltas = bashUpdates.flatMap((update) => {
+      const meta = update._meta as { terminal_output_delta?: { data: string } } | undefined;
+      return meta?.terminal_output_delta ? [meta.terminal_output_delta.data] : [];
+    });
+    expect(deltas).toEqual(["line1\n", BACKGROUND_NOTICE]);
+    expect(bashUpdates.some((update) => (update._meta as any)?.terminal_output !== undefined)).toBe(
+      false,
+    );
+    expect(updates.map(({ update }) => update.sessionUpdate as string)).toContain(
+      "async_task_spawned",
+    );
+    for (const update of bashUpdates) expect(update._meta ?? {}).not.toHaveProperty("jetbrains");
+  });
+});
+
+// A client that appends terminal chunks sees the output of a command in the
+// foreground as it runs: Claude Code streams none, so the adapter reads the
+// command's task with `get_task_output` from its `task_started` until the Bash
+// result, whose output then replaces what the terminal showed.
+describe("output of a command in the foreground", () => {
+  /** Claude Code's result for a command that an interrupt stopped (CLI 2.1.325, shortened). */
+  const STOP_NOTICE =
+    "The user doesn't want to proceed with this tool use. The tool use was rejected. " +
+    "Correction to the text above: this call was stopped while running, not refused before it ran.";
+
+  /**
+   * A turn that runs `make test` in the foreground until `done` resolves. The
+   * command's tool result comes once `resulted` resolves too.
+   *
+   * With `cancelled`, a `session/cancel` (`cancel`) ends the turn at `done`.
+   * Claude Code's interrupt then stops the command, whose result is the
+   * `notice` for the model, stamped as not executed. A command that ended
+   * just before the interrupt has its `output` as its result instead.
+   */
+  function foregroundCommand(
+    done: Promise<void>,
+    resulted: Promise<void>,
+    cancelled?: { cancel: () => Promise<void>; result: "notice" | "output" },
+  ) {
+    return (input: Pushable<any>) =>
+      (async function* () {
+        const iter = input[Symbol.asyncIterator]();
+        yield userEcho((await iter.next()).value);
+        yield {
+          type: "assistant",
+          parent_tool_use_id: null,
+          uuid: randomUUID(),
+          session_id: "test-session",
+          message: {
+            id: "msg_fg",
+            role: "assistant",
+            model: "claude-sonnet-4-20250514",
+            content: [
+              { type: "tool_use", id: "toolu_fg", name: "Bash", input: { command: "make test" } },
+            ],
+            usage: {
+              input_tokens: 0,
+              output_tokens: 0,
+              cache_read_input_tokens: 0,
+              cache_creation_input_tokens: 0,
+            },
+          },
+        };
+        // What CLI 2.1.325 sends once the command has run for about 3 s.
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "fg1",
+          task_type: "local_bash",
+          description: "make test",
+          tool_use_id: "toolu_fg",
+          is_backgrounded: false,
+          uuid: randomUUID(),
+          session_id: "test-session",
+        };
+        await done;
+        await cancelled?.cancel();
+        const stopped = cancelled?.result === "notice";
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "fg1",
+          tool_use_id: "toolu_fg",
+          status: stopped ? "stopped" : "completed",
+          output_file: "",
+          summary: "",
+          uuid: randomUUID(),
+          session_id: "test-session",
+        };
+        await resulted;
+        yield {
+          type: "user",
+          ...(stopped
+            ? {
+                message: {
+                  role: "user",
+                  content: [
+                    {
+                      type: "tool_result",
+                      tool_use_id: "toolu_fg",
+                      is_error: true,
+                      content: STOP_NOTICE,
+                    },
+                  ],
+                },
+                tool_use_result: "User rejected tool use",
+                tool_result_meta: [{ id: "toolu_fg", non_execution_kind: "user-rejected" }],
+              }
+            : {
+                message: {
+                  role: "user",
+                  content: [
+                    { type: "tool_result", tool_use_id: "toolu_fg", content: "line1\nline2" },
+                  ],
+                },
+                tool_use_result: {
+                  stdout: "line1\nline2",
+                  stderr: "",
+                  interrupted: false,
+                  isImage: false,
+                },
+              }),
+          parent_tool_use_id: null,
+          uuid: randomUUID(),
+          session_id: "test-session",
+        };
+        yield cancelled
+          ? { ...successfulResultMessage(), is_error: true, terminal_reason: "aborted_tools" }
+          : successfulResultMessage();
+        yield { type: "system", subtype: "session_state_changed", state: "idle" };
+      })();
+  }
+
+  /** The terminal output of each report about the Bash call. */
+  const outputs = (updates: SessionNotification[]) =>
+    updates.flatMap(({ update }): ({ delta: string } | { snapshot: string })[] => {
+      if (update.sessionUpdate !== "tool_call_update" || update.toolCallId !== "toolu_fg")
+        return [];
+      const meta = update._meta as Record<string, { data: string } | undefined> | undefined;
+      if (meta?.terminal_output_delta) return [{ delta: meta.terminal_output_delta.data }];
+      if (meta?.terminal_output) return [{ snapshot: meta.terminal_output.data }];
+      return [];
+    });
+
+  /**
+   * Starts the turn for a client with `capabilities`. The query answers
+   * `get_task_output` with what `written` returns. With `cancelledResult`, the
+   * client cancels the turn once `taskEnds` is called (see `foregroundCommand`).
+   */
+  async function start(
+    capabilities: ClientCapabilities,
+    written: () => string,
+    cancelledResult?: "notice" | "output",
+  ) {
+    const updates: SessionNotification[] = [];
+    const agent = new ClaudeAcpAgent(
+      { sessionUpdate: async (n: SessionNotification) => void updates.push(n) } as AcpClient,
+      { log: () => {}, error: () => {} },
+    );
+    await initializeClient(agent, capabilities);
+    const done = Promise.withResolvers<void>();
+    const resulted = Promise.withResolvers<void>();
+    injectGeneratorSession(
+      agent,
+      foregroundCommand(
+        done.promise,
+        resulted.promise,
+        cancelledResult && {
+          cancel: () => agent.cancel({ sessionId: "test-session" }),
+          result: cancelledResult,
+        },
+      ),
+    );
+    const getTaskOutput = vi.fn(async (taskId: string) => {
+      expect(taskId).toBe("fg1");
+      const output = written();
+      return { output, total_bytes: Buffer.byteLength(output), truncated: false };
+    });
+    // Not in the SDK's `Query` type (see `supportsTaskOutput`).
+    Object.assign(agent.sessions["test-session"]!.query, { getTaskOutput });
+    const prompt = agent.prompt({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "test it" }],
+    });
+    return {
+      updates,
+      getTaskOutput,
+      prompt,
+      taskEnds: done.resolve,
+      resultComes: resulted.resolve,
+    };
+  }
+
+  /** Runs the turn for a client with `capabilities`. The command prints
+   *  `line1` and, once the client was sent it (or after 1.5 s), `line2`. */
+  async function run(capabilities: ClientCapabilities) {
+    let written = "line1\n";
+    const turn = await start(capabilities, () => written);
+    await vi
+      .waitFor(() => expect(outputs(turn.updates)).not.toEqual([]), { timeout: 1500 })
+      .catch(() => {});
+    written = "line1\nline2";
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    // Claude Code drops the output of a command that ended (CLI 2.1.325).
+    written = "";
+    turn.taskEnds();
+    turn.resultComes();
+    await turn.prompt;
+    return { outputs: outputs(turn.updates), reads: turn.getTaskOutput.mock.calls.length };
+  }
+
+  it("appends the output while the command runs, then replaces it with the result's", async () => {
+    expect((await run({ _meta: { terminal_output_delta: true } })).outputs).toEqual([
+      { delta: "line1\n" },
+      { delta: "line2" },
+      { snapshot: "line1\nline2" },
+    ]);
+  });
+
+  it("sends a client that appends no chunks the output with the result, as before", async () => {
+    expect(await run({ _meta: { terminal_output: true } })).toEqual({
+      outputs: [{ snapshot: "line1\nline2" }],
+      reads: 0,
+    });
+  });
+
+  // The result of a command that a cancel stopped is Claude Code's notice for
+  // the model: it must not replace the output that the user was reading.
+  it.each([
+    {
+      result: "notice" as const,
+      name: "keeps what the terminal showed, and appends Claude Code's notice",
+      expected: [{ delta: "line1\n" }, { delta: STOP_NOTICE }],
+    },
+    {
+      result: "output" as const,
+      name: "replaces what the terminal showed with the output of a command that had ended",
+      expected: [{ delta: "line1\n" }, { snapshot: "line1\nline2" }],
+    },
+  ])("at a cancel, $name", async ({ result, expected }) => {
+    const turn = await start({ _meta: { terminal_output_delta: true } }, () => "line1\n", result);
+    await vi.waitFor(() => expect(outputs(turn.updates)).toHaveLength(1), { timeout: 1500 });
+    turn.taskEnds();
+    turn.resultComes();
+
+    await expect(turn.prompt).resolves.toMatchObject({ stopReason: "cancelled" });
+    await vi.waitFor(() => expect(outputs(turn.updates)).toEqual(expected), { timeout: 1500 });
+  });
+
+  // A tool call that gets no result, such as one of a reply that Claude Code
+  // took back, must not be read until the query closes.
+  it("reads no more output once the command's task ended", async () => {
+    // The command prints nothing, so no read tells that it ended.
+    const turn = await start({ _meta: { terminal_output_delta: true } }, () => "");
+    await vi.waitFor(() => expect(turn.getTaskOutput).toHaveBeenCalled(), { timeout: 1500 });
+    turn.taskEnds();
+    // The task's end reaches the agent a few steps later.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const reads = turn.getTaskOutput.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 700));
+
+    expect(turn.getTaskOutput).toHaveBeenCalledTimes(reads);
+    turn.resultComes();
+    await turn.prompt;
+  });
 });
 
 describe("deferred settlement for live background subagents (issues #864/#866)", () => {
@@ -24809,6 +25336,8 @@ describe("deferred settlement for live background subagents (issues #864/#866)",
           clientCapabilities: { _meta: { settleAtResult: true } },
         });
         const session = agent.sessions["test-session"]!;
+        // Claude Code offers clearing the context only with this setting on (#1627).
+        session.settingsManager.getShowClearContextOnPlanAccept = () => true;
 
         const first = await agent.prompt({
           sessionId: "test-session",
@@ -24832,6 +25361,76 @@ describe("deferred settlement for live background subagents (issues #864/#866)",
 
         answer();
         await session.consumer;
+      });
+
+      // v0.108.0 (#1627): with Claude Code's setting on, the request of the
+      // followup cycle offers clearing the context only in a turn that can
+      // continue it: the held turn of a client that keeps the hold, never
+      // the out-of-turn request of a client that settles at the result.
+      it("offers clearing the context in the held turn only to a client that keeps the hold", async () => {
+        async function clearContextOptions(clientCapabilities: ClientCapabilities) {
+          let request: RequestPermissionRequest | undefined;
+          const agent = new ClaudeAcpAgent(
+            {
+              sessionUpdate: async () => {},
+              requestPermission: async (params: RequestPermissionRequest) => {
+                request = params;
+                return { outcome: { outcome: "selected", optionId: "reject" } };
+              },
+            } as unknown as AcpClient,
+            { log: () => {}, error: () => {} },
+          );
+          const answered = Promise.withResolvers<void>();
+          let planToolSeen = false;
+          injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+              const { value: first } = await input[Symbol.asyncIterator]().next();
+              const followup = heldTurnPlanningFollowup(first);
+              for (let step = followup.next(); !step.done; step = followup.next()) {
+                const message: any = step.value;
+                if (message.type === "user" && message.tool_result_meta) {
+                  planToolSeen = true;
+                  await answered.promise;
+                }
+                yield message;
+              }
+              yield idle();
+            }
+            return messageGenerator();
+          });
+          await agent.initialize({ protocolVersion: 1, clientCapabilities });
+          const session = agent.sessions["test-session"]!;
+          session.settingsManager.getShowClearContextOnPlanAccept = () => true;
+
+          const prompt = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "plan" }],
+          });
+          await waitFor(() => planToolSeen);
+          const turnActive = session.activeTurn !== null;
+          await agent.canUseTool("test-session")("ExitPlanMode", { plan: "Implement it" }, {
+            signal: new AbortController().signal,
+            suggestions: [],
+            toolUseID: "tool-plan",
+          } as any);
+          answered.resolve();
+          await prompt;
+          await session.consumer;
+          return {
+            turnActive,
+            clear: (request?.options ?? [])
+              .map((o) => o.optionId)
+              .filter((id) => id.startsWith("exit-plan-clear-")),
+          };
+        }
+
+        const held = await clearContextOptions({});
+        expect(held.turnActive).toBe(true);
+        expect(held.clear).not.toEqual([]);
+        expect(await clearContextOptions({ _meta: { settleAtResult: true } })).toEqual({
+          turnActive: false,
+          clear: [],
+        });
       });
     });
 
@@ -24947,6 +25546,8 @@ describe("deferred settlement for live background subagents (issues #864/#866)",
           return messageGenerator();
         });
         await declareBackgroundSubagents(agent);
+        agent.sessions["test-session"]!.settingsManager.getShowClearContextOnPlanAccept = () =>
+          true;
 
         const prompt = agent.prompt({
           sessionId: "test-session",
@@ -25061,6 +25662,8 @@ describe("deferred settlement for live background subagents (issues #864/#866)",
           return messageGenerator();
         });
         await declareBackgroundSubagents(agent);
+        agent.sessions["test-session"]!.settingsManager.getShowClearContextOnPlanAccept = () =>
+          true;
         const session = agent.sessions["test-session"]!;
 
         const prompt = agent.prompt({
@@ -29711,6 +30314,64 @@ describe("turn steering (_session/steering)", () => {
     expect(agent.sessions["test-session"].owedTrailingIdles).toBe(0);
   });
 
+  // The same guard when the autonomous cycle's result is stamped with the
+  // original prompt: answersPendingPrompt then routes it to the user lane, and
+  // its idle must still not settle the turn while the steered work runs.
+  it.each(["end_turn", "refusal"] as const)(
+    "does not settle a steered turn on an autonomous %s result naming the original prompt",
+    async (stopReason) => {
+      const timeline: string[] = [];
+      const agent = new ClaudeAcpAgent(timelineClient(timeline), {
+        log: () => {},
+        error: () => {},
+      });
+
+      injectGeneratorSession(agent, (input) => {
+        async function* messageGenerator() {
+          const iter = input[Symbol.asyncIterator]();
+          const u1 = await iter.next();
+          yield userEcho(u1.value);
+          yield createAssistantText("working on it");
+          const steered = await iter.next();
+          yield { ...interruptedCycleResult(), user_message_uuid: u1.value.uuid };
+          yield userEcho(steered.value);
+          // A background cycle's result, stamped with the original prompt only.
+          yield {
+            ...createResultMessage(),
+            stop_reason: stopReason,
+            origin: { kind: "task-notification" },
+            user_message_uuid: u1.value.uuid,
+            user_message_uuids: [u1.value.uuid],
+          };
+          yield idleMessage(); // that cycle's trailer
+          yield createAssistantText("STEERED-OK");
+          yield createResultMessage();
+          yield idleMessage();
+        }
+        return messageGenerator();
+      });
+
+      const turn = agent
+        .prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "start" }] })
+        .then((response) => {
+          timeline.push(`prompt:${response.stopReason}`);
+          return response;
+        });
+      await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+      await agent.steer({
+        sessionId: "test-session",
+        prompt: [{ type: "text", text: "also handle X" }],
+      });
+
+      await turn;
+      await agent.sessions["test-session"]?.consumer;
+
+      // The turn keeps one stop reason across its cycles, so a refusal trailer's
+      // reason is reported; what matters here is that the prompt ends last.
+      expect(timeline).toEqual(["working on it", "STEERED-OK", `prompt:${stopReason}`]);
+    },
+  );
+
   it("always injects at 'now' priority, ignoring any client-supplied priority", async () => {
     const agent = createMockAgent();
     const captured: any[] = [];
@@ -29809,6 +30470,7 @@ describe("session/cancel wedge recovery (issue #680)", () => {
       settingsManager: {
         dispose: vi.fn(),
         getApiKeyHelper: () => undefined,
+        getShowClearContextOnPlanAccept: () => false,
         getCwd: () => "/test",
       } as any,
       accumulatedUsage: {
@@ -31757,6 +32419,7 @@ describe("agent selection config option", () => {
         settingsManager: {
           dispose: vi.fn(),
           getApiKeyHelper: () => undefined,
+          getShowClearContextOnPlanAccept: () => false,
           getCwd: () => "/test",
         } as any,
         accumulatedUsage: {
@@ -31918,6 +32581,81 @@ describe("agent selection config option", () => {
       expect(query.setModel).toHaveBeenCalledWith("haiku");
       expect(model?.currentValue).toBe("haiku");
       expect(model?._meta).toEqual({ recommendedConfigValue: { version: 1, value: "sonnet" } });
+    });
+
+    // A model that the picker does not list goes to Claude Code as it is
+    // (#1630). The rebuilt option still names the running default's row.
+    it("keeps the neutral recommendation after a switch to a model the picker does not list", async () => {
+      const options = async (clientCapabilities: ClientCapabilities) => {
+        const agent = new ClaudeAcpAgent(
+          { sessionUpdate: async () => {} } as unknown as AcpClient,
+          {
+            log: () => {},
+            error: () => {},
+          },
+        );
+        await initializeClient(agent, clientCapabilities);
+        const modelInfos = [
+          {
+            value: "default",
+            displayName: "Default",
+            description: "",
+            resolvedModel: "claude-sonnet-5",
+          },
+          {
+            value: "sonnet",
+            displayName: "Sonnet",
+            description: "",
+            resolvedModel: "claude-sonnet-5",
+          },
+        ];
+        const models = {
+          currentModelId: "default",
+          availableModels: modelInfos.map((info) => ({
+            modelId: info.value,
+            name: info.displayName,
+          })),
+        };
+        function* idle() {}
+        const query = Object.assign(idle(), {
+          setModel: vi.fn(async () => {}),
+          applyFlagSettings: vi.fn(async () => {}),
+          getContextUsage: vi.fn(async () => ({ rawMaxTokens: 200_000 })),
+          interrupt: vi.fn(),
+          close: vi.fn(),
+        });
+        agent.sessions["model-session"] = mockSessionState(
+          {
+            query,
+            input: new Pushable(),
+            models,
+            modelInfos,
+            configOptions: buildConfigOptions(
+              baseModes,
+              models,
+              modelInfos,
+              undefined,
+              [],
+              "default",
+            ),
+          },
+          agent,
+          "model-session",
+        );
+        const { configOptions } = await agent.setSessionConfigOption({
+          sessionId: "model-session",
+          configId: "model",
+          value: "claude-opus-4-1-20250805",
+        });
+        expect(query.setModel).toHaveBeenCalledWith("claude-opus-4-1-20250805");
+        return configOptions.find((option) => option.id === "model")!;
+      };
+
+      const plain = await options({});
+      const neutral = await options({ _meta: { recommendedConfigValue: { version: 1 } } });
+      expect(neutral.currentValue).toBe("claude-opus-4-1-20250805");
+      expect(neutral._meta).toEqual({ recommendedConfigValue: { version: 1, value: "sonnet" } });
+      expect({ ...neutral, _meta: undefined }).toEqual({ ...plain, _meta: undefined });
     });
   });
 });
