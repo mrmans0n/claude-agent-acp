@@ -53,6 +53,7 @@ import { isSessionId, projectsRoot } from "../paths.js";
 import { isExactProjectDir, projectDirMatches } from "./project-dirs.js";
 import { type IndexRow, type SessionIndex, type TranscriptCandidate } from "./session-index.js";
 import { changeSignature, sessionInfoOf } from "./session-info.js";
+import type { SessionIndexMeta } from "./meta.js";
 
 export const LIST_SUBSCRIBE_METHOD = "_session/list/subscribe";
 export const LIST_UNSUBSCRIBE_METHOD = "_session/list/unsubscribe";
@@ -115,6 +116,8 @@ export type ListSubscriptionDeps = {
   /** The forks whose rows wait for their fork response. */
   forkHolds?: ForkHolds;
   logError: (message: string, error: unknown) => void;
+  /** Where rows carry the index metadata; AIR's by default. */
+  meta?: SessionIndexMeta;
   now?: () => number;
   debounceMs?: number;
   maxWaitMs?: number;
@@ -908,7 +911,7 @@ export class ListSubscriptions {
     const id = row.sessionId;
     if (own) this.ownShown.add(id);
     else this.ownShown.delete(id);
-    const info = sessionInfoOf(row, own, this.live.get(row.sessionId), now);
+    const info = sessionInfoOf(row, own, this.live.get(row.sessionId), now, this.deps.meta);
     return { row, info, signature: changeSignature(info) };
   }
 
