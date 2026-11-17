@@ -156,14 +156,15 @@ import type {
   ListUnsubscribeRequest,
 } from "../session-index/list-subscriptions.js";
 import {
+  ASYNC_TASK_CONTROL_METHOD,
   AsyncTaskRuntime,
+  asyncTaskCapabilityMeta,
   backgroundBashTaskFromToolResult,
   backgroundedBashToolCallIds,
   clientSupportsAsyncTasks,
 } from "../async-tasks.js";
 import { SessionBackgroundWork } from "./background-work.js";
 import {
-  ASYNC_TASK_STOP_METHOD,
   parseAsyncTaskStopRequest,
   type AsyncTaskStopRequest,
   type AsyncTaskStopResponse,
@@ -1888,7 +1889,7 @@ export class ClaudeAcpAgent {
       // Top-level `_meta` (sibling of `agentCapabilities`), per the existing ACP
       // steering extension contract: advertises the `_session/steering` request
       // so clients know they may inject a follow-up into a running turn.
-      _meta: {
+      _meta: asyncTaskCapabilityMeta(this.clientCapabilities, {
         ...goalMeta(
           this.clientCapabilities,
           {
@@ -1913,7 +1914,7 @@ export class ClaudeAcpAgent {
         steering: {
           supported: true,
         },
-      },
+      }),
     };
   }
 
@@ -7043,7 +7044,10 @@ export class ClaudeAcpAgent {
                     backgroundedBashToolCall(
                       acceptedPlanToolResult(notification, acceptedPlanToolUseId),
                       backgroundedToolCalls,
-                      asyncTasks.enabled,
+                      clientSupportsAirCapability(
+                        this.clientCapabilities,
+                        AIR_ASYNC_TASKS_CAPABILITY,
+                      ),
                     ),
                     streamedTerminals,
                   ),
@@ -11371,7 +11375,7 @@ export function v1AgentApp(
       agent.steer(ctx.params),
     )
     .onRequest<AsyncTaskStopRequest, AsyncTaskStopResponse>(
-      ASYNC_TASK_STOP_METHOD,
+      ASYNC_TASK_CONTROL_METHOD,
       { parse: parseAsyncTaskStopRequest },
       (ctx) => agent.stopAsyncTask(ctx.params),
     )
