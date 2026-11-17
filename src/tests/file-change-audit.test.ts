@@ -494,6 +494,49 @@ describe("client-neutral agent file-change report", () => {
     ]);
   });
 
+  // v0.108.0 (#1419): an input field of the wrong type is no path in a tool
+  // report, and no edited file in the neutral report either.
+  it("lists at top level only the subagent edits that name a path", async () => {
+    const published: AgentFileChangeReportResult[] = [];
+    const cwd = process.cwd();
+    const support = createSupport({
+      form: "neutral",
+      cwd,
+      publish: async (result) => void published.push(result),
+    });
+    const turn = requestedTurn(support, "request-subagent", undefined, "neutral");
+    const toolUses = {
+      toolu_edit: { name: "Edit", input: { file_path: 12345, old_string: "a", new_string: "b" } },
+      toolu_notebook: { name: "NotebookEdit", input: { notebook_path: ["a.ipynb"] } },
+      toolu_empty: { name: "MultiEdit", input: { file_path: "" } },
+      toolu_write: { name: "Write", input: { file_path: path.join(cwd, "GEMINI.md") } },
+    };
+    recordSubagentFileEdits(
+      turn,
+      "toolu_agent",
+      Object.keys(toolUses).map((id) => ({ type: "tool_result", tool_use_id: id, content: "ok" })),
+      toolUses,
+    );
+
+    await support.report(turn, {
+      rewindFiles: vi.fn(async () => ({ canRewind: false, error: "checkpoint missing" })),
+    });
+
+    expect(published.map((result) => agentFileChangeReportMeta(result, "neutral"))).toEqual([
+      {
+        agentFileChangeReport: {
+          version: 1,
+          requestId: "request-subagent",
+          status: "reported",
+          paths: [path.join(cwd, "GEMINI.md")],
+          declaredComplete: false,
+          truncated: false,
+          uncertainty: NEUTRAL_AGENT_FILE_CHANGE_REPORT_UNCERTAINTY,
+        },
+      },
+    ]);
+  });
+
   /** A list that just fits the AIR form must lose paths to fit the neutral one. */
   it("counts the uncertainty in the wire limit", async () => {
     const cwd = path.join(os.tmpdir(), "native-file-report-neutral-caps");

@@ -1272,6 +1272,40 @@ describe.skipIf(baselineDir)("ACP scenarios", () => {
       ]);
     });
 
+    // v0.108.0 (#1627): Claude Code's showClearContextOnPlanAccept setting
+    // decides whether the request offers clearing the context. The plan file
+    // goes with the request either way.
+    it("adds the plan file to the request with and without Claude Code's clear-context setting", async () => {
+      const planFile = {
+        version: 1,
+        planId: "plan-mode:toolu_plan",
+        path: expect.stringMatching(/plans\/plan\.md$/),
+        sha256,
+      };
+      const clearOptions = (request: Record<string, any>) =>
+        (request.options as { optionId: string }[])
+          .map((option) => option.optionId)
+          .filter((optionId) => optionId.startsWith("exit-plan-clear-"));
+      const [off] = permissionRequests(await runNeutral(planFileScenario));
+      const [on] = permissionRequests(
+        await runNeutral({
+          ...planFileScenario,
+          name: "exit-plan-file-clear-context",
+          files: {
+            ...planFileScenario.files,
+            ".claude/settings.json": JSON.stringify({ showClearContextOnPlanAccept: true }),
+          },
+        }),
+      );
+
+      expect(clearOptions(off)).toEqual([]);
+      expect(clearOptions(on)).not.toEqual([]);
+      for (const request of [off, on]) {
+        expect(request.toolCall._meta.planFile).toEqual(planFile);
+        expect(request.toolCall.rawInput).toEqual({ plan, planFilePath: planFile.path });
+      }
+    });
+
     it("leaves out the path when the CLI names no plan file", async () => {
       const [request] = permissionRequests(await runNeutral("exit-plan-approve"));
 
