@@ -21,6 +21,9 @@ export const PROMPT_SUGGESTIONS_META_KEY = "promptSuggestions";
 /** One predicted prompt, as the `_meta` value carries it. */
 export type PromptSuggestionsMetaValue = {
   suggestions: { text: string }[];
+  /** The `_meta.promptSuggestions.id` of the `session/prompt` whose turn
+   *  this predicts after, for a client-neutral request. */
+  id?: string;
 };
 
 /**
@@ -38,8 +41,14 @@ export function promptSuggestionText(raw: string | null | undefined): string | n
  * empty `suggestions` list, which clears the prompt the client holds — the turn
  * predicted nothing, so the composer must not keep the previous prediction.
  */
-export function promptSuggestionsMeta(text: string | null): Record<string, unknown> {
-  const value: PromptSuggestionsMetaValue = { suggestions: text === null ? [] : [{ text }] };
+export function promptSuggestionsMeta(
+  text: string | null,
+  requestId?: string,
+): Record<string, unknown> {
+  const value: PromptSuggestionsMetaValue = {
+    suggestions: text === null ? [] : [{ text }],
+    ...(requestId !== undefined ? { id: requestId } : {}),
+  };
   return { [PROMPT_SUGGESTIONS_META_KEY]: value };
 }
 
@@ -47,7 +56,8 @@ export function promptSuggestionsMeta(text: string | null): Record<string, unkno
  * The prediction a session holds on the client, and whether an arriving
  * `prompt_suggestion` still answers the turn the user waits on. Both cores
  * keep one per session and send the `_meta` that its methods return as a
- * `session_info_update`, to an AIR client only. Undefined: nothing to send.
+ * `session_info_update`, to an AIR client, and on ACP v1 to a client of the
+ * client-neutral form too. Undefined: nothing to send.
  */
 export class PromptSuggestions {
   /** The last text sent (`null` after a clear). Undefined until the first send. */
@@ -59,6 +69,21 @@ export class PromptSuggestions {
    * dropped instead of published mid-turn.
    */
   private expected = false;
+  /** The `_meta.promptSuggestions.id` of the client prompt whose turn the next
+   *  prediction answers, for a client of the client-neutral form. */
+  private requestId: string | undefined;
+
+  /**
+   * @param everyTurn The client takes the prediction of every turn, as AIR
+   *   does. A client of the client-neutral form alone gets only the
+   *   prediction of a prompt that named `_meta.promptSuggestions.id`.
+   */
+  constructor(private readonly everyTurn = true) {}
+
+  /** A client prompt came, naming `requestId` to ask for its turn's prediction, or none. */
+  prompted(requestId: string | undefined): void {
+    this.requestId = requestId;
+  }
 
   /** A result came: the CLI predicts the next prompt right after it. */
   resultArrived(): void {
@@ -69,7 +94,12 @@ export class PromptSuggestions {
   suggested(raw: string | null | undefined): Record<string, unknown> | undefined {
     if (!this.expected) return undefined;
     this.expected = false;
-    return this.publish(promptSuggestionText(raw));
+    // One prediction per request: a later turn's prediction (an autonomous
+    // cycle) does not answer the prompt that asked.
+    const requestId = this.requestId;
+    this.requestId = undefined;
+    if (!this.everyTurn && requestId === undefined) return undefined;
+    return this.publish(promptSuggestionText(raw), requestId);
   }
 
   /**
@@ -83,10 +113,12 @@ export class PromptSuggestions {
     return this.publish(null);
   }
 
-  private publish(text: string | null): Record<string, unknown> | undefined {
-    // An unchanged prediction is not sent again.
-    if ((this.published ?? null) === text) return undefined;
+  private publish(text: string | null, requestId?: string): Record<string, unknown> | undefined {
+    // An unchanged prediction is not sent again. A prediction that answers a
+    // request always goes out: the client waits for that id, even for an
+    // empty list or a repeated text.
+    if (requestId === undefined && (this.published ?? null) === text) return undefined;
     this.published = text;
-    return promptSuggestionsMeta(text);
+    return promptSuggestionsMeta(text, requestId);
   }
 }
