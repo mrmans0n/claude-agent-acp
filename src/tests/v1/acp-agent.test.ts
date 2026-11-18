@@ -3366,7 +3366,10 @@ describe("usage-limit failure replay", () => {
     session_id: "s1",
   });
 
-  async function replay(messages: Awaited<ReturnType<typeof getSessionMessages>>, capable = true) {
+  async function replay(
+    messages: Awaited<ReturnType<typeof getSessionMessages>>,
+    capabilities: Record<string, unknown> = airCapabilities,
+  ) {
     const updates: SessionNotification[] = [];
     const agent = new ClaudeAcpAgent(
       {
@@ -3374,7 +3377,7 @@ describe("usage-limit failure replay", () => {
       } as unknown as AcpClient,
       { log: () => {}, error: () => {} },
     );
-    await initializeClient(agent, capable ? airCapabilities : {});
+    await initializeClient(agent, capabilities);
     agent.sessions.s1 = mockSessionState();
     vi.mocked(getSessionMessages).mockResolvedValueOnce(messages);
     await (
@@ -3459,10 +3462,35 @@ describe("usage-limit failure replay", () => {
   });
 
   it("preserves the standard transcript for clients without the extension", async () => {
-    const { updates } = await replay([usageLimitMessage], false);
+    const { updates } = await replay([usageLimitMessage], {});
 
     expect(JSON.stringify(updates)).toContain("individual spend limit");
     expect(JSON.stringify(updates)).not.toContain("sessionFailure");
+  });
+
+  it("replays the usage limit in the neutral form, without the duplicate text", async () => {
+    const { agent, updates } = await replay([usageLimitMessage], {
+      _meta: { sessionFailure: { version: 1 } },
+    });
+
+    expect(updates.map((update) => update.update)).toEqual([
+      {
+        sessionUpdate: "session_info_update",
+        _meta: {
+          sessionFailure: {
+            version: 1,
+            id: "s1:history-error:usage-limit-message",
+            revision: 1,
+            category: "limit",
+            severity: "error",
+            title: usageLimitMessage.message.content[0].text,
+            actions: [],
+            kind: "quota_exhausted",
+          },
+        },
+      },
+    ]);
+    expect(agent.sessions.s1.sessionFailureState.active.size).toBe(1);
   });
 
   it("clears the replayed failure after a successful follow-up", async () => {
@@ -12143,6 +12171,9 @@ describe("stop reason propagation", () => {
         "retryable",
         "retryAfterMs",
         "turnId",
+        // Only the neutral form has these.
+        "version",
+        "kind",
       ]) {
         expect(failure).not.toHaveProperty(removedField);
       }
@@ -12499,6 +12530,436 @@ describe("stop reason propagation", () => {
       agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test" }] }),
     ).rejects.toThrow("provider detail");
     expect(JSON.stringify(updates)).not.toContain("sessionFailure");
+  });
+
+  describe("client-neutral session failure", () => {
+    const neutralCapabilities = { _meta: { sessionFailure: { version: 1 } } };
+    const neutralFromMeta = (meta: unknown) => (meta as any)?.sessionFailure;
+    const promptParams = {
+      sessionId: "test-session",
+      prompt: [{ type: "text" as const, text: "test" }],
+    };
+    const failedResult = (result: string) =>
+      createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: true, result });
+
+    async function neutralAgent(capabilities: Record<string, any> = neutralCapabilities) {
+      const updates: SessionNotification[] = [];
+      const agent = new ClaudeAcpAgent(
+        {
+          sessionUpdate: async (update: SessionNotification) => {
+            updates.push(update);
+          },
+        } as unknown as AcpClient,
+        { log: () => {}, error: () => {} },
+      );
+      const initialized = await agent.initialize({
+        protocolVersion: 1,
+        clientCapabilities: capabilities,
+      });
+      return { agent, updates, initialized };
+    }
+
+    it("ends a failed turn with end_turn and the record, without the assistant text", async () => {
+      const { agent, updates } = await neutralAgent();
+      injectSession(agent, [
+        createAssistantError("server_error", "Claude could not complete the request."),
+        failedResult("Claude could not complete the request."),
+      ]);
+
+      const response = await agent.prompt(promptParams);
+
+      expect(response.stopReason).toBe("end_turn");
+      expect(neutralFromMeta(response._meta)).toEqual({
+        version: 1,
+        id: expect.stringMatching(/:error$/),
+        revision: 1,
+        category: "service",
+        severity: "error",
+        title: "Claude could not complete the request.",
+        actions: ["retry"],
+        kind: "provider_error",
+      });
+      expect(response._meta).not.toHaveProperty("jetbrains");
+      expect(response._meta).toHaveProperty("quota");
+      expect(JSON.stringify(updates)).not.toContain("sessionFailure");
+      expect(JSON.stringify(updates)).not.toContain("could not complete");
+    });
+
+    // v0.108.0 (#1644): Claude Code's own confirmWithUser question is no
+    // unfinished tool call. The incomplete-tool failure of the typed lane
+    // stays for a tool that really got no result.
+    it("records an unfinished tool, but not a confirmWithUser question, in the neutral form", async () => {
+      async function turn(work: (agent: ClaudeAcpAgent) => Promise<any[]>) {
+        const updates: SessionNotification[] = [];
+        const agent = new ClaudeAcpAgent(
+          {
+            sessionUpdate: async (update: SessionNotification) => void updates.push(update),
+            createElicitation: async () => ({
+              action: "accept",
+              content: { question_0: "Download" },
+            }),
+          } as unknown as AcpClient,
+          { log: () => {}, error: () => {} },
+        );
+        await agent.initialize({
+          protocolVersion: 1,
+          clientCapabilities: { elicitation: { form: {} }, ...neutralCapabilities },
+        });
+        injectGeneratorSession(agent, (input) =>
+          (async function* () {
+            yield userEcho((await input[Symbol.asyncIterator]().next()).value);
+            yield* await work(agent);
+            yield createResultMessage({
+              subtype: "success",
+              stop_reason: "end_turn",
+              is_error: false,
+            });
+          })(),
+        );
+        const response = await agent.prompt(promptParams);
+        return { response, updates };
+      }
+
+      const stuck = await turn(async () => [
+        {
+          type: "assistant",
+          parent_tool_use_id: null,
+          uuid: randomUUID(),
+          session_id: "test-session",
+          message: {
+            id: "msg_stuck",
+            role: "assistant",
+            model: "claude-sonnet-4-20250514",
+            content: [
+              { type: "tool_use", id: "toolu_stuck", name: "Bash", input: { command: "ls" } },
+            ],
+            usage: { input_tokens: 0, output_tokens: 0 },
+          },
+        },
+      ]);
+      expect(stuck.response.stopReason).toBe("end_turn");
+      expect(neutralFromMeta(stuck.response._meta)).toMatchObject({
+        version: 1,
+        severity: "error",
+        kind: "internal_error",
+      });
+      expect(stuck.response._meta).not.toHaveProperty("jetbrains");
+
+      const confirmed = await turn(async (agent) => {
+        await agent.canUseTool("test-session")(
+          "AskUserQuestion",
+          {
+            questions: [
+              {
+                question: "Download report.pdf from Drive?",
+                header: "Download",
+                options: [
+                  { label: "Download", description: "" },
+                  { label: "Don't download", description: "" },
+                ],
+                multiSelect: false,
+              },
+            ],
+          },
+          {
+            toolUseID: "confirm_0b7c5f3e-5a7e-4d55-9a54-2f7f0a1c9e11",
+            signal: new AbortController().signal,
+            suggestions: [],
+          } as any,
+        );
+        return [];
+      });
+      expect(confirmed.response.stopReason).toBe("end_turn");
+      expect(neutralFromMeta(confirmed.response._meta)).toBeUndefined();
+      expect(JSON.stringify(confirmed.updates)).not.toContain("sessionFailure");
+    });
+
+    // v0.108.1 (#1604): a server tool call whose reply Claude Code gave up on
+    // closes once the next reply starts, so it fails no turn. One that the
+    // turn's last reply leaves without a result still does.
+    it("records an unanswered server tool call, but not a cut-off one, in the neutral form", async () => {
+      async function turn(messages: unknown[]) {
+        const updates: SessionNotification[] = [];
+        const agent = new ClaudeAcpAgent(
+          {
+            sessionUpdate: async (update: SessionNotification) => void updates.push(update),
+          } as unknown as AcpClient,
+          { log: () => {}, error: () => {} },
+        );
+        await agent.initialize({ protocolVersion: 1, clientCapabilities: neutralCapabilities });
+        injectGeneratorSession(agent, (input) =>
+          (async function* () {
+            yield userEcho((await input[Symbol.asyncIterator]().next()).value);
+            yield* messages;
+            yield createResultMessage({
+              subtype: "success",
+              stop_reason: "end_turn",
+              is_error: false,
+            });
+          })(),
+        );
+        const response = await agent.prompt(promptParams);
+        return { response, updates };
+      }
+      const streamEvent = (event: Record<string, unknown>) => ({
+        type: "stream_event",
+        parent_tool_use_id: null,
+        uuid: randomUUID(),
+        session_id: "test-session",
+        event,
+      });
+      const replyStart = (id: string) =>
+        streamEvent({
+          type: "message_start",
+          message: {
+            id,
+            model: "claude-sonnet-4-20250514",
+            usage: { input_tokens: 0, output_tokens: 0 },
+          },
+        });
+      const advisor = {
+        type: "server_tool_use",
+        id: "srvtoolu_advisor",
+        name: "advisor",
+        input: {},
+      };
+      const advisorCall = [
+        replyStart("msg_cut_off"),
+        streamEvent({ type: "content_block_start", index: 0, content_block: advisor }),
+        {
+          type: "assistant",
+          parent_tool_use_id: null,
+          uuid: randomUUID(),
+          session_id: "test-session",
+          message: {
+            id: "msg_cut_off",
+            role: "assistant",
+            model: "claude-sonnet-4-20250514",
+            content: [advisor],
+            usage: { input_tokens: 0, output_tokens: 0 },
+          },
+        },
+      ];
+
+      const unanswered = await turn(advisorCall);
+      expect(unanswered.response.stopReason).toBe("end_turn");
+      expect(neutralFromMeta(unanswered.response._meta)).toMatchObject({
+        version: 1,
+        severity: "error",
+        kind: "internal_error",
+      });
+
+      // Claude Code asks again: the next reply starts with another block.
+      const cutOff = await turn([
+        ...advisorCall,
+        replyStart("msg_asked_again"),
+        streamEvent({
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" },
+        }),
+      ]);
+      expect(cutOff.response.stopReason).toBe("end_turn");
+      expect(neutralFromMeta(cutOff.response._meta)).toBeUndefined();
+      expect(JSON.stringify(cutOff.updates)).not.toContain("sessionFailure");
+    });
+
+    it("updates a retry warning on session_info_update into the terminal failure", async () => {
+      const { agent, updates } = await neutralAgent();
+      injectSession(agent, [
+        {
+          type: "system",
+          subtype: "api_retry",
+          attempt: 1,
+          max_retries: 5,
+          retry_delay_ms: 100,
+          error_status: 429,
+          error: "rate_limit",
+          uuid: randomUUID(),
+          session_id: "test-session",
+        },
+        createAssistantError("rate_limit", "Rate limit reached."),
+        failedResult("Rate limit reached."),
+      ]);
+
+      const response = await agent.prompt(promptParams);
+      const update = updates.find((candidate) => neutralFromMeta(candidate.update._meta))!;
+      const warning = neutralFromMeta(update.update._meta);
+
+      expect(update.update.sessionUpdate).toBe("session_info_update");
+      expect(update.update._meta).not.toHaveProperty("jetbrains");
+      expect(warning).toEqual({
+        version: 1,
+        id: expect.any(String),
+        revision: 1,
+        category: "limit",
+        severity: "warning",
+        title: "Retrying Claude, attempt 1 of 5.",
+        // The cause and the wait of the AIR warning (#1594), in the neutral record too.
+        details: "HTTP 429 (rate limited). Next attempt now.",
+        actions: [],
+        kind: "rate_limited",
+      });
+      expect(neutralFromMeta(response._meta)).toMatchObject({
+        id: warning.id,
+        revision: 2,
+        severity: "error",
+        actions: ["retry"],
+        kind: "rate_limited",
+      });
+    });
+
+    it("keeps a transport loss on end_turn with no raw detail", async () => {
+      const { agent } = await neutralAgent();
+      const input = new Pushable<any>();
+      async function* messageGenerator() {
+        const user = await input[Symbol.asyncIterator]().next();
+        yield {
+          type: "user",
+          message: user.value.message,
+          parent_tool_use_id: null,
+          uuid: user.value.uuid,
+          session_id: "test-session",
+          isReplay: true,
+        };
+        throw new Error("private transport URL and token");
+      }
+      agent.sessions["test-session"] = mockSessionState({
+        query: wrapQuery(messageGenerator()),
+        input,
+      });
+
+      const response = await agent.prompt(promptParams);
+
+      expect(response.stopReason).toBe("end_turn");
+      expect(neutralFromMeta(response._meta)).toMatchObject({
+        category: "connection",
+        title: "The connection to Claude was lost.",
+        actions: ["new_session"],
+        kind: "transport_lost",
+      });
+      expect(JSON.stringify(response)).not.toContain("private transport URL and token");
+    });
+
+    it("rejects a queued turn without the raw detail when the stream dies", async () => {
+      const { agent } = await neutralAgent();
+      const input = new Pushable<any>();
+      async function* messageGenerator() {
+        const iterator = input[Symbol.asyncIterator]();
+        const user = await iterator.next();
+        yield {
+          type: "user",
+          message: user.value.message,
+          parent_tool_use_id: null,
+          uuid: user.value.uuid,
+          session_id: "test-session",
+          isReplay: true,
+        };
+        await iterator.next();
+        throw new Error("private transport URL and token");
+      }
+      agent.sessions["test-session"] = mockSessionState({
+        query: wrapQuery(messageGenerator()),
+        input,
+      });
+
+      const active = agent.prompt(promptParams);
+      const queued = agent.prompt(promptParams);
+
+      await expect(active).resolves.toMatchObject({ stopReason: "end_turn" });
+      const error = await queued.then(
+        () => undefined,
+        (reason) => reason,
+      );
+      expect(error).toBeInstanceOf(RequestError);
+      expect(JSON.stringify(error.data)).toContain("transport_lost");
+      expect(JSON.stringify(error)).not.toContain("private transport URL and token");
+    });
+
+    it("titles a usage limit from the assistant text, not the raw result", async () => {
+      const { agent } = await neutralAgent();
+      injectSession(agent, [createUsageLimitAssistantError(), failedResult("private detail")]);
+
+      const response = await agent.prompt(promptParams);
+
+      expect(neutralFromMeta(response._meta)).toMatchObject({
+        kind: "quota_exhausted",
+        title: expect.stringContaining("individual spend limit"),
+      });
+      expect(JSON.stringify(response)).not.toContain("private detail");
+    });
+
+    it("publishes a provider update failure in the neutral form", async () => {
+      const { agent, updates } = await neutralAgent();
+      injectSession(agent, []);
+
+      (agent as any).reportSessionLostOnProviderUpdate(
+        "test-session",
+        agent.sessions["test-session"],
+        new Error("provider update failed"),
+      );
+      await vi.waitFor(() => expect(updates).toHaveLength(1));
+
+      expect(neutralFromMeta(updates[0].update._meta)).toMatchObject({
+        version: 1,
+        details: "provider update failed",
+        kind: "internal_error",
+      });
+    });
+
+    it("gives a client that declares both forms only the neutral record", async () => {
+      const { agent, updates, initialized } = await neutralAgent({
+        _meta: { ...airSessionFailureCapabilities._meta, ...neutralCapabilities._meta },
+      });
+      injectSession(agent, [
+        {
+          type: "system",
+          subtype: "api_retry",
+          attempt: 1,
+          max_retries: 5,
+          retry_delay_ms: 100,
+          error_status: 429,
+          error: "rate_limit",
+          uuid: randomUUID(),
+          session_id: "test-session",
+        },
+        createAssistantError("rate_limit", "Rate limit reached."),
+        failedResult("Rate limit reached."),
+      ]);
+
+      const response = await agent.prompt(promptParams);
+
+      expect(initialized._meta).toMatchObject({
+        sessionFailure: { version: 1 },
+        jetbrains: { air: { capabilities: expect.arrayContaining(["sessionFailure"]) } },
+      });
+      expect(neutralFromMeta(response._meta)).toMatchObject({ version: 1, kind: "rate_limited" });
+      expect(sessionFailureFromResponse(response)).toBeUndefined();
+      expect(updates.some((update) => neutralFromMeta(update.update._meta))).toBe(true);
+      expect(sessionFailuresFromUpdates(updates)).toEqual([]);
+    });
+
+    it.each([
+      ["boolean", true],
+      ["string", "1"],
+      ["empty object", {}],
+      ["string version", { version: "1" }],
+      ["fractional version", { version: 1.5 }],
+      ["zero version", { version: 0 }],
+      ["negative version", { version: -1 }],
+      ["non-finite version", { version: Number.NaN }],
+      ["null", null],
+      ["array", [{ version: 1 }]],
+    ])("stays on the JSON-RPC lane and sends no advert for %s", async (_label, optIn) => {
+      const { agent, updates, initialized } = await neutralAgent({
+        _meta: { sessionFailure: optIn },
+      });
+      injectSession(agent, [failedResult("provider detail")]);
+
+      expect(initialized._meta).not.toHaveProperty("sessionFailure");
+      await expect(agent.prompt(promptParams)).rejects.toThrow("provider detail");
+      expect(JSON.stringify(updates)).not.toContain("sessionFailure");
+    });
   });
 
   it.each([
@@ -13829,6 +14290,34 @@ describe("model refusal fallback handling", () => {
       (u) => u.sessionUpdate === "agent_message_chunk" && u.content.text.includes("Model fallback"),
     );
     expect(notice.content.text).toContain("This request tripped a safety classifier.");
+  });
+
+  it("publishes the model fallback as a neutral advisory without ACP notices", async () => {
+    const { agent, sessionUpdate } = createCapturingAgent();
+    await agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: { _meta: { sessionFailure: { version: 1 } } },
+    });
+    injectGeneratorSession(
+      agent,
+      makeGenerator([refusalFallbackMessage(), successResult()]),
+      modelStateOverrides,
+    );
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test" }] });
+
+    const updates = sessionUpdate.mock.calls.map((c: any[]) => (c[0] as { update: any }).update);
+    expect(
+      updates.find(
+        (u: any) =>
+          u.sessionUpdate === "agent_message_chunk" && u.content?.text?.includes("Model fallback"),
+      ),
+    ).toBeUndefined();
+    expect(updates.map((u: any) => u._meta?.sessionFailure).find(Boolean)).toMatchObject({
+      version: 1,
+      severity: "warning",
+      kind: "advisory",
+    });
   });
 
   it("publishes the model fallback as a warning advisory for AIR clients", async () => {
@@ -15364,6 +15853,40 @@ describe("session/fork", () => {
       expect(response.usage).toMatchObject({ inputTokens: 7, outputTokens: 3 });
     },
   );
+
+  // The reader runs from setup (#1623), so a stream loss before the first
+  // prompt reaches a client on the neutral typed lane at once.
+  it("reports a stream loss before the first prompt in the neutral session failure form", async () => {
+    const lost = {
+      [Symbol.iterator]: () => ({
+        next: (): IteratorResult<any> => {
+          throw new Error("private transport URL and token");
+        },
+      }),
+    };
+    const { agent, updates } = forkingAgent(() => [], lost as unknown as any[]);
+    await initializeClient(agent, { _meta: { sessionFailure: { version: 1 } } });
+
+    await agent.resumeSession({ sessionId: "resumed-id", cwd: "/workspace", mcpServers: [] });
+
+    await vi.waitFor(() =>
+      expect(updates).toContainEqual({
+        sessionId: "resumed-id",
+        update: {
+          sessionUpdate: "session_info_update",
+          _meta: {
+            sessionFailure: expect.objectContaining({
+              version: 1,
+              kind: "transport_lost",
+              category: "connection",
+              actions: ["new_session"],
+            }),
+          },
+        },
+      }),
+    );
+    expect(JSON.stringify(updates)).not.toContain("private transport URL and token");
+  });
 
   it("fails when the forked session cannot start", async () => {
     const { agent, createSession } = forkingAgent();
