@@ -4,6 +4,7 @@ import {
   applyAvailableModelsAllowlist,
   buildModelConfigOption,
   getAvailableModels,
+  narrowToGatewayModels,
 } from "../session-model.js";
 
 const OPUS: ModelInfo = {
@@ -291,6 +292,33 @@ describe("model option currentValue is one of its options", () => {
       expect(
         buildModelConfigOption(state("default", infos), infos, false, true),
       ).not.toHaveProperty("_meta");
+    });
+
+    // v0.108.1 (#1506): a provider gateway narrows the catalog, and one that
+    // serves none of its models fails session setup.
+    it("names the running default's row only when a provider gateway serves it", () => {
+      const defaultRow: ModelInfo = {
+        value: "default",
+        resolvedModel: "claude-sonnet-5",
+        displayName: "Default",
+        description: "",
+      };
+      const infos = [defaultRow, sonnet, haiku];
+
+      const served = narrowToGatewayModels(infos, ["claude-sonnet-5-20260101"]);
+      expect(served.map((model) => model.value)).toEqual(["default", "sonnet"]);
+      expect(buildModelConfigOption(state("default", served), served, false, true)._meta).toEqual({
+        recommendedConfigValue: { version: 1, value: "sonnet" },
+      });
+
+      const notServed = narrowToGatewayModels(infos, ["claude-haiku-4-5"]);
+      expect(
+        buildModelConfigOption(state("haiku", notServed), notServed, false, true),
+      ).not.toHaveProperty("_meta");
+
+      expect(() => narrowToGatewayModels(infos, ["claude-opus-5"])).toThrow(
+        "The selected provider offers no compatible Claude models",
+      );
     });
 
     it("sends both records to a client that declares AIR too", () => {

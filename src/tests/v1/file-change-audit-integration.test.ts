@@ -19,7 +19,8 @@ type Scenario =
   | "waitForCancel"
   | "waitForCheckpointCancel"
   | "subagentEdit"
-  | "subagentEditError";
+  | "subagentEditError"
+  | "cutOffAdvisor";
 let scenario: Scenario = "reported";
 let observedOptions: Options | undefined;
 let replayMessages: unknown[] = [];
@@ -223,6 +224,34 @@ async function* runTurn(input: Pushable<SDKUserMessage>, interrupted: Promise<vo
         ],
       },
     };
+  }
+
+  if (scenario === "cutOffAdvisor") {
+    // A reply makes an advisor server tool call and goes silent. Claude Code
+    // gives up on it and asks again: the next reply starts with a text block.
+    const advisor = { type: "server_tool_use", id: "srvtoolu_advisor", name: "advisor", input: {} };
+    const streamEvent = (event: Record<string, unknown>) => ({
+      type: "stream_event" as const,
+      parent_tool_use_id: null,
+      uuid: randomUUID(),
+      session_id: "sdk-session",
+      event,
+    });
+    const replyStart = (id: string) =>
+      streamEvent({
+        type: "message_start",
+        message: { id, model: "claude-sonnet-4-6", usage: { input_tokens: 1, output_tokens: 1 } },
+      });
+    yield replyStart("msg_cut_off");
+    yield streamEvent({ type: "content_block_start", index: 0, content_block: advisor });
+    const call = assistantMessage("");
+    yield { ...call, message: { ...call.message, id: "msg_cut_off", content: [advisor] } };
+    yield replyStart("msg_asked_again");
+    yield streamEvent({
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "text", text: "" },
+    });
   }
 
   yield assistantMessage("Visible answer");
@@ -602,6 +631,24 @@ describe("native file-change report integration", () => {
             reason: "providerError",
           },
         },
+      ]);
+      await agent.dispose();
+    });
+
+    // v0.108.1 (#1604): a server tool call whose reply Claude Code gave up on
+    // closes once the next reply starts, so the turn ends normally and the
+    // report lists the change instead of a providerError.
+    it("reports the change of a turn whose advisor call Claude Code gave up on", async () => {
+      scenario = "cutOffAdvisor";
+      const updates: SessionNotification[] = [];
+      const { agent, sessionId } = await createAgent(updates, neutralCapabilities);
+
+      await expect(
+        agent.prompt(neutralPrompt(sessionId, "request-cut-off")),
+      ).resolves.toMatchObject({ stopReason: "end_turn" });
+
+      expect(reportsByForm(updates)).toEqual([
+        { agentFileChangeReport: reportedChange("request-cut-off", ["src/changed.ts"]) },
       ]);
       await agent.dispose();
     });

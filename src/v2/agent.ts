@@ -33,6 +33,7 @@ import packageJson from "../../package.json" with { type: "json" };
 import { messageIdForGrouping } from "../sdk-to-acp.js";
 import type { Logger } from "../logger.js";
 import { customAgents } from "../session-config-options.js";
+import { restrictedChild } from "../acp-subagents.js";
 import { claudeCliPath, mcpServersDelivery } from "../claude-cli.js";
 import { clientSystemPrompt, sessionSystemPrompt } from "../client-system-prompt.js";
 import type { ElicitationSupport } from "../elicitation.js";
@@ -76,6 +77,7 @@ import { airInitializeMeta, airSupport, NO_AIR, type AirSupport } from "./air.js
 import { V2Auth } from "./auth.js";
 import { subagentHooks } from "./child-config.js";
 import { modelSwitchHook, SessionConfig } from "./config.js";
+import { v2ElicitationRequest } from "./elicitation.js";
 import { fileChangePreviewHook } from "./file-preview.js";
 import { canUseTool, denyingStoppedWork } from "./permissions.js";
 import { ReplayHolds } from "./replay-hold.js";
@@ -93,7 +95,6 @@ import {
 } from "./setup.js";
 import type { SubagentReplay } from "./subagent-replay.js";
 import { SubscriptionGuard } from "./subscription-guard.js";
-import { restrictedChild } from "./tasks.js";
 
 /** The sessions per `session/list` page. */
 const SESSION_LIST_PAGE_SIZE = 1000;
@@ -162,7 +163,7 @@ class V2Agent implements AgentHandle, SessionConnection {
    * connection ends, so its requests fail with what happened, not -32002,
    * until a resume starts it again.
    */
-  private readonly stopped = new Map<string, string>();
+  private readonly stopped = new Map<string, string | RequestError>();
   /**
    * The query starts that run, by session id, until each settles (see
    * {@link startSession}). A resume, close or dispose of a session waits for
@@ -209,12 +210,18 @@ class V2Agent implements AgentHandle, SessionConnection {
       logger,
       active: (sessionId) => this.sessions.get(sessionId),
       start: (sessionId, params) => this.restartSession(sessionId, params),
-      lost: async (sessionId, previous) => {
+      lost: async (sessionId, previous, error) => {
         await previous.retire();
         if (this.sessions.get(sessionId) === previous) {
           this.stop(
             sessionId,
-            "Claude Code could not start again. Resume the session to continue.",
+            error instanceof RequestError
+              ? new RequestError(
+                  error.code,
+                  `${error.message} Then resume the session to continue.`,
+                  error.data,
+                )
+              : "Claude Code could not start again. Resume the session to continue.",
           );
         }
       },
@@ -287,15 +294,11 @@ class V2Agent implements AgentHandle, SessionConnection {
   ): Promise<CreateElicitationResponse> {
     // An elicitation of a request, not of a session, names no session.
     const sessionId = (request as { sessionId?: unknown }).sessionId;
-    // The v1 types accept a property schema with any tag; the v2 types accept
-    // one only in a received value. An MCP server's schema is relayed
-    // unchanged, as on v1, so this cast does not check it.
     return this.afterReplay(typeof sessionId === "string" ? sessionId : undefined, signal, () =>
-      this.ctx.request(
-        v2.methods.client.elicitation.create,
-        request as v2.CreateElicitationRequest,
-        { cancellationSignal: signal, stopWaitingOnCancel: true },
-      ),
+      this.ctx.request(v2.methods.client.elicitation.create, v2ElicitationRequest(request), {
+        cancellationSignal: signal,
+        stopWaitingOnCancel: true,
+      }),
     );
   }
 
@@ -310,9 +313,9 @@ class V2Agent implements AgentHandle, SessionConnection {
   }
 
   /** The session's query ended: a later `session/resume` starts it again from its transcript. */
-  private stop(sessionId: string, message: string): void {
+  private stop(sessionId: string, reason: string | RequestError): void {
     this.sessions.delete(sessionId);
-    this.stopped.set(sessionId, message);
+    this.stopped.set(sessionId, reason);
     this.translator.forget(sessionId);
     this.auth.sessionEnded(sessionId);
     this.guard.sessionEnded(sessionId);
@@ -517,10 +520,11 @@ class V2Agent implements AgentHandle, SessionConnection {
       // session's.
       const request = await validatedSetup(params);
       assertCwdOf(session, request.cwd, "resume it");
-      await session.setMcpServers({
-        ...clientOptions(params._meta)?.mcpServers,
-        ...(await this.sdkMcpServers(request.mcpServers)),
-      });
+      const served = await this.sdkMcpServers(sessionId, request.mcpServers);
+      await session.setMcpServers(
+        { ...clientOptions(params._meta)?.mcpServers, ...served.configs },
+        served.unserved,
+      );
       if (!sameDirectories(request.additionalDirectories ?? [], session.additionalDirectories)) {
         // The SDK cannot change them on a running query: it restarts with
         // them at its next turn boundary (see `restarts.ts`).
@@ -546,25 +550,16 @@ class V2Agent implements AgentHandle, SessionConnection {
       release?.();
       // A notice is not history, so it follows `replay_complete`.
       subagents?.reportMissingHistory();
+      // A `subagent_update` after its parent's `replay_complete` is current,
+      // and so is a `state_update` of the child: the replayed children's
+      // current states go out here, before the snapshot and the response.
+      subagents?.currentStates();
     }
     // The current title, after the replay and before the state.
     await session.reports.publishTitle();
     for (const notification of session.resumeSnapshot()) this.send(notification);
     const response = await this.setupFields(session);
     this.afterSetup(session, params);
-    // A replayed child's state that comes before the response is history to
-    // the client, also after the child's `replay_complete`: the children's
-    // current states follow the response. The ACP SDK (2.7.0)
-    // gives a request handler no responder and no after-response hook, so the
-    // order rests on two things that its source shows and its API does not
-    // promise. `registerAppRequest` queues the response in the microtask that
-    // follows this handler's return, with no macrotask in between, so the
-    // timer runs after it. And `Connection.sendMessage` writes in call order,
-    // so what the timer sends is written after the response. The timer is
-    // set in the same synchronous step as the `return`: an `await` between
-    // them would let it run first. The v1 core's `afterSetupResponse` relies
-    // on the same.
-    if (subagents) setTimeout(() => subagents.afterResponse(), 0);
     return response;
   }
 
@@ -791,6 +786,7 @@ class V2Agent implements AgentHandle, SessionConnection {
   /** The error of a request of `sessionId`, which is not running. */
   private inactive(sessionId: string): RequestError {
     const stopped = this.stopped.get(sessionId);
+    if (stopped instanceof RequestError) return stopped;
     return stopped !== undefined
       ? RequestError.internalError({ sessionId }, stopped)
       : RequestError.sessionNotFound(sessionId);
@@ -959,6 +955,7 @@ class V2Agent implements AgentHandle, SessionConnection {
       configuredSettings: opened.configured,
       env: opened.env,
       mcpServers: opened.request.mcpServers.map((server) => server.name),
+      unservedMcpServers: opened.unservedMcpServers,
       mcpOAuth: this.elicitation.url && supportsMcpOAuth(q),
       query: q,
       model: { id: models.models.currentModelId, info: models.allowlistedModelInfo },
@@ -975,10 +972,18 @@ class V2Agent implements AgentHandle, SessionConnection {
 
   /**
    * The SDK configs of a setup request's MCP servers. An `acp` server is
-   * served to Claude Code over this connection (see `mcp-servers.ts`).
+   * served to Claude Code over this connection (see `mcp-servers.ts`). One
+   * that gets no endpoint is in `unserved`, and the session goes on without
+   * it.
    */
-  private sdkMcpServers(servers: readonly McpServer[]) {
-    return sdkMcpServers(servers, (server) => this.mcp.sdkConfig(this.ctx, server));
+  private async sdkMcpServers(sessionId: string, servers: readonly McpServer[]) {
+    const served = await sdkMcpServers(servers, (server) => this.mcp.sdkConfig(this.ctx, server));
+    for (const server of served.unserved) {
+      this.logger.error(
+        `Session ${sessionId} runs without MCP server ${server.name}: ${server.error}`,
+      );
+    }
+    return served;
   }
 
   /**
@@ -1001,8 +1006,8 @@ class V2Agent implements AgentHandle, SessionConnection {
   ) {
     const request = await validatedSetup(params);
     const client = clientOptions(params._meta);
-    // Before the settings watchers open: a failure here leaves nothing to dispose.
-    const mcpServers = { ...client?.mcpServers, ...(await this.sdkMcpServers(request.mcpServers)) };
+    const served = await this.sdkMcpServers(sessionId, request.mcpServers);
+    const mcpServers = { ...client?.mcpServers, ...served.configs };
     // After a provider change that is still listing its models.
     await this.auth.routeSettled();
     // The resumed transcript's last model and mode.
@@ -1236,6 +1241,7 @@ class V2Agent implements AgentHandle, SessionConnection {
       env: options.env ?? {},
       request,
       mcpServers,
+      unservedMcpServers: served.unserved,
       routeGeneration,
     };
   }

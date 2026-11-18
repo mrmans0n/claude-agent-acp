@@ -1363,6 +1363,32 @@ describe("createSession options merging", () => {
     expect(capturedOptions!.mcpServers).toHaveProperty("acp-server");
   });
 
+  it("starts the session without an acp server that gets no endpoint", async () => {
+    agent = new ClaudeAcpAgent(
+      {
+        ...createMockClient(),
+        mcpServerOverAcp: async () => {
+          throw new Error("listen EPERM");
+        },
+      },
+      { log: () => {}, error: () => {} },
+    );
+
+    const { sessionId } = await agent.newSession({
+      cwd: process.cwd(),
+      mcpServers: [
+        { type: "acp", name: "tools", serverId: "tools:1" },
+        { name: "files", command: "node", args: ["files.js"], env: [] },
+      ],
+    });
+
+    expect(Object.keys(capturedOptions!.mcpServers ?? {})).toEqual(["files"]);
+    // What the first turn reports (see "MCP server startup failures").
+    expect(agent.sessions[sessionId].unservedMcpServers).toEqual([
+      { name: "tools", status: "failed", error: "listen EPERM" },
+    ]);
+  });
+
   describe("thinking config from MAX_THINKING_TOKENS", () => {
     let originalMaxThinking: string | undefined;
 
@@ -2801,6 +2827,46 @@ describe("createSession options merging", () => {
         });
 
         expect(updates.filter(neutralEnd).map(neutralEnd)).toEqual([{ version: 1, id: "load-2" }]);
+      });
+
+      // v0.108.1 (#1653): an MCP-over-ACP server whose local endpoint cannot
+      // open no longer fails the setup of the load: the session starts
+      // without it.
+      it("ends the neutral replay of a load whose MCP-over-ACP server gets no endpoint", async () => {
+        sessionMessages = [userMessage("u1", "first")];
+        const updates: SessionNotification[] = [];
+        const loadAgent = new ClaudeAcpAgent({
+          ...createMockClient(),
+          sessionUpdate: async (notification: SessionNotification) => {
+            updates.push(notification);
+          },
+          mcpServerOverAcp: async () => {
+            throw new Error("listen EPERM");
+          },
+        } as AcpClient);
+        await loadAgent.initialize({ protocolVersion: 1, clientCapabilities: NEUTRAL_END_CLIENT });
+        let atResponse: SessionNotification[] = [];
+
+        await loadAgent
+          .loadSession({
+            sessionId: "replay-probe",
+            cwd: process.cwd(),
+            mcpServers: [{ type: "acp", name: "tools", serverId: "server-1" }],
+            _meta: { loadReplayEnd: { id: "load-5" } },
+          })
+          .then(() => (atResponse = [...updates]));
+
+        expect(capturedOptions!.mcpServers ?? {}).not.toHaveProperty("tools");
+        expect(loadAgent.sessions["replay-probe"].unservedMcpServers).toEqual([
+          { name: "tools", status: "failed", error: "listen EPERM" },
+        ]);
+        expect(atResponse.filter(neutralEnd).map(neutralEnd)).toEqual([
+          { version: 1, id: "load-5" },
+        ]);
+        // The session's reader starts after the response: let it start here,
+        // so that it does not read the next test's stream.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(updates.filter(neutralEnd)).toHaveLength(1);
       });
 
       // v0.108.0 (#1645): a load resolves the MCP servers that the client

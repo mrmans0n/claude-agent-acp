@@ -227,6 +227,21 @@ describe.each([
   });
 });
 
+it("rejects a cursorId without forking the whole session", async () => {
+  const projectDir = path.dirname(sourceFile);
+  await expect(
+    forkSession(
+      { sessionId, cwd: sourceCwd, mcpServers: [], cursorId: "cur_9f2c41" },
+      { messageIdForGrouping },
+    ),
+  ).rejects.toMatchObject({
+    code: -32602,
+    data: { cursorId: "cur_9f2c41" },
+    message: expect.stringContaining("this agent announces no session cursors"),
+  });
+  expect(await fs.readdir(projectDir)).toEqual([path.basename(sourceFile)]);
+});
+
 describe("client-neutral fork point", () => {
   it.each([
     { capability: { version: 1 }, optsIn: true },

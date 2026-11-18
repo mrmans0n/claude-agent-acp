@@ -636,6 +636,21 @@ describe("the ACP tool call contract", () => {
           );
         });
 
+        it("sends no plan file for an empty plan, in the tool call and while the input streams", () => {
+          const renderer = AcpToolCallRenderer.for(neutral);
+          const refine = (input: unknown) =>
+            renderer.partialRefinement({ id: "t", name: "ExitPlanMode" }, input)._meta;
+
+          // A refinement carries the fields that streamed whole so far.
+          expect(refine({ plan: "", planFilePath })).not.toHaveProperty("planFile");
+          expect(report(neutral, "ExitPlanMode", { plan: "" }).call._meta).not.toHaveProperty(
+            "planFile",
+          );
+          expect(refine({ plan: "1. Do it" })).toMatchObject({
+            planFile: { version: 1, planId: "plan-mode:t", sha256: digest },
+          });
+        });
+
         it("sends only the neutral form to a client that also declares the AIR planFile", () => {
           const both: ClientCapabilities = {
             _meta: { ...planFileAir._meta, planFile: { version: 1 } },
