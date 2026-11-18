@@ -351,6 +351,24 @@ describe("askUserQuestionsToCreateRequest", () => {
     expect(schema.properties?.["question_0"]).not.toHaveProperty("_meta");
   });
 
+  it("gives an AIR client that also opts into the neutral form both custom-answer markers", () => {
+    const questions = [mkQuestion("Which?", [{ label: "A" }, { label: "B" }])];
+    const schema = (
+      askUserQuestionsToCreateRequest(questions, SESSION_ID, undefined, true, true) as Extract<
+        CreateElicitationRequest,
+        { mode: "form" }
+      >
+    ).requestedSchema;
+
+    const customAnswer = { questionId: "question_0", isCustomAnswer: true };
+    expect(schema.properties?.["question_0_custom"]?._meta).toEqual({
+      _askUserQuestionCustomAnswer: customAnswer,
+      jetbrains: { air: { version: 1, customAnswer } },
+      questionCustomAnswer: { version: 1, questionId: "question_0" },
+    });
+    expect(schema.properties?.["question_0"]).not.toHaveProperty("_meta");
+  });
+
   it("builds an array property for multi-select questions and includes per-field question text", () => {
     const questions = [
       mkQuestion("Pick one?", [{ label: "A" }, { label: "B" }]),

@@ -497,6 +497,20 @@ describe("client-neutral diff patches", () => {
     ).toEqual(invalid);
   });
 
+  it("streams a Write's partial input without the content its patch will hold", () => {
+    const partial = { file_path: "/repo/a.ts", content: "export const a" };
+    const refine = (meta: Record<string, unknown>) =>
+      AcpToolCallRenderer.for({ _meta: meta }).partialRefinement(
+        { id: "toolu_write", name: "Write" },
+        partial,
+      ) as { rawInput?: unknown; content?: unknown };
+
+    const neutral = refine({ diffPatch: { version: 1 } });
+    expect(neutral.rawInput).toEqual({ file_path: "/repo/a.ts" });
+    expect(neutral.content).toBeUndefined();
+    expect(refine({}).rawInput).toEqual(partial);
+  });
+
   it("puts the patch of the AIR form at top-level _meta.diffPatch", async () => {
     const filePath = await temporaryFile("old\n");
     const input = { file_path: filePath, old_string: "old", new_string: "new" };

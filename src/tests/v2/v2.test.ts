@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import * as v2 from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import {
   forkSession,
@@ -22,9 +22,11 @@ import {
   type Settings,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+import { McpOverAcp } from "../../mcp-servers.js";
 import { acpProtocolRouter } from "../../serve.js";
 import { SettingsManager } from "../../settings.js";
 import type { AgentHandle } from "../../v2/agent.js";
+import { v2ElicitationRequest } from "../../v2/elicitation.js";
 import { StoppedWork } from "../../v2/stopped-work.js";
 import {
   transcriptAssistant,
@@ -587,6 +589,50 @@ describe("ACP v2 core", () => {
     expect(settings).toMatchObject({ apiKeyHelper: "", env: { ANTHROPIC_BASE_URL: baseUrl } });
   });
 
+  it("rejects an incompatible provider listing before a prompt and recovers", async () => {
+    sdk.models = [
+      {
+        value: "sonnet",
+        displayName: "Sonnet",
+        description: "",
+        resolvedModel: "claude-sonnet-5-5",
+      },
+    ];
+    const client = v2Client();
+    await client.connect(async (agent) => {
+      await agent.request(v2.methods.agent.initialize, {
+        protocolVersion: v2.PROTOCOL_VERSION,
+        info: { name: "v2-test-client", version: "1" },
+      });
+      vi.mocked(fetch).mockResolvedValueOnce(Response.json({ data: [{ id: "gpt-5" }] }));
+      await agent.request(v2.methods.agent.providers.set, {
+        providerId: "main",
+        apiType: "anthropic",
+        baseUrl: "https://gateway.example.com",
+      });
+      await expect(agent.request(v2.methods.agent.session.new, { cwd })).rejects.toMatchObject({
+        code: -32603,
+        message: expect.stringContaining(
+          "The selected provider offers no compatible Claude models.",
+        ),
+      });
+      expect(sdk.processes[0].close).toHaveBeenCalledOnce();
+      expect(sdk.processes[0].prompts).toEqual([]);
+      vi.mocked(fetch).mockResolvedValueOnce(
+        Response.json({ data: [{ id: "claude-sonnet-5-5" }] }),
+      );
+      await agent.request(v2.methods.agent.providers.set, {
+        providerId: "main",
+        apiType: "anthropic",
+        baseUrl: "https://recovered.example.com",
+      });
+      const response = await agent.request(v2.methods.agent.session.new, { cwd });
+      expect(response.configOptions?.find((option) => option.configId === "model")).toMatchObject({
+        options: [expect.objectContaining({ value: "sonnet" })],
+      });
+    });
+  });
+
   describe("a provider change of live sessions", () => {
     const setProvider = (agent: v2.ClientContext) =>
       agent.request(v2.methods.agent.providers.set, {
@@ -830,11 +876,90 @@ describe("ACP v2 core", () => {
       });
     });
 
-    it("stops a session whose query does not start again under the new route", async () => {
+    it("preserves an incompatible provider restart error and resumes after recovery", async () => {
+      sdk.models = [
+        {
+          value: "sonnet",
+          displayName: "Sonnet",
+          description: "",
+          resolvedModel: "claude-sonnet-5-5",
+        },
+      ];
+      const client = v2Client();
+      await client.connect(async (agent) => {
+        const { response, claude } = await openSession(agent);
+        const { sessionId } = response;
+        vi.mocked(fetch).mockResolvedValueOnce(Response.json({ data: [{ id: "gpt-5" }] }));
+
+        await setProvider(agent);
+
+        expect(sdk.processes).toHaveLength(2);
+        expect(sdk.processes.every((process) => process.close.mock.calls.length === 1)).toBe(true);
+        await expect(
+          agent.request(v2.methods.agent.session.prompt, { sessionId, prompt: PROMPT }),
+        ).rejects.toMatchObject({
+          code: -32603,
+          message:
+            "Internal error: The selected provider offers no compatible Claude models. Choose a different provider and try again. Then resume the session to continue.",
+          data: { providerId: "main" },
+        });
+        expect(sdk.processes.every((process) => process.prompts.length === 0)).toBe(true);
+
+        vi.mocked(fetch).mockResolvedValueOnce(
+          Response.json({ data: [{ id: "claude-sonnet-5-5" }] }),
+        );
+        await agent.request(v2.methods.agent.providers.set, {
+          providerId: "main",
+          apiType: "anthropic",
+          baseUrl: "https://recovered.example.com",
+        });
+        await expect(
+          agent.request(v2.methods.agent.session.prompt, { sessionId, prompt: PROMPT }),
+        ).rejects.toMatchObject({
+          code: -32603,
+          message: expect.stringContaining("Then resume the session to continue."),
+          data: { providerId: "main" },
+        });
+        await agent.request(v2.methods.agent.session.resume, { sessionId, cwd });
+        const recovered = sdk.processes.at(-1)!;
+        const answer = agent.request(v2.methods.agent.session.prompt, {
+          sessionId,
+          prompt: PROMPT,
+        });
+        const prompt = await recovered.prompt(0);
+        recovered.send(lifecycle(prompt, "started"));
+        expect(await answer).toEqual({ messageId: prompt.uuid });
+        expect(claude.prompts).toEqual([]);
+      });
+    });
+
+    it.each([
+      {
+        name: "an unknown startup failure",
+        failure: new Error("Claude Code could not start"),
+        error: {
+          code: -32603,
+          message:
+            "Internal error: Claude Code could not start again. Resume the session to continue.",
+        },
+      },
+      {
+        name: "a gateway sign-in failure",
+        failure: Object.assign(new Error("Sign in to the gateway."), {
+          startupFailureReason: "gateway_signin_required",
+        }),
+        error: {
+          code: -32000,
+          message:
+            "Authentication required: Sign in to the gateway. Then resume the session to continue.",
+          data: { startupFailureReason: "gateway_signin_required" },
+        },
+      },
+    ])("stops a session after $name under the new route", async ({ failure, error }) => {
       const client = v2Client();
       await client.connect(async (agent) => {
         const { response } = await openSession(agent);
-        sdk.startFailure = new Error("Claude Code could not start");
+        sdk.startFailure = failure;
         await setProvider(agent);
         // The session is still active: v2 ends that only at close.
         await expect(
@@ -842,10 +967,7 @@ describe("ACP v2 core", () => {
             sessionId: response.sessionId,
             prompt: PROMPT,
           }),
-        ).rejects.toMatchObject({
-          code: -32603,
-          message: expect.stringContaining("could not start again. Resume the session"),
-        });
+        ).rejects.toMatchObject(error);
         // A close ends it: it is no longer active then.
         await agent.request(v2.methods.agent.session.close, { sessionId: response.sessionId });
         await expect(
@@ -1218,6 +1340,57 @@ describe("ACP v2 core", () => {
       },
     ]);
   });
+
+  it.each([{ request: "session/new" }, { request: "a resume of the active session" }] as const)(
+    "goes on without an acp MCP server that gets no endpoint at $request, and reports it",
+    async ({ request }) => {
+      const endpoint = vi
+        .spyOn(McpOverAcp.prototype, "sdkConfig")
+        .mockRejectedValue(new Error("listen EPERM"));
+      onTestFinished(() => endpoint.mockRestore());
+      const mcpServers: v2.McpServer[] = [
+        { type: "acp", name: "tools", serverId: "tools:1" },
+        { type: "stdio", name: "files", command: "/usr/local/bin/mcp-files" },
+      ];
+      const client = v2Client();
+      await client.connect(async (agent) => {
+        await agent.request(v2.methods.agent.initialize, {
+          protocolVersion: v2.PROTOCOL_VERSION,
+          info: { name: "v2-test-client", version: "1.0.0" },
+          capabilities: {},
+        });
+        if (request === "session/new") {
+          await agent.request(v2.methods.agent.session.new, { cwd, mcpServers });
+        } else {
+          const { sessionId } = await agent.request(v2.methods.agent.session.new, { cwd });
+          await agent.request(v2.methods.agent.session.resume, { sessionId, cwd, mcpServers });
+        }
+        const claude = sdk.processes.at(-1)!;
+        if (request === "session/new") {
+          expect(Object.keys(claude.options.mcpServers ?? {})).toEqual(["files"]);
+        }
+        // Claude Code lists the servers it was given.
+        claude.send({
+          type: "system",
+          subtype: "init",
+          uuid: randomUUID(),
+          mcp_servers: [{ name: "files", status: "connected" }],
+        });
+        claude.send(result());
+        // The resume sent the session's idle state first.
+        await vi.waitFor(() => expect(client.states().slice(-2)).toEqual(["running", "idle"]));
+      });
+
+      expect(client.sessionUpdates.filter((update) => update.sessionUpdate === "notice")).toEqual([
+        {
+          sessionUpdate: "notice",
+          severity: "warning",
+          title: 'MCP server "tools" failed to start',
+          description: "Its tools are unavailable in this session. listen EPERM",
+        },
+      ]);
+    },
+  );
 
   it("replaces Claude Code's text of /mcp with the server list, before the turn's idle", async () => {
     const client = v2Client();
@@ -4721,6 +4894,48 @@ describe("ACP v2 core", () => {
     } finally {
       await Promise.all([...v1Agents, ...v2Agents].map((agent) => agent.dispose()));
     }
+  });
+});
+
+describe("v2ElicitationRequest", () => {
+  it("drops `pattern` from a form's string properties, and nothing else", () => {
+    const request = {
+      mode: "form" as const,
+      sessionId: "s1",
+      message: "Which release?",
+      requestedSchema: {
+        type: "object" as const,
+        required: ["tag"],
+        properties: {
+          tag: { type: "string" as const, title: "Tag", minLength: 2, pattern: "^v\\d+$" },
+          // A property that is named `pattern` is no keyword.
+          pattern: { type: "string" as const, enum: ["a", "b"] },
+          count: { type: "integer" as const, minimum: 1 },
+        },
+      },
+    };
+
+    expect(v2ElicitationRequest(request)).toEqual({
+      ...request,
+      requestedSchema: {
+        ...request.requestedSchema,
+        properties: {
+          ...request.requestedSchema.properties,
+          tag: { type: "string", title: "Tag", minLength: 2 },
+        },
+      },
+    });
+  });
+
+  it("passes a URL request as it is", () => {
+    const request = {
+      mode: "url" as const,
+      sessionId: "s1",
+      message: "Sign in",
+      url: "https://example.com/login",
+      elicitationId: "e1",
+    };
+    expect(v2ElicitationRequest(request)).toBe(request);
   });
 });
 
