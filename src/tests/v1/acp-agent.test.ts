@@ -15258,6 +15258,57 @@ describe("skill commands in available_commands_update", () => {
     });
   });
 
+  it("resolves the SKILL.md paths again after a commands_changed for a neutral client", async () => {
+    const missingPath = path.join(cwd, ".claude", "skills", "missing", "SKILL.md");
+    const commands = await advertisedCommands(
+      { _meta: { commandPresentation: { version: 1 } } },
+      async () => {
+        await mkdir(path.dirname(missingPath), { recursive: true });
+        await writeFile(missingPath, "# missing\n");
+      },
+    );
+
+    expect(commands.find((c) => c.name === "missing")?._meta).toEqual({
+      commandPresentation: { version: 1, kind: "skill", skillPath: missingPath },
+    });
+    expect(commands.find((c) => c.name === "review")?._meta).toEqual({
+      commandPresentation: { version: 1, kind: "skill", skillPath },
+    });
+    expect(commands.find((c) => c.name === "mcp:review")?._meta).toBeUndefined();
+  });
+
+  it("marks a skill in the client-neutral form for a client that opts in", async () => {
+    const neutral = await advertisedCommands({ _meta: { commandPresentation: { version: 1 } } });
+    expect(neutral.find((c) => c.name === "review")?._meta).toEqual({
+      commandPresentation: { version: 1, kind: "skill", skillPath },
+    });
+    expect(neutral.filter((c) => c.name !== "review").every((c) => c._meta === undefined)).toBe(
+      true,
+    );
+
+    const both = await advertisedCommands({
+      ...AIR_CLIENT_CAPABILITIES,
+      _meta: { ...AIR_CLIENT_CAPABILITIES._meta, commandPresentation: { version: 1 } },
+    });
+    expect(both.find((c) => c.name === "review")?._meta).toEqual({
+      jetbrains: { air: { version: 1, kind: "skill", skillPath } },
+      commandPresentation: { version: 1, kind: "skill", skillPath },
+    });
+  });
+
+  it("names the SKILL.md that declares a skill in a directory of another name for a neutral client", async () => {
+    // Claude Code lists a skill by the `name:` of its frontmatter.
+    const declaring = path.join(cwd, ".claude", "skills", "checks", "SKILL.md");
+    await mkdir(path.dirname(declaring), { recursive: true });
+    await writeFile(declaring, "---\nname: missing\n---\n# Checks\n");
+
+    const commands = await advertisedCommands({ _meta: { commandPresentation: { version: 1 } } });
+
+    expect(commands.find((c) => c.name === "missing")?._meta).toEqual({
+      commandPresentation: { version: 1, kind: "skill", skillPath: declaring },
+    });
+  });
+
   it("gives a client that is not AIR no _meta", async () => {
     const commands = await advertisedCommands({});
 
@@ -15481,6 +15532,20 @@ describe("skill files from getContextUsage in available_commands_update", () => 
 
     expect(lastMeta(commandUpdates, "simplify")).toEqual(skillMeta());
     expect(lastMeta(commandUpdates, "compact")).toBeUndefined();
+  });
+
+  it("marks a built-in skill with the kind only for a neutral client", async () => {
+    const getContextUsage = vi.fn(async () => skillEntry({ name: "simplify", source: "built-in" }));
+
+    const { commandUpdates } = await runTurn({
+      capabilities: { _meta: { commandPresentation: { version: 1 } } },
+      commands: [{ name: "simplify", description: "Simplify", argumentHint: "", builtin: true }],
+      getContextUsage,
+    });
+
+    expect(lastMeta(commandUpdates, "simplify")).toEqual({
+      commandPresentation: { version: 1, kind: "skill" },
+    });
   });
 
   /**
@@ -15719,36 +15784,38 @@ describe("logout", () => {
     });
   });
 
-  describe.each(["permissionPresentation", "questionCustomAnswer", "recommendedConfigValue"])(
-    "client-neutral %s advert",
-    (key) => {
-      it("advertises version 1 to a client that opts in with any version, with no AIR key", async () => {
-        const response = await createMockAgent().initialize({
-          protocolVersion: 1,
-          clientCapabilities: { _meta: { [key]: { version: 2 } } },
-        });
-
-        expect(response._meta?.[key]).toEqual({ version: 1 });
-        expect(response._meta).not.toHaveProperty("jetbrains");
+  describe.each([
+    "permissionPresentation",
+    "questionCustomAnswer",
+    "recommendedConfigValue",
+    "commandPresentation",
+  ])("client-neutral %s advert", (key) => {
+    it("advertises version 1 to a client that opts in with any version, with no AIR key", async () => {
+      const response = await createMockAgent().initialize({
+        protocolVersion: 1,
+        clientCapabilities: { _meta: { [key]: { version: 2 } } },
       });
 
-      it.each([
-        ["no opt-in", {}],
-        ["the AIR client alone", AIR_CLIENT_CAPABILITIES],
-        ["boolean", { _meta: { [key]: true } }],
-        ["empty object", { _meta: { [key]: {} } }],
-        ["zero version", { _meta: { [key]: { version: 0 } } }],
-        ["fractional version", { _meta: { [key]: { version: 1.5 } } }],
-      ])("does not advertise it for %s", async (_label, clientCapabilities) => {
-        const response = await createMockAgent().initialize({
-          protocolVersion: 1,
-          clientCapabilities,
-        });
+      expect(response._meta?.[key]).toEqual({ version: 1 });
+      expect(response._meta).not.toHaveProperty("jetbrains");
+    });
 
-        expect(response._meta).not.toHaveProperty(key);
+    it.each([
+      ["no opt-in", {}],
+      ["the AIR client alone", AIR_CLIENT_CAPABILITIES],
+      ["boolean", { _meta: { [key]: true } }],
+      ["empty object", { _meta: { [key]: {} } }],
+      ["zero version", { _meta: { [key]: { version: 0 } } }],
+      ["fractional version", { _meta: { [key]: { version: 1.5 } } }],
+    ])("does not advertise it for %s", async (_label, clientCapabilities) => {
+      const response = await createMockAgent().initialize({
+        protocolVersion: 1,
+        clientCapabilities,
       });
-    },
-  );
+
+      expect(response._meta).not.toHaveProperty(key);
+    });
+  });
 
   it("marks the custom-answer field of an AskUserQuestion for a client that opted into questionCustomAnswer", async () => {
     const elicitations: CreateElicitationRequest[] = [];
@@ -16029,6 +16096,42 @@ describe("session/fork", () => {
       expect(response.usage).toMatchObject({ inputTokens: 7, outputTokens: 3 });
     },
   );
+
+  // The reader runs from setup (#1623), so the init that Claude Code sends
+  // before the first prompt starts the skill file read at once.
+  it("sends a neutral commandPresentation client the skill records of the init before the first prompt", async () => {
+    const { agent, updates } = forkingAgent(
+      () => [],
+      [{ type: "system", subtype: "init", session_id: "resumed-id" }],
+    );
+    await initializeClient(agent, { _meta: { commandPresentation: { version: 1 } } });
+
+    await agent.resumeSession({ sessionId: "resumed-id", cwd: "/workspace", mcpServers: [] });
+    // Before the setup's timer starts the reader.
+    Object.assign(agent.sessions["resumed-id"].query, {
+      supportedCommands: async () => [
+        { name: "simplify", description: "Simplify", argumentHint: "", builtin: true },
+      ],
+      getContextUsage: async () => ({
+        skills: { skillFrontmatter: [{ name: "simplify", source: "built-in" }] },
+      }),
+    });
+
+    await vi.waitFor(() =>
+      expect(updates).toContainEqual({
+        sessionId: "resumed-id",
+        update: {
+          sessionUpdate: "available_commands_update",
+          availableCommands: expect.arrayContaining([
+            expect.objectContaining({
+              name: "simplify",
+              _meta: { commandPresentation: { version: 1, kind: "skill" } },
+            }),
+          ]),
+        },
+      }),
+    );
+  });
 
   // The reader runs from setup (#1623), so a stream loss before the first
   // prompt reaches a client on the neutral typed lane at once.
