@@ -23,10 +23,19 @@ const AIR_CLIENT: ClientCapabilities = {
 /** A client that advertised ACP's `prompt_suggestions_update`. */
 const SUGGESTIONS_CLIENT: ClientCapabilities = { session: { promptSuggestions: {} } };
 
+/** A client that opts into the client-neutral predicted prompt. */
+const NEUTRAL_CLIENT: ClientCapabilities = { _meta: { promptSuggestions: { version: 1 } } };
+
 /** The session info update that carries `text` to AIR. */
 const metaUpdate = (text: string | null) => ({
   sessionUpdate: "session_info_update",
   _meta: promptSuggestionsMeta(text),
+});
+
+/** The session info update that carries `value` as `_meta.promptSuggestions`. */
+const neutralUpdate = (value: { suggestions: { text: string }[]; id?: string }) => ({
+  sessionUpdate: "session_info_update",
+  _meta: { promptSuggestions: value },
 });
 
 describe("the follow-up prompt on the wire", () => {
@@ -100,12 +109,17 @@ async function agentFor(client: AcpClient, clientCapabilities: ClientCapabilitie
 /**
  * Runs one turn per entry of `suggestions`. `drain` lets the consumer read a
  * turn's prediction before the next prompt. `queued` sends every prompt
- * before the first turn's result.
+ * before the first turn's result. `requestIds[i]`, when set, is the
+ * `_meta.promptSuggestions.id` of the i-th prompt.
  */
 async function run(
   agent: ClaudeAcpAgent,
   suggestions: (string | null)[],
-  { drain = true, queued = false }: { drain?: boolean; queued?: boolean } = {},
+  {
+    drain = true,
+    queued = false,
+    requestIds = [],
+  }: { drain?: boolean; queued?: boolean; requestIds?: (string | undefined)[] } = {},
 ) {
   const input = new Pushable<any>();
   agent.sessions["test-session"] = mockSessionState(
@@ -117,6 +131,9 @@ async function run(
     const prompt = agent.prompt({
       sessionId: "test-session",
       prompt: [{ type: "text", text: `prompt ${i}` }],
+      ...(requestIds[i] !== undefined
+        ? { _meta: { promptSuggestions: { id: requestIds[i] } } }
+        : {}),
     });
     prompts.push(prompt);
     if (queued) continue;
@@ -233,4 +250,89 @@ describe("the follow-up prompt of a client by what it declares", () => {
       expect(published).toEqual(expected);
     },
   );
+});
+
+describe("the follow-up prompt of a client of the client-neutral form", () => {
+  it.each([
+    [
+      "a prompt that asks gets its prediction with its id",
+      NEUTRAL_CLIENT,
+      ["Run the tests"],
+      ["turn-1"],
+      [neutralUpdate({ suggestions: [{ text: "Run the tests" }], id: "turn-1" })],
+    ],
+    ["a prompt that does not ask gets none", NEUTRAL_CLIENT, ["Run the tests"], [], []],
+    [
+      "a turn that predicts only whitespace answers its request with an empty list",
+      NEUTRAL_CLIENT,
+      ["   "],
+      ["turn-1"],
+      [neutralUpdate({ suggestions: [], id: "turn-1" })],
+    ],
+    [
+      "the same text again still answers the next request",
+      NEUTRAL_CLIENT,
+      ["Run the tests", "Run the tests"],
+      ["turn-1", "turn-2"],
+      [
+        neutralUpdate({ suggestions: [{ text: "Run the tests" }], id: "turn-1" }),
+        neutralUpdate({ suggestions: [] }),
+        neutralUpdate({ suggestions: [{ text: "Run the tests" }], id: "turn-2" }),
+      ],
+    ],
+    [
+      "a client with the AIR form too gets one update that carries the id",
+      { _meta: { ...AIR_CLIENT._meta, ...NEUTRAL_CLIENT._meta } },
+      ["Run the tests"],
+      ["turn-1"],
+      [neutralUpdate({ suggestions: [{ text: "Run the tests" }], id: "turn-1" })],
+    ],
+    [
+      "a client with the AIR form too still gets it for a prompt that does not ask",
+      { _meta: { ...AIR_CLIENT._meta, ...NEUTRAL_CLIENT._meta } },
+      ["Run the tests"],
+      [],
+      [neutralUpdate({ suggestions: [{ text: "Run the tests" }] })],
+    ],
+  ])("%s", async (_label, capabilities, suggestions, requestIds, expected) => {
+    const { client, published } = recorder();
+    const agent = await agentFor(client, capabilities as ClientCapabilities);
+
+    await run(agent, suggestions, { requestIds });
+
+    expect(published).toEqual(expected);
+  });
+
+  it("drops a prediction the next prompt outran", async () => {
+    const { client, published } = recorder();
+    const agent = await agentFor(client, NEUTRAL_CLIENT);
+
+    await run(agent, ["Run the tests", null], { drain: false, requestIds: ["turn-1", "turn-2"] });
+
+    expect(published).toEqual([]);
+  });
+
+  // v0.109.0 (#1660): a client that also advertises `session.promptSuggestions`
+  // gets ACP's update by its own rules, for every turn, and the client-neutral
+  // `_meta` only for the prompt that asked, with its id.
+  it("sends ACP's update for every turn and the _meta for the prompt that asks to a client that declares both", async () => {
+    const { client, published } = recorder();
+    const agent = await agentFor(client, {
+      ...SUGGESTIONS_CLIENT,
+      ...NEUTRAL_CLIENT,
+    } as ClientCapabilities);
+
+    await run(agent, ["   ", "Run the tests", "Commit"], { requestIds: ["turn-0", "turn-1"] });
+
+    expect(published).toEqual([
+      // A turn that predicts nothing answers the request; ACP's form has
+      // nothing to withdraw, and takes no request id.
+      neutralUpdate({ suggestions: [], id: "turn-0" }),
+      promptSuggestionsUpdate("Run the tests"),
+      neutralUpdate({ suggestions: [{ text: "Run the tests" }], id: "turn-1" }),
+      promptSuggestionsUpdate(null),
+      neutralUpdate({ suggestions: [] }),
+      promptSuggestionsUpdate("Commit"),
+    ]);
+  });
 });
