@@ -14,9 +14,11 @@ import {
   statSync,
   type Stats,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { exitPlanModeRawOutput } from "../../exit-plan.js";
+import { exitPlanModeRawOutput, PLAN_MODE_PLAN_ID } from "../../exit-plan.js";
+import { NEUTRAL_PLAN_FILE_VERSION } from "../client-capabilities.js";
 import { textContent, toAcpContentUpdate } from "../content.js";
 import type {
   ToolReporter,
@@ -70,6 +72,34 @@ export class ExitPlanModeReporter implements ToolReporter {
       ...(planFilePath ? { planFilePath } : {}),
     };
   }
+}
+
+/** The client-neutral `_meta.planFile` payload of an ExitPlanMode report. */
+export interface NeutralPlanFile {
+  version: number;
+  /** The ID of the approved plan: `plan-mode:<tool-call ID>`. */
+  planId: string;
+  /** The absolute path of the plan file, when it names a regular file. */
+  path?: string;
+  /** The hex SHA-256 of the UTF-8 plan text that the review approves. */
+  sha256: string;
+}
+
+/**
+ * The client-neutral `_meta.planFile` payload of an ExitPlanMode tool use, or
+ * undefined while the input holds no plan text. The digest covers the exact
+ * `plan` of the input, the text that the review approves.
+ */
+export function neutralPlanFile(toolUseId: string, input: unknown): NeutralPlanFile | undefined {
+  const { plan, planFilePath } = (input ?? {}) as { plan?: unknown; planFilePath?: unknown };
+  if (typeof plan !== "string" || plan === "") return undefined;
+  const path = existingPlanFile(planFilePath);
+  return {
+    version: NEUTRAL_PLAN_FILE_VERSION,
+    planId: `${PLAN_MODE_PLAN_ID}:${toolUseId}`,
+    ...(path ? { path } : {}),
+    sha256: createHash("sha256").update(plan, "utf8").digest("hex"),
+  };
 }
 
 /** EnterPlanMode switches the session to plan mode, so it has the `switch_mode` kind like ExitPlanMode. */
