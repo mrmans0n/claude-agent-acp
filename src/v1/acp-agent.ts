@@ -625,6 +625,23 @@ function clientRequestsContextUsage(capabilities?: ClientCapabilities | null): b
   return meta?.contextUsage === true;
 }
 
+/** Alas extension: a client that sends `clientCapabilities._meta.settleAtResult:
+ *  true` gets the `session/prompt` response at the turn's result even when the
+ *  turn started background subagents that still run. Without it, the response
+ *  waits until those subagents end and the model has written its follow-up
+ *  (see Turn.deferredSettle), which can be hours for a chain of subagents.
+ *  The hold exists for clients that stop reading updates at the response; a
+ *  client that opts in keeps reading, and answers a subagent's
+ *  `session/request_permission` outside a turn. Advertised back as
+ *  `InitializeResponse._meta.settleAtResult.supported`.
+ *  It is the client-neutral form of the AIR `backgroundSubagents`
+ *  capability: both go through `endsTurnsWithLiveSubagents()`, so they
+ *  share its ACP v1 scope and its out-of-turn behavior. */
+function clientRequestsSettleAtResult(capabilities?: ClientCapabilities | null): boolean {
+  const meta = capabilities?._meta as Record<string, unknown> | undefined;
+  return meta?.settleAtResult === true;
+}
+
 type ContextUsageRequest = {
   sessionId: string;
   detail: "summary" | "full";
@@ -1752,13 +1769,15 @@ export class ClaudeAcpAgent {
    * spawned or resumed still run. An AIR client that declares
    * `backgroundSubagents` gets this, and so does a client in the `rfd` form
    * of subagent sessions: the RFD has the client keep receiving child events
-   * after the parent's prompt response. Every other client keeps the hold of
-   * `Turn.deferredSettle`.
+   * after the parent's prompt response. A client that opts into the Alas
+   * `settleAtResult` extension gets it too. Every other client keeps the hold
+   * of `Turn.deferredSettle`.
    */
   private endsTurnsWithLiveSubagents(): boolean {
     return (
       subagentForm(this.clientCapabilities) === "rfd" ||
-      clientSupportsAirCapability(this.clientCapabilities, AIR_BACKGROUND_SUBAGENTS_CAPABILITY)
+      clientSupportsAirCapability(this.clientCapabilities, AIR_BACKGROUND_SUBAGENTS_CAPABILITY) ||
+      clientRequestsSettleAtResult(this.clientCapabilities)
     );
   }
 
@@ -1958,6 +1977,9 @@ export class ClaudeAcpAgent {
           },
           ...(clientRequestsContextUsage(this.clientCapabilities)
             ? { contextUsage: { supported: true } }
+            : {}),
+          ...(clientRequestsSettleAtResult(this.clientCapabilities)
+            ? { settleAtResult: { supported: true } }
             : {}),
         }),
       ),
