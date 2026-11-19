@@ -38,7 +38,12 @@ import { restrictedChild } from "../acp-subagents.js";
 import { claudeCliPath, cliDelivery } from "../claude-cli.js";
 import { clientSystemPrompt, sessionSystemPrompt } from "../client-system-prompt.js";
 import type { ElicitationSupport } from "../elicitation.js";
-import { forkSession } from "../fork-session.js";
+import {
+  clientOptsIntoNeutralForkPoint,
+  forkSession,
+  NEUTRAL_FORK_POINT_KEY,
+  neutralForkPointCapability,
+} from "../fork-session.js";
 import { supportsMcpOAuth } from "../mcp-oauth.js";
 import { McpOverAcp, sdkMcpServers } from "../mcp-servers.js";
 import { ALLOW_BYPASS, autoModeDisabled } from "../permissions/modes.js";
@@ -356,8 +361,12 @@ class V2Agent implements AgentHandle, SessionConnection {
     };
     const { authMethods, auth, _meta } = this.auth.initialize(request.capabilities);
     const airMeta = airInitializeMeta(this.air);
+    // The client-neutral fork point, as on v1, for a client that opts in.
+    const meta = clientOptsIntoNeutralForkPoint(request.capabilities)
+      ? { ...airMeta, [NEUTRAL_FORK_POINT_KEY]: neutralForkPointCapability() }
+      : airMeta;
     return {
-      ...(airMeta ? { _meta: airMeta } : {}),
+      ...(meta ? { _meta: meta } : {}),
       protocolVersion: v2.PROTOCOL_VERSION,
       info: { name: packageJson.name, title: "Claude Agent", version: packageJson.version },
       capabilities: {
@@ -422,14 +431,20 @@ class V2Agent implements AgentHandle, SessionConnection {
     // Rejects bad `configOptions`, a bad `cwd` or MCP server before the transcript is copied.
     const initial = initialConfigRequests(params.sessionId, params.configOptions);
     await validatedSetup(params);
-    const { sessionId } = await forkSession(v1ForkSessionRequest(params), {
+    const { sessionId, _meta: forkMeta } = await forkSession(v1ForkSessionRequest(params), {
       logger: this.logger,
       messageIdForGrouping,
+      neutralForkPoint: clientOptsIntoNeutralForkPoint(this.clientCapabilities),
     });
     const session = await this.startSession(sessionId, params, sessionId);
     // The entries are the fork's: only the copy gave it its id.
     await session.setInitialConfigOptions(initial.map((entry) => ({ ...entry, sessionId })));
-    const response = { sessionId, ...(await this.setupFields(session)) };
+    // `_meta.forkPoint` tells a client of the neutral fork point which message the fork ends at.
+    const response = {
+      sessionId,
+      ...(await this.setupFields(session)),
+      ...(forkMeta ? { _meta: forkMeta } : {}),
+    };
     this.afterSetup(session, params);
     return response;
   }

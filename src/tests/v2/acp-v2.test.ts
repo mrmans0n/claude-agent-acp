@@ -560,12 +560,86 @@ describe("ACP protocol routing", () => {
     expect(response.capabilities?.providers).toEqual({});
     // Not `_session/steering`, which v1 advertises in the top-level `_meta`.
     expect(response._meta?.steering).toBeUndefined();
+    // The neutral fork point only for a client that opts in.
+    expect(response._meta?.forkPoint).toBeUndefined();
     expect(response.authMethods?.length).toBeGreaterThan(0);
     for (const method of response.authMethods ?? []) {
       expect(method).not.toHaveProperty("id");
       expect(method).toMatchObject({ methodId: expect.any(String), type: "terminal" });
       expect((method as v2.AuthMethodTerminal).args?.[0]).toBe("--cli");
     }
+  });
+
+  it("advertises the client-neutral fork point to a v2 client that opts in", async () => {
+    const { app, authUpdate } = v2Client();
+    const response = await app.connectWith(connectRouter(), async (agent) => {
+      const response = await initializeV2(agent, { _meta: { forkPoint: { version: 1 } } });
+      await authUpdate(1);
+      return response;
+    });
+
+    expect(response._meta?.forkPoint).toEqual({ version: 1, boundary: "message" });
+  });
+
+  it("serves the client-neutral fork point on session/fork to a v2 client that opts in", async () => {
+    const { app, authUpdate } = v2Client();
+    const fork = await app.connectWith(connectRouter(), async (agent) => {
+      await initializeV2(agent, { _meta: { forkPoint: { version: 1 } } });
+      const { sessionId } = await agent.request(v2.methods.agent.session.new, { cwd });
+      vi.mocked(forkSession).mockClear();
+      vi.mocked(getSessionMessages).mockResolvedValueOnce([
+        transcriptEntry("user", "question-uuid", { role: "user", content: "Question" }),
+        transcriptEntry("assistant", "answer-uuid", {
+          id: "msg_answer",
+          role: "assistant",
+          content: [{ type: "text", text: "Answer" }],
+        }),
+      ] as unknown as Awaited<ReturnType<typeof getSessionMessages>>);
+      const fork = await agent.request(v2.methods.agent.session.fork, {
+        sessionId,
+        cwd,
+        _meta: { forkPoint: { messageId: "msg_answer" } },
+      });
+      await authUpdate(1);
+      expect(forkSession).toHaveBeenCalledWith(sessionId, { upToMessageId: "answer-uuid" });
+      return fork;
+    });
+
+    expect(fork._meta).toEqual({
+      forkPoint: { boundary: "message", messageId: "msg_answer", matchedBy: "id" },
+    });
+  });
+
+  it("returns the client-neutral fork point with the fork's configOptions on v2 session/fork", async () => {
+    const { app, authUpdate } = v2Client();
+    const fork = await app.connectWith(connectRouter(), async (agent) => {
+      await initializeV2(agent, { _meta: { forkPoint: { version: 1 } } });
+      const { sessionId } = await agent.request(v2.methods.agent.session.new, { cwd });
+      vi.mocked(getSessionMessages).mockResolvedValueOnce([
+        transcriptEntry("user", "question-uuid", { role: "user", content: "Question" }),
+        transcriptEntry("assistant", "answer-uuid", {
+          id: "msg_answer",
+          role: "assistant",
+          content: [{ type: "text", text: "Answer" }],
+        }),
+      ] as unknown as Awaited<ReturnType<typeof getSessionMessages>>);
+      const fork = await agent.request(v2.methods.agent.session.fork, {
+        sessionId,
+        cwd,
+        configOptions: [{ configId: "mode", type: "id", value: "plan" }],
+        _meta: { forkPoint: { messageId: "msg_answer" } },
+      });
+      await authUpdate(1);
+      return fork;
+    });
+
+    // The fork's initial configOptions (ACP SDK 2.7.0) do not replace its `_meta.forkPoint`.
+    expect(fork.configOptions?.find((option) => option.configId === "mode")?.currentValue).toBe(
+      "plan",
+    );
+    expect(fork._meta).toEqual({
+      forkPoint: { boundary: "message", messageId: "msg_answer", matchedBy: "id" },
+    });
   });
 
   it("does not advertise the AIR async tasks and goal extensions to a v2 AIR client", async () => {
@@ -2362,6 +2436,48 @@ describe("MCP servers that the client serves over the ACP connection", () => {
     // The resume of the active session names the same server: it stays connected.
     expect(sdk.setMcpServers).not.toHaveBeenCalled();
     expect(response.messages).toEqual(TOOL_CALL_MESSAGES);
+  });
+
+  // A fork is a session setup too (v0.108.0 #1645, #1647): the client-neutral
+  // fork point answers next to the fork's MCP-over-ACP server.
+  it("returns the client-neutral fork point of a v2 fork whose MCP server the client serves over ACP", async () => {
+    const provider = new v2.McpOverAcpProvider();
+    const client = v2Client();
+    const fork = await client.app
+      .onRequest(v2.methods.client.mcp.message, provider.handleRequest)
+      .connectWith(connectRouter(), async (agent) => {
+        await initializeV2(agent, { _meta: { forkPoint: { version: 1 } } });
+        const tools = provider.registerServer(agent, { name: "tools", handler: toolsServer });
+        const { sessionId } = await agent.request(v2.methods.agent.session.new, { cwd });
+        vi.mocked(getSessionMessages).mockResolvedValueOnce([
+          transcriptEntry("user", "question-uuid", { role: "user", content: "Question" }),
+          transcriptEntry("assistant", "answer-uuid", {
+            id: "msg_answer",
+            role: "assistant",
+            content: [{ type: "text", text: "Answer" }],
+          }),
+        ] as unknown as Awaited<ReturnType<typeof getSessionMessages>>);
+        const fork = await agent.request(v2.methods.agent.session.fork, {
+          sessionId,
+          cwd,
+          mcpServers: [tools.declaration],
+          _meta: { forkPoint: { messageId: "msg_answer" } },
+        });
+        await client.authUpdate(1);
+        return fork;
+      });
+
+    expect(fork._meta).toEqual({
+      forkPoint: { boundary: "message", messageId: "msg_answer", matchedBy: "id" },
+    });
+    // The fork's query: the client's server is an endpoint of this connection,
+    // and the adapter names how its config reaches Claude Code (see
+    // `mcpServersDelivery`: on the command line only for CLAUDE_CODE_EXECUTABLE).
+    const forkOptions = sdk.queryOptions.at(-1)!;
+    expect(forkOptions.mcpServers?.tools).toMatchObject({ type: "http" });
+    expect(forkOptions.mcpServersDelivery).toBe(
+      process.env.CLAUDE_CODE_EXECUTABLE ? "argv" : "initialize",
+    );
   });
 });
 
