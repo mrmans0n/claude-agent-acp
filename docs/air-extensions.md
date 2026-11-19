@@ -1012,8 +1012,9 @@ A failed command restores the previous state.
 
 After a turn, the Claude Code CLI can predict the prompt the user is likely to send next.
 The adapter asks for it with the SDK option `promptSuggestions: true` and forwards the one prediction of the turn.
+It asks only in a session of AIR, of a client that advertises `session.promptSuggestions` (v1 and v2), or of a client with the [client-neutral opt-in](#client-neutral-predicted-prompt) (v1): a prediction costs a request per turn, and no other client would get it.
 
-ACP has no field for a composer prefill, so the prediction travels outside the AIR namespace:
+AIR reads the prediction from a `_meta` key outside the AIR namespace, which the adapter used before ACP had an update for it:
 
 ```json
 {
@@ -1022,8 +1023,19 @@ ACP has no field for a composer prefill, so the prediction travels outside the A
 }
 ```
 
-The key names no vendor, so another client can read it.
-The adapter sends it only to an AIR client; see the [compatibility rule](#compatibility-rule).
+The key names no vendor.
+The adapter sends it to an AIR client (see the [compatibility rule](#compatibility-rule)) and, on v1, to a client with the client-neutral opt-in below.
+
+Any client that advertises `session.promptSuggestions` gets the same prediction as ACP's unstable `prompt_suggestions_update`, on v1 and v2:
+
+```json
+{
+  "sessionUpdate": "prompt_suggestions_update",
+  "suggestions": [{ "prompt": [{ "type": "text", "text": "Run the tests" }] }]
+}
+```
+
+An AIR client that advertises the capability gets both.
 
 AIR shows the first non-blank `suggestions[].text` as gray text in an empty composer.
 Tab fills the composer with it and sends nothing.
@@ -1035,10 +1047,14 @@ Tab fills the composer with it and sends nothing.
 
 A prediction the next prompt outran — the user sent it before the adapter read the prediction off the SDK stream — is dropped instead of published.
 
+`prompt_suggestions_update` follows two more rules of ACP, which the `_meta` form does not:
+
+- a prediction that arrives while Claude works, such as on a prompt that was queued before the turn's result, is dropped;
+- on v2, the list is withdrawn when foreground work starts without a prompt, such as a cycle that Claude Code starts after a background task ends.
+
 The CLI predicts nothing on the first turn of a session, after an API error, in plan mode, and at the account's usage limit, so many turns end with no prediction.
 A client must treat a turn without one as normal.
 A caller can turn the whole feature off with `_meta.claudeCode.options.promptSuggestions: false` on `session/new`; a user can turn it off in Claude Code settings or with `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false`.
-The adapter asks the CLI for predictions only for a client that reads them: AIR, or a client with the neutral opt-in below.
 
 ### Client-neutral predicted prompt
 
@@ -1069,7 +1085,8 @@ The prediction of that turn carries the id:
   A turn whose CLI predicts nothing at all sends nothing; the client must not wait for it forever.
 - The clear at the next prompt and at a `conversation_reset` carries no id, as above.
 - A prediction the next prompt outran is dropped, as above.
-- A client that declares both forms gets one update; it carries the id when the prompt named one.
+- A client that declares the AIR form too gets one `_meta` update; it carries the id when the prompt named one.
+- A client that also advertises `session.promptSuggestions` gets `prompt_suggestions_update` too, for every turn and by its own rules; the `_meta` update keeps the rules above.
 - ACP v2 ignores the neutral opt-in.
 
 ## Recommended config values
@@ -2254,6 +2271,7 @@ The response says where the fork ends:
 | No message matches                                         | `{ "forkPoint": { "messageId": "…", "reason": "notFound" } }` |
 
 - A request with `_meta.forkPoint` takes the neutral path and ignores `_meta.jetbrains.air.fork`. Without `_meta.forkPoint`, the AIR form and its fallback apply unchanged.
+- A request with a `cursorId` forks at that session cursor and ignores `_meta.forkPoint`, as it ignores the AIR form; its response carries no `_meta.forkPoint`.
 
 ## Presentation hints
 

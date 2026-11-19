@@ -204,6 +204,18 @@ describe("Claude permission ACP v1 presentation", () => {
     });
   });
 
+  it("sends a neutral client a record without the fields the request lacks", () => {
+    const meta = buildClaudePermissionPresentation({
+      capabilities: ClientCapabilities.from({ _meta: { permissionPresentation: { version: 1 } } }),
+      toolName: "Bash",
+      input: { command: "rm -rf build" },
+      toolUseID: "tool-1",
+    })._meta;
+
+    // No decision reason: no description. No defaultToNo hint: no defaultToNo: false.
+    expect(meta).toStrictEqual({ permissionPresentation: { version: 1, title: "rm -rf build" } });
+  });
+
   it("keeps command descriptions and decision reasons in their presentation fields", () => {
     const input = { command: "npm test", description: "Run the tests" };
     const presentation = buildClaudePermissionPresentation({

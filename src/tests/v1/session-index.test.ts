@@ -954,6 +954,37 @@ describe("client-neutral session index", () => {
     await agent.dispose();
   });
 
+  it("sends a rename, an archive and a delete in _session/list/changes under _meta.sessionIndex", async () => {
+    const session = await writeTranscript({ prompt: "Old title" });
+    const { agent, notifications } = await neutralAgent();
+    await agent.subscribeSessionList({ cwd: workspace });
+    await settle();
+    const changes = () =>
+      notifications
+        .filter((n) => n.method === "_session/list/changes")
+        .map((n) => n.params as unknown as ListChanges);
+    // The last row sent satisfies `check`.
+    const lastIs = (check: (row: SessionInfo) => boolean) =>
+      waitFor(() => {
+        const row = changes()
+          .flatMap((change) => change.sessions.filter((s) => s.sessionId === session.id))
+          .at(-1);
+        return row !== undefined && check(row);
+      });
+
+    await agent.renameSessionTitle({ sessionId: session.id, title: "New title" });
+    expect(await lastIs((row) => row.title === "New title")).toBe(true);
+    await agent.archiveSession({ sessionId: session.id });
+    expect(
+      await lastIs(
+        (row) => indexRow(row)?.archived === true && (row._meta as any)?.jetbrains === undefined,
+      ),
+    ).toBe(true);
+    await agent.deleteSession({ sessionId: session.id });
+    expect(await waitFor(() => changes().some((c) => c.removed.includes(session.id)))).toBe(true);
+    await agent.dispose();
+  }, 60_000);
+
   it("holds a fork back from session/list and list changes until its session/fork response is out", async () => {
     const { agent, notifications } = await neutralAgent();
     await agent.subscribeSessionList({ cwd: workspace });

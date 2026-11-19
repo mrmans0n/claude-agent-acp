@@ -100,11 +100,6 @@ export class ClientCapabilities {
     readonly neutralPromptSuggestions: boolean = false,
   ) {}
 
-  /** Whether the agent predicts follow-up prompts for this client, in any form. */
-  get predictsPrompts(): boolean {
-    return this.air.client || this.neutralPromptSuggestions;
-  }
-
   /** Whether skill commands carry their kind and `SKILL.md` path, in any form. */
   get presentsSkills(): boolean {
     return this.air.client || this.neutralCommandPresentation;

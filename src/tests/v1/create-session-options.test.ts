@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from "vitest";
 import {
   CreateElicitationRequest,
   RequestError,
@@ -28,6 +28,8 @@ let initModels: Record<string, unknown>[] | undefined;
 /** Holds the CLI initialization until the test resolves it. */
 let initGate: Promise<void> | undefined;
 let initError: Error | undefined;
+/** When set, the SDK refuses the query's options with it: `query()` throws. */
+let optionsRefusal: Error | undefined;
 let setModelImpl: ((model: string) => Promise<void>) | undefined;
 let interruptImpl: (() => Promise<undefined>) | undefined;
 let closeSpy: ReturnType<typeof vi.fn<() => void>>;
@@ -47,6 +49,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async () => {
   return {
     ...actual,
     query: (args: { prompt: unknown; options: Options }) => {
+      if (optionsRefusal) throw optionsRefusal;
       capturedOptions = args.options;
       // Like Claude Code's, the stream stays open until the query is closed.
       let streamClosed = () => {};
@@ -128,6 +131,7 @@ describe("createSession options merging", () => {
     initModels = undefined;
     initGate = undefined;
     initError = undefined;
+    optionsRefusal = undefined;
     setModelImpl = undefined;
     interruptImpl = undefined;
     closeSpy = vi.fn<() => void>();
@@ -300,9 +304,9 @@ describe("createSession options merging", () => {
         .at(-1)
         ?.map((option) => [option.id, option.currentValue]),
     ).toEqual([
-      ["mode", "plan"],
       ["model", "child-model"],
       ["effort", "low"],
+      ["mode", "plan"],
       ["agent", "Explore"],
     ]);
     expect(
@@ -601,67 +605,103 @@ describe("createSession options merging", () => {
     expect(capturedOptions?.env?.HOME).toBe("/custom/home");
   });
 
-  it.each([
-    ["AIR", { _meta: { jetbrains: { air: { version: 1, capabilities: [] } } } }, true],
-    ["client-neutral", { _meta: { promptSuggestions: { version: 1 } } }, true],
-    ["any other", {}, false],
-  ])(
-    "asks the SDK for a predicted follow-up prompt per turn only for a client that reads it: %s",
-    async (label, clientCapabilities, expected) => {
+  describe("the predicted follow-up prompt", () => {
+    const AIR = { _meta: { jetbrains: { air: { version: 1, capabilities: [] } } } };
+    const ADVERTISED = { session: { promptSuggestions: {} } };
+    const NEUTRAL = { _meta: { promptSuggestions: { version: 1 } } };
+
+    // Claude Code spends a request per turn on a prediction: only a client
+    // that gets the prediction has it on.
+    it.each<[string, ClientCapabilities, true | undefined]>([
+      ["AIR", AIR as ClientCapabilities, true],
+      ["a client that advertises session.promptSuggestions", ADVERTISED, true],
+      ["a client of the client-neutral form", NEUTRAL, true],
+      ["no other client", {}, undefined],
+    ])("asks the SDK for it for %s", async (_, clientCapabilities, asked) => {
       await agent.initialize({ protocolVersion: 1, clientCapabilities });
-      const { sessionId } = await agent.newSession({
-        cwd: process.cwd(),
-        mcpServers: [],
-      });
+      await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
 
-      expect(capturedOptions!.promptSuggestions).toBe(expected);
-      // The session keeps the prediction state (`PromptSuggestions`) for those clients only.
-      const state = agent.sessions[sessionId]?.promptSuggestions;
-      expect(state !== undefined).toBe(expected);
-      // Only the AIR form gets a prediction for every turn; the client-neutral form only answers
-      // a prompt that named a request id.
-      state?.resultArrived();
-      expect(state?.suggested("Run the tests") !== undefined).toBe(label === "AIR");
-    },
-  );
-
-  it("lets a caller turn the predicted follow-up prompt off", async () => {
-    await agent.newSession({
-      cwd: process.cwd(),
-      mcpServers: [],
-      _meta: { claudeCode: { options: { promptSuggestions: false } } },
+      expect(capturedOptions!.promptSuggestions).toBe(asked);
     });
 
-    expect(capturedOptions!.promptSuggestions).toBe(false);
+    // The session keeps the prediction state (`PromptSuggestions`) for those
+    // clients only. The client-neutral form gets no prediction for a turn
+    // whose prompt named no request id; the other forms get every turn's.
+    it.each<[string, ClientCapabilities, number | undefined]>([
+      ["AIR", AIR as ClientCapabilities, 1],
+      ["a client that advertises session.promptSuggestions", ADVERTISED, 1],
+      ["a client of the client-neutral form", NEUTRAL, 0],
+      ["no other client", {}, undefined],
+    ])("keeps the prediction state for %s", async (_, clientCapabilities, sent) => {
+      await agent.initialize({ protocolVersion: 1, clientCapabilities });
+      const { sessionId } = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+
+      const state = agent.sessions[sessionId]?.promptSuggestions;
+      state?.resultArrived();
+      expect(state?.suggested("Run the tests", false).length).toBe(sent);
+    });
+
+    it("lets a caller turn it off", async () => {
+      await agent.initialize({ protocolVersion: 1, clientCapabilities: ADVERTISED });
+      await agent.newSession({
+        cwd: process.cwd(),
+        mcpServers: [],
+        _meta: { claudeCode: { options: { promptSuggestions: false } } },
+      });
+
+      expect(capturedOptions!.promptSuggestions).toBe(false);
+    });
   });
 
   it.each([
-    { name: "sends MCP servers as the CLI takes them", delivery: undefined },
-    { name: "lets a caller choose the MCP delivery", delivery: "initialize" as const },
-  ])("$name", async ({ delivery }) => {
+    { name: "sends MCP servers as the CLI takes them", option: "mcpServersDelivery" },
+    {
+      name: "lets a caller choose the MCP delivery",
+      option: "mcpServersDelivery",
+      own: "initialize",
+    },
+    { name: "sends settings as the CLI takes them", option: "settingsDelivery" },
+    {
+      name: "lets a caller choose settings delivery",
+      option: "settingsDelivery",
+      own: "initialize",
+    },
+  ])("$name", async ({ option, own }) => {
+    // A CLI that CLAUDE_CODE_EXECUTABLE names gets both in flags.
+    // `vitest.config.ts` sets the variable for unit runs only.
+    vi.stubEnv("CLAUDE_CODE_EXECUTABLE", "/usr/bin/false");
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+    });
+
     await agent.newSession({
       cwd: process.cwd(),
       mcpServers: [],
-      ...(delivery && { _meta: { claudeCode: { options: { mcpServersDelivery: delivery } } } }),
+      ...(own && { _meta: { claudeCode: { options: { [option]: own } } } }),
     });
 
-    // Unit runs name a CLI with CLAUDE_CODE_EXECUTABLE (see `vitest.config.ts`).
-    expect(capturedOptions!.mcpServersDelivery).toBe(delivery ?? "argv");
+    expect((capturedOptions as Record<string, unknown>)[option]).toBe(own ?? "argv");
   });
 
   // v0.108.0 (#1647) sets the MCP delivery next to the predicted follow-up
-  // prompt, before the caller's options, which win over both.
+  // prompt, and v0.109.0 (#1669) the settings delivery with it, before the
+  // caller's options, which win over all three.
   it.each([
-    ["a client that reads predictions", { _meta: { promptSuggestions: { version: 1 } } }, true],
+    ["a client of the client-neutral form", { _meta: { promptSuggestions: { version: 1 } } }, true],
     ["any other client", {}, false],
   ])(
-    "sets the MCP delivery next to the predicted follow-up prompt of %s",
+    "sets the MCP and settings delivery next to the predicted follow-up prompt of %s",
     async (_label, clientCapabilities, predicts) => {
+      vi.stubEnv("CLAUDE_CODE_EXECUTABLE", "/usr/bin/false");
+      onTestFinished(() => {
+        vi.unstubAllEnvs();
+      });
       await agent.initialize({ protocolVersion: 1, clientCapabilities });
       await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+      expect(capturedOptions!.promptSuggestions).toBe(predicts ? true : undefined);
       expect(capturedOptions).toMatchObject({
-        promptSuggestions: predicts,
         mcpServersDelivery: "argv",
+        settingsDelivery: "argv",
       });
 
       await agent.newSession({
@@ -669,13 +709,18 @@ describe("createSession options merging", () => {
         mcpServers: [],
         _meta: {
           claudeCode: {
-            options: { promptSuggestions: !predicts, mcpServersDelivery: "initialize" },
+            options: {
+              promptSuggestions: !predicts,
+              mcpServersDelivery: "initialize",
+              settingsDelivery: "initialize",
+            },
           },
         },
       });
       expect(capturedOptions).toMatchObject({
         promptSuggestions: !predicts,
         mcpServersDelivery: "initialize",
+        settingsDelivery: "initialize",
       });
     },
   );
@@ -1569,6 +1614,16 @@ describe("createSession options merging", () => {
       expect(options).toEqual(created);
     });
 
+    it("lists the options of session/new as model, effort, mode", async () => {
+      const created = await agent.newSession({ cwd, mcpServers: [] });
+      // The client lists them in this order.
+      expect(created.configOptions?.map((option) => option.id)).toEqual([
+        "model",
+        "effort",
+        "mode",
+      ]);
+    });
+
     it("answers session/options of a held session with its current options, without a query", async () => {
       const { sessionId } = await agent.newSession({ cwd, mcpServers: [] });
       const { configOptions } = await agent.setSessionConfigOption({
@@ -1818,6 +1873,27 @@ describe("createSession options merging", () => {
       await expect(agent.newSession({ cwd: process.cwd(), mcpServers: [] })).rejects.toBe(
         initError,
       );
+    });
+
+    it("disposes the settings of a session whose options the SDK refuses", async () => {
+      // What SDK 0.3.328 throws from `query()` for a hook matcher without `hooks`.
+      optionsRefusal = new Error(
+        "The session was not started, because the hooks option can't be sent to Claude Code: " +
+          "hooks.PreToolUse[0].hooks must be an array of callbacks. Fix that value and try again.",
+      );
+      // The module that the agent of this test loaded (see `beforeEach`).
+      const { SettingsManager } = await import("../../settings.js");
+      const initialized = vi.spyOn(SettingsManager.prototype, "initialize");
+      const disposed = vi.spyOn(SettingsManager.prototype, "dispose");
+
+      await expect(agent.newSession({ cwd: process.cwd(), mcpServers: [] })).rejects.toBe(
+        optionsRefusal,
+      );
+
+      expect(initialized).toHaveBeenCalled();
+      expect(disposed).toHaveBeenCalledTimes(initialized.mock.calls.length);
+      initialized.mockRestore();
+      disposed.mockRestore();
     });
   });
 
@@ -3006,6 +3082,46 @@ describe("createSession options merging", () => {
 
         expect(updates.length).toBeLessThan(3);
         expect(updates.some(isEnd)).toBe(false);
+      });
+
+      it("sends no neutral end event when the CLI start fails part way through the replay", async () => {
+        let failInit!: () => void;
+        initGate = new Promise((resolve) => (failInit = resolve));
+        initError = new Error("Claude Code process exited with code 1");
+        sessionMessages = [
+          userMessage("u1", "first"),
+          userMessage("u2", "second"),
+          userMessage("u3", "third"),
+        ];
+        const updates: SessionNotification[] = [];
+        let releaseClient!: () => void;
+        const clientGate = new Promise<void>((resolve) => (releaseClient = resolve));
+        const loading = (
+          await endAgent(
+            updates,
+            async (notification) => {
+              updates.push(notification);
+              await clientGate;
+            },
+            NEUTRAL_END_CLIENT,
+          )
+        ).loadSession({
+          sessionId: "replay-probe",
+          cwd: process.cwd(),
+          mcpServers: [],
+          _meta: { loadReplayEnd: { id: "load-stopped" } },
+        });
+        const failed = expect(loading).rejects.toThrow("exited with code 1");
+
+        await vi.waitFor(() => expect(updates).toHaveLength(1));
+        failInit();
+        await vi.waitFor(() => expect(closeSpy).toHaveBeenCalled());
+        releaseClient();
+        await failed;
+        for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+
+        expect(updates.length).toBeLessThan(3);
+        expect(updates.some(neutralEnd)).toBe(false);
       });
 
       it("sends no end event when the replay fails", async () => {
