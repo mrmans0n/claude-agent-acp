@@ -12,8 +12,12 @@
  *   predicts one prompt, so the list holds one suggestion, whose prompt is
  *   one text block.
  * - `session_info_update._meta.promptSuggestions`, for JetBrains AIR, which
- *   read the prediction there before ACP had an update for it. A client that
- *   does not read the key sees a session info update that says nothing.
+ *   read the prediction there before ACP had an update for it, and on ACP v1
+ *   for a client of the client-neutral form
+ *   (`clientCapabilities._meta.promptSuggestions`), which gets the prediction
+ *   of a prompt that names `_meta.promptSuggestions.id`, carrying that id. A
+ *   client that does not read the key sees a session info update that says
+ *   nothing.
  *
  * AIR renders the first non-blank `suggestions[].text` as gray text in an empty
  * composer, where Tab fills the composer without sending.
@@ -33,6 +37,12 @@ export type PromptSuggestionForms = {
   meta: boolean;
   /** `prompt_suggestions_update`: the client advertised `session.promptSuggestions`. */
   update: boolean;
+  /**
+   * `session_info_update._meta.promptSuggestions` with the request's id: the
+   * client opted into the client-neutral form
+   * (`clientCapabilities._meta.promptSuggestions`). Only ACP v1 reads the opt-in.
+   */
+  neutral?: boolean;
 };
 
 /**
@@ -48,7 +58,7 @@ export function clientTakesPromptSuggestions(
 
 /** Whether a client takes the prediction in any form. */
 function takesPrediction(forms: PromptSuggestionForms): boolean {
-  return forms.meta || forms.update;
+  return forms.meta || forms.update || forms.neutral === true;
 }
 
 /**
@@ -70,6 +80,9 @@ export const PROMPT_SUGGESTIONS_META_KEY = "promptSuggestions";
 /** One predicted prompt, as the `_meta` value carries it. */
 export type PromptSuggestionsMetaValue = {
   suggestions: { text: string }[];
+  /** The `_meta.promptSuggestions.id` of the `session/prompt` whose turn
+   *  this predicts after, for a client-neutral request. */
+  id?: string;
 };
 
 /**
@@ -88,8 +101,14 @@ export function promptSuggestionText(raw: string | null | undefined): string | n
  * empty `suggestions` list, which clears the prompt the client holds — the turn
  * predicted nothing, so the composer must not keep the previous prediction.
  */
-export function promptSuggestionsMeta(text: string | null): Record<string, unknown> {
-  const value: PromptSuggestionsMetaValue = { suggestions: text === null ? [] : [{ text }] };
+export function promptSuggestionsMeta(
+  text: string | null,
+  requestId?: string,
+): Record<string, unknown> {
+  const value: PromptSuggestionsMetaValue = {
+    suggestions: text === null ? [] : [{ text }],
+    ...(requestId !== undefined ? { id: requestId } : {}),
+  };
   return { [PROMPT_SUGGESTIONS_META_KEY]: value };
 }
 
@@ -116,12 +135,26 @@ class Lane {
    * dropped instead of published mid-turn.
    */
   private expected = false;
+  /** The `_meta.promptSuggestions.id` of the client prompt whose turn the next
+   *  prediction answers, for a client of the client-neutral form. */
+  private requestId: string | undefined;
 
   constructor(
-    private readonly form: (text: string | null) => SuggestionUpdate,
+    private readonly form: (text: string | null, requestId?: string) => SuggestionUpdate,
     /** `prompt_suggestions_update`, whose rules ACP sets. */
     readonly standard: boolean,
+    /**
+     * The client takes the prediction of every turn, as AIR does. A client of
+     * the client-neutral form alone gets only the prediction of a prompt that
+     * named `_meta.promptSuggestions.id`.
+     */
+    private readonly everyTurn = true,
   ) {}
+
+  /** A client prompt came, naming `requestId` to ask for its turn's prediction, or none. */
+  prompted(requestId: string | undefined): void {
+    this.requestId = requestId;
+  }
 
   resultArrived(): void {
     this.expected = true;
@@ -133,7 +166,12 @@ class Lane {
     // ACP: a prediction is discarded when the conversation changed before it
     // was sent. AIR's draft has no such rule.
     if (working && this.standard) return undefined;
-    return this.publish(text);
+    // One prediction per request: a later turn's prediction (an autonomous
+    // cycle) does not answer the prompt that asked.
+    const requestId = this.requestId;
+    this.requestId = undefined;
+    if (!this.everyTurn && requestId === undefined) return undefined;
+    return this.publish(text, requestId);
   }
 
   clear(): SuggestionUpdate | undefined {
@@ -141,11 +179,13 @@ class Lane {
     return this.publish(null);
   }
 
-  private publish(text: string | null): SuggestionUpdate | undefined {
-    // An unchanged prediction is not sent again.
-    if ((this.published ?? null) === text) return undefined;
+  private publish(text: string | null, requestId?: string): SuggestionUpdate | undefined {
+    // An unchanged prediction is not sent again. A prediction that answers a
+    // request always goes out: the client waits for that id, even for an
+    // empty list or a repeated text.
+    if (requestId === undefined && (this.published ?? null) === text) return undefined;
     this.published = text;
-    return this.form(text);
+    return this.form(text, requestId);
   }
 }
 
@@ -156,17 +196,17 @@ class Lane {
  * order. An empty list: nothing to send.
  *
  * Each form has its own state. The `_meta` form keeps the rules it had before
- * ACP had the update. The `prompt_suggestions_update` form follows ACP's, so
- * it also drops a prediction that arrives while Claude works
- * ({@link suggested}) and withdraws its list when work starts
- * ({@link workStarted}).
+ * ACP had the update, also for a client of the client-neutral form. The
+ * `prompt_suggestions_update` form follows ACP's, so it also drops a
+ * prediction that arrives while Claude works ({@link suggested}) and
+ * withdraws its list when work starts ({@link workStarted}).
  */
 export class PromptSuggestions {
   private readonly lanes: Lane[];
 
   /**
    * The predictions of a session whose client takes `forms`. Undefined for a
-   * client that takes neither: nothing of a prediction goes to it.
+   * client that takes none: nothing of a prediction goes to it.
    */
   static forClient(forms: PromptSuggestionForms): PromptSuggestions | undefined {
     return takesPrediction(forms) ? new PromptSuggestions(forms) : undefined;
@@ -175,18 +215,30 @@ export class PromptSuggestions {
   private constructor(forms: PromptSuggestionForms) {
     this.lanes = [
       ...(forms.update ? [new Lane(promptSuggestionsUpdate, true)] : []),
-      ...(forms.meta
+      // AIR and the client-neutral form share the `_meta` update: a client
+      // that declares both gets one, which carries the id when the prompt
+      // named one.
+      ...(forms.meta || forms.neutral === true
         ? [
             new Lane(
-              (text) => ({
+              (text, requestId) => ({
                 sessionUpdate: "session_info_update",
-                _meta: promptSuggestionsMeta(text),
+                _meta: promptSuggestionsMeta(text, requestId),
               }),
               false,
+              forms.meta,
             ),
           ]
         : []),
     ];
+  }
+
+  /**
+   * A client prompt came, naming `requestId` to ask for its turn's prediction
+   * in the client-neutral form, or none. `prompt_suggestions_update` takes no id.
+   */
+  prompted(requestId: string | undefined): void {
+    for (const lane of this.lanes) if (!lane.standard) lane.prompted(requestId);
   }
 
   /** A result came: the CLI predicts the next prompt right after it. */

@@ -102,6 +102,7 @@ import {
 import { checklistPlanUpdate, resetPlanUpdates, type SubagentChecklists } from "../plans.js";
 import {
   clientTakesPromptSuggestions,
+  PROMPT_SUGGESTIONS_META_KEY,
   promptSuggestionOptions,
   PromptSuggestions,
 } from "../prompt-suggestions.js";
@@ -356,6 +357,7 @@ import {
   NEUTRAL_COMMAND_PRESENTATION_KEY,
   NEUTRAL_LOAD_REPLAY_END_KEY,
   loadReplayEndRequestId,
+  promptSuggestionsRequestId,
   NEUTRAL_DIFF_PATCH_KEY,
   NEUTRAL_PLAN_FILE_KEY,
   NEUTRAL_SESSION_FAILURE_KEY,
@@ -971,8 +973,9 @@ export type Session = {
   /** Last goal snapshot sent to the ACP client, used to roll back an
    *  optimistic `/goal` update when the command itself fails. */
   lastPublishedGoal?: GoalSnapshot | null;
-  /** The follow-up prompt the client holds, for an AIR client and for one that
-   *  advertised `session.promptSuggestions`. Undefined for any other client. */
+  /** The follow-up prompt the client holds, for an AIR client, for one that
+   *  advertised `session.promptSuggestions` and for one of the client-neutral
+   *  form. Undefined for any other client. */
   promptSuggestions?: PromptSuggestions;
   /** Count of result messages the consumer should treat as orphans and skip
    *  (not promote/attribute to the current head). When cancel() settles+removes
@@ -2044,6 +2047,9 @@ export class ClaudeAcpAgent {
           ...(this.toolCallCapabilities.neutralLoadReplayEnd
             ? { [NEUTRAL_LOAD_REPLAY_END_KEY]: neutralPresentationCapability() }
             : {}),
+          ...(this.toolCallCapabilities.neutralPromptSuggestions
+            ? { [PROMPT_SUGGESTIONS_META_KEY]: neutralPresentationCapability() }
+            : {}),
         }),
       ),
     };
@@ -2707,6 +2713,12 @@ export class ClaudeAcpAgent {
       // then keeps the ordering it has without this feature.
       const cleared = session.promptSuggestions?.clear();
       if (cleared?.length) await this.publishPromptSuggestions(params.sessionId, cleared);
+      // A client of the neutral form asks for the prediction of this turn by id.
+      session.promptSuggestions?.prompted(
+        this.toolCallCapabilities.neutralPromptSuggestions
+          ? promptSuggestionsRequestId(params._meta)
+          : undefined,
+      );
     }
 
     // A `/remote-control` command still in flight answers into the session's
@@ -3055,8 +3067,9 @@ export class ClaudeAcpAgent {
   /**
    * Sends the updates of a session's {@link PromptSuggestions}: the follow-up
    * prompt the CLI predicted for the next turn, or the clear of the one the
-   * client holds, in each form the client takes. Only a session of AIR or of a
-   * client that advertised `session.promptSuggestions` has the state.
+   * client holds, in each form the client takes. Only a session of AIR, of a
+   * client that advertised `session.promptSuggestions` or of a client of the
+   * client-neutral form has the state; see `docs/air-extensions.md`.
    */
   private async publishPromptSuggestions(
     sessionId: string,
@@ -10375,6 +10388,7 @@ export class ClaudeAcpAgent {
     const suggestionForms = {
       meta: this.toolCallCapabilities.air.client,
       update: clientTakesPromptSuggestions(this.clientCapabilities?.session),
+      neutral: this.toolCallCapabilities.neutralPromptSuggestions,
     };
     const options: Options = {
       systemPrompt,
@@ -10392,13 +10406,14 @@ export class ClaudeAcpAgent {
       // `perTaskStopAffordance` wins.
       ...(subagentForm(this.clientCapabilities) === "rfd" ? { perTaskStopAffordance: true } : {}),
       // One predicted follow-up prompt per turn, published as
-      // `prompt_suggestions_update` or, for AIR, as
-      // `session_info_update._meta.promptSuggestions` (see
-      // `prompt-suggestions.ts`). Only AIR and a client that advertised
-      // `session.promptSuggestions` get it, so no other client's session
-      // spends a request on it. It rides the turn's own
-      // prompt cache, and the user can turn it off in settings.json
-      // (`promptSuggestionEnabled`) or with CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false.
+      // `prompt_suggestions_update` or, for AIR and a client of the
+      // client-neutral form, as `session_info_update._meta.promptSuggestions`
+      // (see `prompt-suggestions.ts`). Only AIR, a client that advertised
+      // `session.promptSuggestions` and a client of the client-neutral form
+      // get it, so no other client's session spends a request on it. It rides
+      // the turn's own prompt cache, and the user can turn it off in
+      // settings.json (`promptSuggestionEnabled`) or with
+      // CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false.
       // Before `userProvidedOptions`, so a client that passes
       // `promptSuggestions: false` keeps it off.
       ...promptSuggestionOptions(suggestionForms),
