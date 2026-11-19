@@ -1,8 +1,5 @@
 import { RequestError } from "@agentclientprotocol/sdk/unstable";
 
-/** Stops one Claude background task without cancelling the parent prompt turn. */
-export const ASYNC_TASK_STOP_METHOD = "_session/async_task/stop";
-
 export type AsyncTaskStopRequest = {
   sessionId: string;
   asyncTaskId: string;
