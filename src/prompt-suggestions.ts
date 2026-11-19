@@ -3,9 +3,21 @@
  *
  * With `promptSuggestions` on, the CLI emits one `prompt_suggestion` message
  * after a turn's `result` holding the prompt it expects the user to send next.
- * ACP has no field for it, so it travels as
- * `session_info_update._meta.promptSuggestions`: a client that does not read
- * the key sees a session info update that says nothing and ignores it.
+ * The adapter turns it on only for a client that takes the prediction
+ * ({@link promptSuggestionOptions}).
+ * It reaches the client in up to two forms:
+ *
+ * - `prompt_suggestions_update`, ACP's unstable session update, for a client
+ *   that advertised `session.promptSuggestions`, on v1 and v2. The CLI
+ *   predicts one prompt, so the list holds one suggestion, whose prompt is
+ *   one text block.
+ * - `session_info_update._meta.promptSuggestions`, for JetBrains AIR, which
+ *   read the prediction there before ACP had an update for it, and on ACP v1
+ *   for a client of the client-neutral form
+ *   (`clientCapabilities._meta.promptSuggestions`), which gets the prediction
+ *   of a prompt that names `_meta.promptSuggestions.id`, carrying that id. A
+ *   client that does not read the key sees a session info update that says
+ *   nothing.
  *
  * AIR renders the first non-blank `suggestions[].text` as gray text in an empty
  * composer, where Tab fills the composer without sending.
@@ -14,6 +26,53 @@
  * error, in plan mode, and at the account's usage limit, so most sessions have
  * turns that end with no prediction at all.
  */
+import type { SessionNotification } from "@agentclientprotocol/sdk/unstable";
+import type { Options } from "@anthropic-ai/claude-agent-sdk";
+
+type SuggestionUpdate = SessionNotification["update"];
+
+/** The forms of the prediction that a client takes. */
+export type PromptSuggestionForms = {
+  /** `session_info_update._meta.promptSuggestions`: the client is JetBrains AIR. */
+  meta: boolean;
+  /** `prompt_suggestions_update`: the client advertised `session.promptSuggestions`. */
+  update: boolean;
+  /**
+   * `session_info_update._meta.promptSuggestions` with the request's id: the
+   * client opted into the client-neutral form
+   * (`clientCapabilities._meta.promptSuggestions`). Only ACP v1 reads the opt-in.
+   */
+  neutral?: boolean;
+};
+
+/**
+ * Whether a client advertised `session.promptSuggestions`. `session` is the
+ * session capabilities of its `initialize` request: `clientCapabilities.session`
+ * on v1, `capabilities.session` on v2. ACP forbids the update without it.
+ */
+export function clientTakesPromptSuggestions(
+  session: { promptSuggestions?: unknown } | null | undefined,
+): boolean {
+  return session?.promptSuggestions != null;
+}
+
+/** Whether a client takes the prediction in any form. */
+function takesPrediction(forms: PromptSuggestionForms): boolean {
+  return forms.meta || forms.update || forms.neutral === true;
+}
+
+/**
+ * The SDK option that makes Claude Code predict the next prompt, for a
+ * session whose client takes the prediction in a form. Empty for any other
+ * client: a prediction costs a request per turn, and none of it would reach
+ * that client. Both cores spread it before the client's own options, so
+ * `_meta.claudeCode.options.promptSuggestions: false` turns the prediction off.
+ */
+export function promptSuggestionOptions(
+  forms: PromptSuggestionForms,
+): Pick<Options, "promptSuggestions"> {
+  return takesPrediction(forms) ? { promptSuggestions: true } : {};
+}
 
 /** The `_meta` key the suggestion travels under. It names no vendor. */
 export const PROMPT_SUGGESTIONS_META_KEY = "promptSuggestions";
@@ -29,7 +88,8 @@ export type PromptSuggestionsMetaValue = {
 /**
  * The suggestion as it goes on the wire, or `null` for a suggestion that says
  * nothing: the CLI can predict whitespace, and an empty text would otherwise
- * reach the composer as a hint with no content.
+ * reach the composer as a hint with no content. ACP forbids a suggestion whose
+ * only content is empty or whitespace-only text.
  */
 export function promptSuggestionText(raw: string | null | undefined): string | null {
   const text = raw?.trim();
@@ -53,13 +113,19 @@ export function promptSuggestionsMeta(
 }
 
 /**
- * The prediction a session holds on the client, and whether an arriving
- * `prompt_suggestion` still answers the turn the user waits on. Both cores
- * keep one per session and send the `_meta` that its methods return as a
- * `session_info_update`, to an AIR client, and on ACP v1 to a client of the
- * client-neutral form too. Undefined: nothing to send.
+ * The `prompt_suggestions_update` that makes `text` the session's list of
+ * suggestions. `null` sends an empty list, which withdraws the list that the
+ * client is offering.
  */
-export class PromptSuggestions {
+export function promptSuggestionsUpdate(text: string | null): SuggestionUpdate {
+  return {
+    sessionUpdate: "prompt_suggestions_update",
+    suggestions: text === null ? [] : [{ prompt: [{ type: "text", text }] }],
+  };
+}
+
+/** The prediction that a client holds in one form, and what is still to come of the last result. */
+class Lane {
   /** The last text sent (`null` after a clear). Undefined until the first send. */
   private published: string | null | undefined;
   /**
@@ -73,52 +139,148 @@ export class PromptSuggestions {
    *  prediction answers, for a client of the client-neutral form. */
   private requestId: string | undefined;
 
-  /**
-   * @param everyTurn The client takes the prediction of every turn, as AIR
-   *   does. A client of the client-neutral form alone gets only the
-   *   prediction of a prompt that named `_meta.promptSuggestions.id`.
-   */
-  constructor(private readonly everyTurn = true) {}
+  constructor(
+    private readonly form: (text: string | null, requestId?: string) => SuggestionUpdate,
+    /** `prompt_suggestions_update`, whose rules ACP sets. */
+    readonly standard: boolean,
+    /**
+     * The client takes the prediction of every turn, as AIR does. A client of
+     * the client-neutral form alone gets only the prediction of a prompt that
+     * named `_meta.promptSuggestions.id`.
+     */
+    private readonly everyTurn = true,
+  ) {}
 
   /** A client prompt came, naming `requestId` to ask for its turn's prediction, or none. */
   prompted(requestId: string | undefined): void {
     this.requestId = requestId;
   }
 
-  /** A result came: the CLI predicts the next prompt right after it. */
   resultArrived(): void {
     this.expected = true;
   }
 
-  /** The `_meta` of the CLI's `prompt_suggestion`, if it answers the last result and changes what the client holds. */
-  suggested(raw: string | null | undefined): Record<string, unknown> | undefined {
+  suggested(text: string | null, working: boolean): SuggestionUpdate | undefined {
     if (!this.expected) return undefined;
     this.expected = false;
+    // ACP: a prediction is discarded when the conversation changed before it
+    // was sent. AIR's draft has no such rule.
+    if (working && this.standard) return undefined;
     // One prediction per request: a later turn's prediction (an autonomous
     // cycle) does not answer the prompt that asked.
     const requestId = this.requestId;
     this.requestId = undefined;
     if (!this.everyTurn && requestId === undefined) return undefined;
-    return this.publish(promptSuggestionText(raw), requestId);
+    return this.publish(text, requestId);
   }
 
-  /**
-   * The `_meta` that clears the prediction: a client prompt spent it, or a
-   * `conversation_reset` dropped the transcript it came from. It also drops
-   * a prediction still in flight for the last result. Undefined when the
-   * client holds none.
-   */
-  clear(): Record<string, unknown> | undefined {
+  clear(): SuggestionUpdate | undefined {
     this.expected = false;
     return this.publish(null);
   }
 
-  private publish(text: string | null, requestId?: string): Record<string, unknown> | undefined {
+  private publish(text: string | null, requestId?: string): SuggestionUpdate | undefined {
     // An unchanged prediction is not sent again. A prediction that answers a
     // request always goes out: the client waits for that id, even for an
     // empty list or a repeated text.
     if (requestId === undefined && (this.published ?? null) === text) return undefined;
     this.published = text;
-    return promptSuggestionsMeta(text, requestId);
+    return this.form(text, requestId);
+  }
+}
+
+/**
+ * The predictions that a session holds on the client, and whether an arriving
+ * `prompt_suggestion` still answers the turn the user waits on. Both cores
+ * keep one per session and send the updates that its methods return, in
+ * order. An empty list: nothing to send.
+ *
+ * Each form has its own state. The `_meta` form keeps the rules it had before
+ * ACP had the update, also for a client of the client-neutral form. The
+ * `prompt_suggestions_update` form follows ACP's, so it also drops a
+ * prediction that arrives while Claude works ({@link suggested}) and
+ * withdraws its list when work starts ({@link workStarted}).
+ */
+export class PromptSuggestions {
+  private readonly lanes: Lane[];
+
+  /**
+   * The predictions of a session whose client takes `forms`. Undefined for a
+   * client that takes none: nothing of a prediction goes to it.
+   */
+  static forClient(forms: PromptSuggestionForms): PromptSuggestions | undefined {
+    return takesPrediction(forms) ? new PromptSuggestions(forms) : undefined;
+  }
+
+  private constructor(forms: PromptSuggestionForms) {
+    this.lanes = [
+      ...(forms.update ? [new Lane(promptSuggestionsUpdate, true)] : []),
+      // AIR and the client-neutral form share the `_meta` update: a client
+      // that declares both gets one, which carries the id when the prompt
+      // named one.
+      ...(forms.meta || forms.neutral === true
+        ? [
+            new Lane(
+              (text, requestId) => ({
+                sessionUpdate: "session_info_update",
+                _meta: promptSuggestionsMeta(text, requestId),
+              }),
+              false,
+              forms.meta,
+            ),
+          ]
+        : []),
+    ];
+  }
+
+  /**
+   * A client prompt came, naming `requestId` to ask for its turn's prediction
+   * in the client-neutral form, or none. `prompt_suggestions_update` takes no id.
+   */
+  prompted(requestId: string | undefined): void {
+    for (const lane of this.lanes) if (!lane.standard) lane.prompted(requestId);
+  }
+
+  /** A result came: the CLI predicts the next prompt right after it. */
+  resultArrived(): void {
+    for (const lane of this.lanes) lane.resultArrived();
+  }
+
+  /**
+   * The updates for the CLI's `prompt_suggestion`, in each form where it
+   * answers the last result and changes what the client holds.
+   *
+   * `working`: Claude works in the session now, such as on a prompt that was
+   * queued before the result, or in a cycle that Claude Code started on its
+   * own. The prediction does not account for that work, so the
+   * `prompt_suggestions_update` form drops it.
+   */
+  suggested(raw: string | null | undefined, working: boolean): SuggestionUpdate[] {
+    const text = promptSuggestionText(raw);
+    return this.updates((lane) => lane.suggested(text, working));
+  }
+
+  /**
+   * The updates that clear the prediction: a client prompt spent it, or a
+   * `conversation_reset` dropped the transcript it came from. It also drops
+   * a prediction still in flight for the last result. Empty when the client
+   * holds none.
+   */
+  clear(): SuggestionUpdate[] {
+    return this.updates((lane) => lane.clear());
+  }
+
+  /**
+   * Foreground work started. The `prompt_suggestions_update` form withdraws
+   * its list, as {@link clear} does: ACP asks for it when work starts without
+   * a prompt, and a prompt's own work finds the list withdrawn already. The
+   * `_meta` form keeps its prediction until the next prompt, as before.
+   */
+  workStarted(): SuggestionUpdate[] {
+    return this.updates((lane) => (lane.standard ? lane.clear() : undefined));
+  }
+
+  private updates(of: (lane: Lane) => SuggestionUpdate | undefined): SuggestionUpdate[] {
+    return this.lanes.flatMap((lane) => of(lane) ?? []);
   }
 }

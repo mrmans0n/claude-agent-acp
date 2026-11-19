@@ -586,6 +586,26 @@ describe("client-neutral diff patches", () => {
       expect(await hookResponse({})).toEqual(response);
     },
   );
+
+  it("keeps the whole toolResponse of a tool that changes no file for a neutral client", async () => {
+    // Only an Edit's or a Write's file text is in its diff. A Grep in content
+    // mode answers with its matching lines under the same `content` key.
+    const response = {
+      mode: "content",
+      numFiles: 1,
+      filenames: [],
+      content: "src/app.ts:2:const value = 1;",
+      numLines: 1,
+    };
+    const update = await AcpToolCallRenderer.for({
+      _meta: { diffPatch: { version: 1 } },
+    }).hookResult({ id: "toolu_grep", name: "Grep" }, response);
+
+    expect((update?._meta as { claudeCode?: { toolResponse?: unknown } })?.claudeCode).toEqual({
+      toolResponse: response,
+      toolName: "Grep",
+    });
+  });
 });
 
 describe("ACP v2 diffs", () => {

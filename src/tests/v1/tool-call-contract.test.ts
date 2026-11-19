@@ -636,6 +636,15 @@ describe("the ACP tool call contract", () => {
           );
         });
 
+        it.each([{ plan: 42 }, { plan: ["1. Do it"] }])(
+          "sends no plan file for a plan that is no string: $plan",
+          (input) => {
+            const { call } = report(neutral, "ExitPlanMode", { ...input, planFilePath });
+            expect(call._meta).not.toHaveProperty("planFile");
+            expect(call.rawInput).toEqual({ ...input, planFilePath });
+          },
+        );
+
         it("sends no plan file for an empty plan, in the tool call and while the input streams", () => {
           const renderer = AcpToolCallRenderer.for(neutral);
           const refine = (input: unknown) =>

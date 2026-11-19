@@ -12633,6 +12633,18 @@ describe("stop reason propagation", () => {
       expect(JSON.stringify(updates)).not.toContain("could not complete");
     });
 
+    it("takes a later integer version of the opt-in and answers with version 1", async () => {
+      const { agent, initialized } = await neutralAgent({
+        _meta: { sessionFailure: { version: 2 } },
+      });
+      injectSession(agent, [failedResult("Claude could not complete the request.")]);
+
+      expect(neutralFromMeta(initialized._meta)).toEqual({ version: 1 });
+      const response = await agent.prompt(promptParams);
+      expect(response.stopReason).toBe("end_turn");
+      expect(neutralFromMeta(response._meta)).toMatchObject({ version: 1, kind: "provider_error" });
+    });
+
     // v0.108.0 (#1644): Claude Code's own confirmWithUser question is no
     // unfinished tool call. The incomplete-tool failure of the typed lane
     // stays for a tool that really got no result.
@@ -15544,6 +15556,24 @@ describe("skill files from getContextUsage in available_commands_update", () => 
     });
 
     expect(lastMeta(commandUpdates, "simplify")).toEqual({
+      commandPresentation: { version: 1, kind: "skill" },
+    });
+  });
+
+  it("marks a built-in skill with the kind only in both forms for an AIR client that opts in too", async () => {
+    const getContextUsage = vi.fn(async () => skillEntry({ name: "simplify", source: "built-in" }));
+
+    const { commandUpdates } = await runTurn({
+      capabilities: {
+        ...AIR_CLIENT_CAPABILITIES,
+        _meta: { ...AIR_CLIENT_CAPABILITIES._meta, commandPresentation: { version: 1 } },
+      },
+      commands: [{ name: "simplify", description: "Simplify", argumentHint: "", builtin: true }],
+      getContextUsage,
+    });
+
+    expect(lastMeta(commandUpdates, "simplify")).toEqual({
+      jetbrains: { air: { version: 1, kind: "skill" } },
       commandPresentation: { version: 1, kind: "skill" },
     });
   });
@@ -25097,6 +25127,90 @@ describe("deferred settlement for live background subagents (issues #864/#866)",
         expect((await answer).stopReason).toBe("end_turn");
         await agent.sessions["test-session"]?.consumer;
         expect(events).toEqual(order);
+      },
+    );
+
+    // v0.109.0 (#1660): `prompt_suggestions_update` drops a prediction that
+    // arrives while Claude works. A turn that keeps the hold for its live
+    // subagent still works when its prediction arrives; one that settleAtResult
+    // answers at its result does not.
+    it.each([
+      { settleAtResult: true, predicted: ["Wait for the explorer"] },
+      { settleAtResult: false, predicted: [] },
+    ])(
+      "sends ACP's prediction of a turn answered at its result while a subagent runs only with settleAtResult ($settleAtResult)",
+      async ({ settleAtResult, predicted }) => {
+        const updates: AcpSessionNotification[] = [];
+        const agent = new ClaudeAcpAgent(
+          {
+            sessionUpdate: async (n: AcpSessionNotification) => {
+              updates.push(n);
+            },
+          } as unknown as AcpClient,
+          { log: () => {}, error: () => {} },
+        );
+        await agent.initialize({
+          protocolVersion: 1,
+          clientCapabilities: {
+            session: { promptSuggestions: {} },
+            _meta: {
+              jetbrains: { air: { version: 1, capabilities: ["nativeSubagentSessions"] } },
+              ...(settleAtResult ? { settleAtResult: true } : {}),
+            },
+          } as ClientCapabilities,
+        });
+        let releaseSubagent!: () => void;
+        const subagentDone = new Promise<void>((resolve) => (releaseSubagent = resolve));
+        const input = new Pushable<any>();
+        async function* messageGenerator() {
+          const iter = input[Symbol.asyncIterator]();
+          yield userEcho((await iter.next()).value);
+          yield running();
+          yield subagentStarted("agent-1");
+          yield resultMessage();
+          yield {
+            type: "prompt_suggestion",
+            suggestion: "Wait for the explorer",
+            uuid: randomUUID(),
+            session_id: "test-session",
+          };
+          yield idle();
+          await subagentDone;
+          yield taskNotification("agent-1");
+          yield running();
+          yield assistantText("promised summary");
+          yield resultMessage({ origin: { kind: "task-notification" } });
+          yield idle();
+        }
+        // With the agent, the session gets the prediction state of its client.
+        agent.sessions["test-session"] = mockSessionState(
+          { query: wrapQuery(messageGenerator()), input },
+          agent,
+        );
+        const predictions = () =>
+          updates.flatMap(({ update }) =>
+            update.sessionUpdate === "prompt_suggestions_update"
+              ? update.suggestions.flatMap((s) =>
+                  s.prompt.flatMap((block) => (block.type === "text" ? [block.text] : [])),
+                )
+              : [],
+          );
+
+        const answer = agent.prompt({
+          sessionId: "test-session",
+          prompt: [{ type: "text", text: "explore" }],
+        });
+        await waitFor(() =>
+          updates.some(
+            ({ update }) =>
+              update.sessionUpdate === "session_info_update" &&
+              (update._meta as any)?.promptSuggestions !== undefined,
+          ),
+        );
+        releaseSubagent();
+        expect((await answer).stopReason).toBe("end_turn");
+        await agent.sessions["test-session"]?.consumer;
+        expect(predictions()).toEqual(predicted);
       },
     );
 

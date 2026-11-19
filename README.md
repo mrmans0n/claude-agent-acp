@@ -19,6 +19,7 @@ This tool implements an ACP agent by using the official [Claude Agent SDK](https
 - Client MCP servers, including the ones that the client serves over the ACP connection ([MCP-over-ACP](https://agentclientprotocol.com/rfds/mcp-over-acp), `"type": "acp"`)
 - An Ultracode session config option, which turns on Claude Code's dynamic workflows for every task. It appears when dynamic workflows are enabled and the model supports ultracode (any model with `xhigh` effort)
 - `/mcp` in the chat: the MCP server status as a list. The adapter runs `/mcp reconnect`, `/mcp enable`, and `/mcp disable` through the SDK control API, because Claude Code refuses them in SDK mode. A reconnect of an ACP server that needs authentication starts MCP OAuth through URL elicitation
+- Prompt suggestions: the prompt that Claude Code predicts the user sends next, as ACP's unstable `prompt_suggestions_update`, for a client that advertises `session.promptSuggestions`
 - Session-scoped long-running goals for AIR through the [goal extension](docs/air-extensions.md#goal) under `_meta.jetbrains.air.goal`
 - Background task lifecycle and per-task stop control through the opt-in [async tasks extension](docs/air-extensions.md#async-tasks), including the provider-neutral `clientCapabilities._meta["async-tasks"]: true` negotiation
 - Structured errors, recovery, and warnings through the opt-in [session failure extension](docs/air-extensions.md#session-failure)
@@ -75,9 +76,14 @@ with replay, which `replay_complete` ends, `session/close`, `session/prompt`, `s
 compaction, display terminals for commands, permission requests, elicitation, providers, auth, and
 [subagents](docs/subagent-sessions.md). Steering is v1 only for now.
 
-Two parts of the draft are not served yet. `session/prompt` takes an `idempotencyKey` and does not
-use it, so a prompt that a client sends again with the same key is inserted again. The adapter
-announces no session cursors, so `session/fork` with a `cursorId` fails with `-32602`.
+`session/prompt` takes an `idempotencyKey`: a prompt that a client sends again with the same key
+is inserted once, and the retry gets the first `messageId`. The key is known for as long as Claude
+Code stores the message, also after a restart.
+
+The adapter announces a session cursor (`cursor_update`) before each user message that follows
+another entry of the conversation, live and in a replay. `session/fork` with its `cursorId` copies
+the history before that message, and fails with `-32602` for any other `cursorId`. A v1 client gets
+no cursors yet.
 
 v2 is served by the v2 agent in `src/v2/`, which runs straight on Claude
 Code instead of translating to v1. A v2 client that declares JetBrains AIR

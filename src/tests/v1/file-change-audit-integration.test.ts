@@ -572,6 +572,32 @@ describe("native file-change report integration", () => {
       await agent.dispose();
     });
 
+    // The report reads the turn's checkpoint, so the caller's options cannot
+    // turn checkpointing off for a client that negotiated the report.
+    it("keeps checkpointing on when the caller's options turn it off", async () => {
+      const updates: SessionNotification[] = [];
+      const { agent } = await createAgent(updates, neutralCapabilities);
+      const { sessionId } = await agent.newSession({
+        cwd: process.cwd(),
+        mcpServers: [],
+        _meta: { claudeCode: { options: { enableFileCheckpointing: false } } },
+      });
+
+      expect(observedOptions?.enableFileCheckpointing).toBe(true);
+      await agent.prompt(neutralPrompt(sessionId, "request-caller-off"));
+      expect(
+        updates
+          .filter((notification) => notification.sessionId === sessionId)
+          .flatMap((n) => {
+            const meta = reportedMeta(n);
+            return meta ? [meta] : [];
+          }),
+      ).toEqual([
+        { agentFileChangeReport: reportedChange("request-caller-off", ["src/changed.ts"]) },
+      ]);
+      await agent.dispose();
+    });
+
     it("adds a subagent edit to the list", async () => {
       scenario = "subagentEdit";
       const updates: SessionNotification[] = [];

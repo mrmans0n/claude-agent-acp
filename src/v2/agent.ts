@@ -26,6 +26,7 @@ import {
   listSessions,
   query,
   type Options,
+  type Query,
   type SDKUserMessage,
   type SessionMessage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -34,7 +35,7 @@ import { messageIdForGrouping } from "../sdk-to-acp.js";
 import type { Logger } from "../logger.js";
 import { customAgents } from "../session-config-options.js";
 import { restrictedChild } from "../acp-subagents.js";
-import { claudeCliPath, mcpServersDelivery } from "../claude-cli.js";
+import { claudeCliPath, cliDelivery } from "../claude-cli.js";
 import { clientSystemPrompt, sessionSystemPrompt } from "../client-system-prompt.js";
 import type { ElicitationSupport } from "../elicitation.js";
 import {
@@ -46,6 +47,11 @@ import {
 import { supportsMcpOAuth } from "../mcp-oauth.js";
 import { McpOverAcp, sdkMcpServers } from "../mcp-servers.js";
 import { ALLOW_BYPASS, autoModeDisabled } from "../permissions/modes.js";
+import {
+  clientTakesPromptSuggestions,
+  promptSuggestionOptions,
+  type PromptSuggestionForms,
+} from "../prompt-suggestions.js";
 import {
   readHistoryAcrossCompactions,
   readResumedTail,
@@ -80,6 +86,7 @@ import { modelSwitchHook, SessionConfig } from "./config.js";
 import { v2ElicitationRequest } from "./elicitation.js";
 import { fileChangePreviewHook } from "./file-preview.js";
 import { canUseTool, denyingStoppedWork } from "./permissions.js";
+import { PromptKeys } from "./prompt-keys.js";
 import { ReplayHolds } from "./replay-hold.js";
 import { reportHooks } from "./reports.js";
 import { savedSessionStatus } from "../session-status.js";
@@ -178,6 +185,13 @@ class V2Agent implements AgentHandle, SessionConnection {
   private readonly resuming = new Map<string, Set<Promise<unknown>>>();
   /** What the resumes that replay hold back until their `replay_complete` (see `replay-hold.ts`). */
   private readonly replays = new ReplayHolds();
+  /**
+   * The `idempotencyKey`s of each session's prompts, from the session's
+   * start to `session/close` or the end of the connection (see
+   * `prompt-keys.ts`). A restart of the session's query, and a resume of a
+   * session whose query ended, keep the record.
+   */
+  private readonly promptKeys = new Map<string, PromptKeys>();
   readonly translator = new V2UpdateTranslator();
   readonly auth: V2Auth;
   /** The `--hide-claude-auth` subscription guard (see `subscription-guard.ts`). */
@@ -192,6 +206,8 @@ class V2Agent implements AgentHandle, SessionConnection {
   elicitation: ElicitationSupport = { form: false, url: false };
   /** The AIR extensions that the client takes (see `air.ts`). */
   air: AirSupport = NO_AIR;
+  /** The forms of the predicted follow-up prompt that the client takes, read at `initialize`. */
+  promptSuggestions: PromptSuggestionForms = { meta: false, update: false };
 
   constructor(
     private readonly ctx: v2.AgentContext,
@@ -339,6 +355,10 @@ class V2Agent implements AgentHandle, SessionConnection {
       url: request.capabilities?.elicitation?.url != null,
     };
     this.air = airSupport(request.capabilities);
+    this.promptSuggestions = {
+      meta: this.air.client,
+      update: clientTakesPromptSuggestions(request.capabilities?.session),
+    };
     const { authMethods, auth, _meta } = this.auth.initialize(request.capabilities);
     const airMeta = airInitializeMeta(this.air);
     // The client-neutral fork point, as on v1, for a client that opts in.
@@ -707,6 +727,8 @@ class V2Agent implements AgentHandle, SessionConnection {
     // its updates go out before the close response.
     await this.setupSettled(sessionId);
     this.stopped.delete(sessionId);
+    // A closed session is no longer active here: only its stored messages keep their keys.
+    this.promptKeys.delete(sessionId);
     const session = this.sessions.get(sessionId);
     if (session) {
       await session.close();
@@ -831,6 +853,7 @@ class V2Agent implements AgentHandle, SessionConnection {
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
     this.stopped.clear();
+    this.promptKeys.clear();
     await Promise.all(sessions.map((session) => session.close()));
   }
 
@@ -960,7 +983,18 @@ class V2Agent implements AgentHandle, SessionConnection {
       query: q,
       model: { id: models.models.currentModelId, info: models.allowlistedModelInfo },
     });
-    session.start(q, config, opened.mcpServers, resume !== undefined);
+    let keys = this.promptKeys.get(sessionId);
+    if (!keys) {
+      const { cwd } = opened.request;
+      keys = new PromptKeys(
+        sessionId,
+        () => storedPromptIds(sessionId, cwd, this.logger),
+        this.logger,
+      );
+      this.promptKeys.set(sessionId, keys);
+    }
+    keys.queryStarted(resume !== undefined);
+    session.start(q, config, opened.mcpServers, keys, resume !== undefined);
     this.sessions.set(sessionId, session);
     this.stopped.delete(sessionId);
     // A route change during the start did not find this session live.
@@ -1078,12 +1112,14 @@ class V2Agent implements AgentHandle, SessionConnection {
       // client stops one at a time: `session/cancel` must leave listed work
       // running. Before the client's options.
       perTaskStopAffordance: true,
-      // AIR's predicted follow-up prompt (see `reports.ts`), as on v1. Only
-      // AIR gets it, so no other client's session spends a request on it.
+      // The predicted follow-up prompt (see `reports.ts`): only AIR and a
+      // client that advertised `session.promptSuggestions` get it, so no
+      // other client's session spends a request on it.
       // Before the client's options: `promptSuggestions: false` turns it off.
-      ...(this.air.client ? { promptSuggestions: true } : {}),
-      // Before the client's options: its own `mcpServersDelivery` wins.
-      mcpServersDelivery: mcpServersDelivery(),
+      ...promptSuggestionOptions(this.promptSuggestions),
+      // Before the client's options: its own `mcpServersDelivery` and
+      // `settingsDelivery` win.
+      ...cliDelivery(client?.extraArgs),
       ...client,
       // The checkpoints that AIR's file-change reports read (see
       // `file-changes.ts`), only for a client that declared them, as on v1.
@@ -1156,7 +1192,16 @@ class V2Agent implements AgentHandle, SessionConnection {
       ...(resume !== undefined ? { resume } : { sessionId }),
       ...(persist ? {} : { persistSession: false }),
     };
-    const q = query({ prompt: input, options });
+    let q: Query;
+    try {
+      q = query({ prompt: input, options });
+    } catch (error) {
+      // The SDK refuses options that it cannot send to Claude Code, e.g. a
+      // client's hook matcher without `hooks`: "hooks.PreToolUse[0].hooks must
+      // be an array of callbacks".
+      settings.dispose();
+      throw error;
+    }
     let initialization;
     try {
       initialization = await q.initializationResult();
@@ -1276,6 +1321,22 @@ async function validatedSetup(
     }
   }
   return request;
+}
+
+/**
+ * The uuids of the user messages in the stored history of the session
+ * `sessionId`, as a replay reads it: the messages before each compaction too.
+ */
+async function storedPromptIds(sessionId: string, cwd: string, logger: Logger): Promise<string[]> {
+  const messages = await readHistoryAcrossCompactions(
+    sessionId,
+    await getSessionMessages(sessionId, { dir: cwd }),
+    logger,
+    cwd,
+  );
+  return messages.flatMap((message) =>
+    message.type === "user" && message.uuid ? [message.uuid] : [],
+  );
 }
 
 /** A request of the active `session` names its `cwd`, as `session/resume` must. */
