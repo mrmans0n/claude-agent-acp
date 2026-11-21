@@ -572,6 +572,28 @@ describe("native file-change report integration", () => {
       await agent.dispose();
     });
 
+    // session/resume sets up the reporter in the negotiated form too.
+    it("reports at top level on the first prompt of a resumed session", async () => {
+      const updates: SessionNotification[] = [];
+      const { agent } = await createAgent(updates, neutralCapabilities);
+      const resumedId = randomUUID();
+
+      await agent.resumeSession({ sessionId: resumedId, cwd: process.cwd(), mcpServers: [] });
+      await agent.prompt(neutralPrompt(resumedId, "request-resumed"));
+
+      expect(observedOptions?.resume).toBe(resumedId);
+      expect(observedOptions?.enableFileCheckpointing).toBe(true);
+      expect(
+        updates
+          .filter((notification) => notification.sessionId === resumedId)
+          .flatMap((n) => {
+            const meta = reportedMeta(n);
+            return meta ? [meta] : [];
+          }),
+      ).toEqual([{ agentFileChangeReport: reportedChange("request-resumed", ["src/changed.ts"]) }]);
+      await agent.dispose();
+    });
+
     // The report reads the turn's checkpoint, so the caller's options cannot
     // turn checkpointing off for a client that negotiated the report.
     it("keeps checkpointing on when the caller's options turn it off", async () => {
