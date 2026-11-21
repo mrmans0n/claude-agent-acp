@@ -140,6 +140,27 @@ export function neutralPlanFileCapability(): { version: number } {
   return { version: NEUTRAL_PLAN_FILE_VERSION };
 }
 
+/** The top-level `_meta` key of the client-neutral session failure. */
+export const NEUTRAL_SESSION_FAILURE_KEY = "sessionFailure";
+export const NEUTRAL_SESSION_FAILURE_VERSION = 1;
+
+/** Whether `initialize.clientCapabilities._meta.sessionFailure` is an object
+ *  whose `version` is an integer of at least 1. */
+export function clientOptsIntoNeutralSessionFailure(capabilities: unknown): boolean {
+  const meta = recordOrUndefined(recordOrUndefined(capabilities)?._meta);
+  const version = recordOrUndefined(meta?.[NEUTRAL_SESSION_FAILURE_KEY])?.version;
+  return (
+    typeof version === "number" &&
+    Number.isInteger(version) &&
+    version >= NEUTRAL_SESSION_FAILURE_VERSION
+  );
+}
+
+/** The agent side of the client-neutral session failure, for the initialize `_meta`. */
+export function neutralSessionFailureCapability(): { version: number } {
+  return { version: NEUTRAL_SESSION_FAILURE_VERSION };
+}
+
 function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
