@@ -126,8 +126,9 @@ export function isExitPlanInterruptionResult(
   );
 }
 
-/** The base ID of an approved plan. AIR appends the review ID to keep each
- * approval in the transcript. Other clients replace one plan per session.
+/** The base ID of an approved plan. AIR and a client-neutral `planFile` client
+ * append the review ID to keep each approval in the transcript. Other clients
+ * replace one plan per session.
  * The TodoWrite checklist is a separate plan. */
 export const PLAN_MODE_PLAN_ID = "plan-mode";
 
@@ -150,7 +151,8 @@ export function approvedPlan(input: unknown, output: unknown): string | undefine
 
 /** The update that shows an approved plan to a client that supports plan
  * operations (the `plan` client capability, which every v2 client has).
- * For AIR, pass the review ID to join the plan to its approval card. */
+ * For AIR and a neutral `planFile` client, pass the review ID to join the
+ * plan to its approval card. */
 export function planModeUpdate(
   plan: string,
   reviewToolCallId?: string,
@@ -185,7 +187,8 @@ export type ExitPlanRestartHost<
   sessionUpdate(notification: SessionNotification): Promise<void>;
   /** Whether the client takes plan operations (see planModeUpdate). */
   supportsPlanOperations(): boolean;
-  isAirClient(): boolean;
+  /** Whether the approved plan has the ID of its review (see planModeUpdate). */
+  linksPlanToReview(): boolean;
   destroyReplacement(sessionId: string, session: Session): void;
   settleCancelledTurn(oldSession: Session, turnSession: Session, turn: Turn): void;
   settleFailedTurn(turnSession: Session, turn: Turn, error: unknown): void;
@@ -236,7 +239,7 @@ export class ExitPlanCoordinator<
               sessionId: id,
               update: planModeUpdate(
                 reset.plan,
-                this.host.isAirClient() ? reset.toolUseId : undefined,
+                this.host.linksPlanToReview() ? reset.toolUseId : undefined,
               ),
             });
           }
