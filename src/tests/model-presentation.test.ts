@@ -337,6 +337,28 @@ describe("model option currentValue is one of its options", () => {
         jetbrains: { air: { recommendedValue: "sonnet" } },
       });
     });
+
+    it("names only a row that the picker lists", () => {
+      const defaultRow: ModelInfo = {
+        value: "default",
+        resolvedModel: "claude-sonnet-5",
+        displayName: "Default",
+        description: "",
+      };
+      const pinned: ModelInfo = {
+        value: "claude-sonnet-5",
+        resolvedModel: "claude-sonnet-5",
+        displayName: "Sonnet 5",
+        description: "",
+      };
+      const infos = [defaultRow, pinned, sonnet, haiku];
+      // An `availableModels` allowlist leaves the pinned row out of the picker.
+      const listed = state("default", [defaultRow, sonnet, haiku]);
+
+      expect(buildModelConfigOption(listed, infos, false, true)._meta).toEqual({
+        recommendedConfigValue: { version: 1, value: "sonnet" },
+      });
+    });
   });
 
   it("lists an off-list current model after the listed models", () => {

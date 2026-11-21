@@ -485,7 +485,7 @@ describe("Claude permission ACP v1 presentation", () => {
     ]);
   });
 
-  it("reuses the standard title for an unknown tool", () => {
+  it("reuses the MCP tool title for the permission request", () => {
     const presentation = buildClaudePermissionPresentation({
       capabilities: airCapabilities(),
       toolName: "mcp__demo__deploy",
@@ -494,11 +494,25 @@ describe("Claude permission ACP v1 presentation", () => {
     });
     expect(presentation.toolCall).toEqual({
       toolCallId: "tool-5",
-      title: "mcp__demo__deploy",
+      title: "demo: deploy",
       rawInput: { target: "staging" },
     });
     expect(presentation._meta).toEqual({
-      jetbrains: { air: { version: 1, permission: { version: 1, title: "mcp__demo__deploy" } } },
+      jetbrains: { air: { version: 1, permission: { version: 1, title: "demo: deploy" } } },
+    });
+  });
+
+  // v0.109.1 (#1674): the readable MCP title reaches the neutral record too.
+  it("gives a neutral client the MCP tool title in its record", () => {
+    const presentation = buildClaudePermissionPresentation({
+      capabilities: ClientCapabilities.from({ _meta: { permissionPresentation: { version: 1 } } }),
+      toolName: "mcp__demo__deploy",
+      input: { target: "staging" },
+      toolUseID: "tool-5",
+    });
+    expect(presentation.toolCall?.title).toBe("demo: deploy");
+    expect(presentation._meta).toStrictEqual({
+      permissionPresentation: { version: 1, title: "demo: deploy" },
     });
   });
 });

@@ -20,6 +20,7 @@ import { resultText, textContent, toAcpContentUpdate, toolResponseMarkers } from
 import type { ToolResultContext, ToolResultFacts, ToolUse, ToolUseFacts } from "./facts.js";
 import { reporterFor } from "./reporters/index.js";
 import {
+  mcpToolName,
   neutralPlanFile,
   resolveSkillPath,
   type NeutralPlanFile,
@@ -120,7 +121,7 @@ export type ToolUpdateMeta = {
          SKILL.md when it could be located on disk. */
       skill?: { name: string; path?: string };
       /* For MCP tool calls: the normalized server name and the tool name, so
-         a client need not parse the `mcp__<server>__<tool>` title. */
+         a client need not parse the `mcp__<server>__<tool>` name. */
       mcp?: { server: string; tool: string };
       [key: string]: unknown;
     };
@@ -883,22 +884,6 @@ export class AcpToolCallRenderer {
     const planFile = neutralPlanFile(toolUse.id, toolUse.input);
     return planFile ? { [NEUTRAL_PLAN_FILE_KEY]: planFile } : {};
   }
-}
-
-/**
- * Splits `mcp__<server>__<tool>` the way Claude Code does: the server is the
- * segment up to the next `__`, the tool is the whole rest. `server` is the
- * normalized name, not the config key.
- */
-export function mcpToolName(name: string): { server: string; tool: string } | undefined {
-  const prefix = "mcp__";
-  if (!name.startsWith(prefix)) return undefined;
-  const rest = name.slice(prefix.length);
-  const separator = rest.indexOf("__");
-  if (separator <= 0) return undefined;
-  const tool = rest.slice(separator + 2);
-  if (!tool) return undefined;
-  return { server: rest.slice(0, separator), tool };
 }
 
 /** The input with the path of the plan file in place of the plan text. */

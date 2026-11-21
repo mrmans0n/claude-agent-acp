@@ -303,6 +303,29 @@ describe("the follow-up prompt of a client of the client-neutral form", () => {
     expect(published).toEqual(expected);
   });
 
+  it("asks only with an id that is a non-empty string of at most 256 characters", async () => {
+    const { client, published } = recorder();
+    const agent = await agentFor(client, NEUTRAL_CLIENT);
+    const longest = "x".repeat(256);
+
+    await run(agent, ["Run the tests", "Lint", "Commit"], {
+      requestIds: ["", "x".repeat(257), longest],
+    });
+
+    expect(published).toEqual([neutralUpdate({ suggestions: [{ text: "Commit" }], id: longest })]);
+  });
+
+  // The id belongs to the client-neutral form: an AIR client that names one
+  // still gets AIR's `_meta`, without the id.
+  it("ignores the id of a client that did not opt into the client-neutral form", async () => {
+    const { client, published } = recorder();
+    const agent = await agentFor(client, AIR_CLIENT);
+
+    await run(agent, ["Run the tests"], { requestIds: ["turn-1"] });
+
+    expect(published).toEqual([metaUpdate("Run the tests")]);
+  });
+
   it("drops a prediction the next prompt outran", async () => {
     const { client, published } = recorder();
     const agent = await agentFor(client, NEUTRAL_CLIENT);
