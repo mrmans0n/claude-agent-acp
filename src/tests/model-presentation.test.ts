@@ -4,6 +4,7 @@ import {
   applyAvailableModelsAllowlist,
   buildModelConfigOption,
   getAvailableModels,
+  narrowToGatewayModels,
 } from "../session-model.js";
 
 const OPUS: ModelInfo = {
@@ -237,6 +238,130 @@ describe("model option currentValue is one of its options", () => {
     option.type === "select"
       ? option.options.map((entry) => ("value" in entry ? entry.value : entry.group))
       : [];
+
+  describe("client-neutral recommendation", () => {
+    const sonnet: ModelInfo = {
+      value: "sonnet",
+      resolvedModel: "claude-sonnet-5",
+      displayName: "Sonnet",
+      description: "",
+    };
+    const haiku: ModelInfo = {
+      value: "haiku",
+      resolvedModel: "claude-haiku-4-5",
+      displayName: "Haiku",
+      description: "",
+    };
+    const state = (currentModelId: string, infos: ModelInfo[]) => ({
+      currentModelId,
+      availableModels: infos.map((info) => ({
+        modelId: info.value,
+        name: info.displayName,
+        description: info.description,
+      })),
+    });
+
+    it.each(["default", "haiku"])(
+      "names the row of the running default and leaves current %s and the rows alone",
+      (current) => {
+        const defaultRow: ModelInfo = {
+          value: "default",
+          resolvedModel: "claude-sonnet-5",
+          displayName: "Default",
+          description: "",
+        };
+        const infos = [defaultRow, sonnet, haiku];
+        const option = buildModelConfigOption(state(current, infos), infos, false, false, true);
+        const plain = buildModelConfigOption(state(current, infos), infos, false);
+
+        expect(option._meta).toEqual({ recommendedConfigValue: { version: 1, value: "sonnet" } });
+        expect(option).toEqual({ ...plain, _meta: option._meta });
+        expect(option.currentValue).toBe(current);
+      },
+    );
+
+    it("sends no record when no row matches the running default exactly", () => {
+      const defaultRow: ModelInfo = {
+        value: "default",
+        resolvedModel: "claude-sonnet-6",
+        displayName: "Default",
+        description: "",
+      };
+      const infos = [defaultRow, sonnet, haiku];
+
+      expect(
+        buildModelConfigOption(state("default", infos), infos, false, false, true),
+      ).not.toHaveProperty("_meta");
+    });
+
+    // v0.108.1 (#1506): a provider gateway narrows the catalog, and one that
+    // serves none of its models fails session setup.
+    it("names the running default's row only when a provider gateway serves it", () => {
+      const defaultRow: ModelInfo = {
+        value: "default",
+        resolvedModel: "claude-sonnet-5",
+        displayName: "Default",
+        description: "",
+      };
+      const infos = [defaultRow, sonnet, haiku];
+
+      const served = narrowToGatewayModels(infos, ["claude-sonnet-5-20260101"]);
+      expect(served.map((model) => model.value)).toEqual(["default", "sonnet"]);
+      expect(
+        buildModelConfigOption(state("default", served), served, false, false, true)._meta,
+      ).toEqual({
+        recommendedConfigValue: { version: 1, value: "sonnet" },
+      });
+
+      const notServed = narrowToGatewayModels(infos, ["claude-haiku-4-5"]);
+      expect(
+        buildModelConfigOption(state("haiku", notServed), notServed, false, false, true),
+      ).not.toHaveProperty("_meta");
+
+      expect(() => narrowToGatewayModels(infos, ["claude-opus-5"])).toThrow(
+        "The selected provider offers no compatible Claude models",
+      );
+    });
+
+    it("sends both records to a client that declares AIR too", () => {
+      const defaultRow: ModelInfo = {
+        value: "default",
+        resolvedModel: "claude-sonnet-5",
+        displayName: "Default",
+        description: "",
+      };
+      const infos = [defaultRow, sonnet, haiku];
+
+      expect(
+        buildModelConfigOption(state("default", infos), infos, true, false, true)._meta,
+      ).toMatchObject({
+        recommendedConfigValue: { version: 1, value: "sonnet" },
+        jetbrains: { air: { recommendedValue: "sonnet" } },
+      });
+    });
+
+    it("names only a row that the picker lists", () => {
+      const defaultRow: ModelInfo = {
+        value: "default",
+        resolvedModel: "claude-sonnet-5",
+        displayName: "Default",
+        description: "",
+      };
+      const pinned: ModelInfo = {
+        value: "claude-sonnet-5",
+        resolvedModel: "claude-sonnet-5",
+        displayName: "Sonnet 5",
+        description: "",
+      };
+      const infos = [defaultRow, pinned, sonnet, haiku];
+      // An `availableModels` allowlist leaves the pinned row out of the picker.
+      const listed = state("default", [defaultRow, sonnet, haiku]);
+
+      expect(buildModelConfigOption(listed, infos, false, false, true)._meta).toEqual({
+        recommendedConfigValue: { version: 1, value: "sonnet" },
+      });
+    });
+  });
 
   it("lists an off-list current model after the listed models", () => {
     const offList: ModelInfo = {
