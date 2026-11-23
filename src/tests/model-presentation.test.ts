@@ -271,7 +271,7 @@ describe("model option currentValue is one of its options", () => {
           description: "",
         };
         const infos = [defaultRow, sonnet, haiku];
-        const option = buildModelConfigOption(state(current, infos), infos, false, true);
+        const option = buildModelConfigOption(state(current, infos), infos, false, false, true);
         const plain = buildModelConfigOption(state(current, infos), infos, false);
 
         expect(option._meta).toEqual({ recommendedConfigValue: { version: 1, value: "sonnet" } });
@@ -290,7 +290,7 @@ describe("model option currentValue is one of its options", () => {
       const infos = [defaultRow, sonnet, haiku];
 
       expect(
-        buildModelConfigOption(state("default", infos), infos, false, true),
+        buildModelConfigOption(state("default", infos), infos, false, false, true),
       ).not.toHaveProperty("_meta");
     });
 
@@ -307,13 +307,15 @@ describe("model option currentValue is one of its options", () => {
 
       const served = narrowToGatewayModels(infos, ["claude-sonnet-5-20260101"]);
       expect(served.map((model) => model.value)).toEqual(["default", "sonnet"]);
-      expect(buildModelConfigOption(state("default", served), served, false, true)._meta).toEqual({
+      expect(
+        buildModelConfigOption(state("default", served), served, false, false, true)._meta,
+      ).toEqual({
         recommendedConfigValue: { version: 1, value: "sonnet" },
       });
 
       const notServed = narrowToGatewayModels(infos, ["claude-haiku-4-5"]);
       expect(
-        buildModelConfigOption(state("haiku", notServed), notServed, false, true),
+        buildModelConfigOption(state("haiku", notServed), notServed, false, false, true),
       ).not.toHaveProperty("_meta");
 
       expect(() => narrowToGatewayModels(infos, ["claude-opus-5"])).toThrow(
@@ -331,7 +333,7 @@ describe("model option currentValue is one of its options", () => {
       const infos = [defaultRow, sonnet, haiku];
 
       expect(
-        buildModelConfigOption(state("default", infos), infos, true, true)._meta,
+        buildModelConfigOption(state("default", infos), infos, true, false, true)._meta,
       ).toMatchObject({
         recommendedConfigValue: { version: 1, value: "sonnet" },
         jetbrains: { air: { recommendedValue: "sonnet" } },
@@ -355,7 +357,7 @@ describe("model option currentValue is one of its options", () => {
       // An `availableModels` allowlist leaves the pinned row out of the picker.
       const listed = state("default", [defaultRow, sonnet, haiku]);
 
-      expect(buildModelConfigOption(listed, infos, false, true)._meta).toEqual({
+      expect(buildModelConfigOption(listed, infos, false, false, true)._meta).toEqual({
         recommendedConfigValue: { version: 1, value: "sonnet" },
       });
     });

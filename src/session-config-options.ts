@@ -117,6 +117,9 @@ export type ConfigOptionPresentation = {
   /** Replace ambiguous `default` rows with concrete values and advertise the
    *  SDK/adapter recommendation as `_meta.jetbrains.air.recommendedValue`. */
   useRecommendedValue: boolean;
+  /** The client is AIR: each `model` option entry names its model's effort
+   *  levels at `_meta.jetbrains.air.reasoningEfforts`. */
+  airClient?: boolean;
   /** Name the recommended model in `_meta.recommendedConfigValue`, and keep the
    *  rows and the current value as they are. */
   useNeutralRecommendedValue?: boolean;
@@ -172,6 +175,7 @@ export function buildConfigOptions(
         models,
         modelInfos,
         presentation?.useRecommendedValue === true,
+        presentation?.airClient === true,
         presentation?.useNeutralRecommendedValue === true,
       ),
     );

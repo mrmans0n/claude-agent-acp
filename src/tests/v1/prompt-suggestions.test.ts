@@ -303,6 +303,20 @@ describe("the follow-up prompt of a client of the client-neutral form", () => {
     expect(published).toEqual(expected);
   });
 
+  // A prompt that does not ask still withdraws the prediction that the
+  // client holds from the previous request, and gets none of its own.
+  it("clears the held prediction for a next prompt that does not ask", async () => {
+    const { client, published } = recorder();
+    const agent = await agentFor(client, NEUTRAL_CLIENT);
+
+    await run(agent, ["Run the tests", "Commit"], { requestIds: ["turn-1"] });
+
+    expect(published).toEqual([
+      neutralUpdate({ suggestions: [{ text: "Run the tests" }], id: "turn-1" }),
+      neutralUpdate({ suggestions: [] }),
+    ]);
+  });
+
   it("asks only with an id that is a non-empty string of at most 256 characters", async () => {
     const { client, published } = recorder();
     const agent = await agentFor(client, NEUTRAL_CLIENT);
