@@ -9868,6 +9868,7 @@ export class ClaudeAcpAgent {
         },
         {
           useRecommendedValue,
+          airClient: this.toolCallCapabilities.air.client,
           useNeutralRecommendedValue: this.toolCallCapabilities.neutralRecommendedConfigValue,
         },
         {
@@ -10882,6 +10883,7 @@ export class ClaudeAcpAgent {
         fastMode,
         {
           useRecommendedValue,
+          airClient: this.toolCallCapabilities.air.client,
           useNeutralRecommendedValue: this.toolCallCapabilities.neutralRecommendedConfigValue,
         },
         ultracode,
