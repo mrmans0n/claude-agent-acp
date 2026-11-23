@@ -361,6 +361,37 @@ describe("model option currentValue is one of its options", () => {
         recommendedConfigValue: { version: 1, value: "sonnet" },
       });
     });
+
+    it("names the row of the running default's context window, not its family's other row", () => {
+      const defaultRow: ModelInfo = {
+        value: "default",
+        resolvedModel: "Claude-Opus-4-8[1M]",
+        displayName: "Default",
+        description: "",
+      };
+      const opus: ModelInfo = {
+        value: "opus",
+        resolvedModel: "claude-opus-4-8",
+        displayName: "Opus",
+        description: "",
+      };
+      const opusLong: ModelInfo = {
+        value: "opus[1m]",
+        resolvedModel: "claude-opus-4-8[1m]",
+        displayName: "Opus 1M",
+        description: "",
+      };
+      const infos = [defaultRow, opus, opusLong];
+
+      const option = buildModelConfigOption(state("default", infos), infos, false, false, true);
+      expect(option._meta).toEqual({ recommendedConfigValue: { version: 1, value: "opus[1m]" } });
+      expect(option.currentValue).toBe("default");
+      // Without the 1M row there is no exact match, so no record.
+      const short = [defaultRow, opus];
+      expect(
+        buildModelConfigOption(state("default", short), short, false, false, true),
+      ).not.toHaveProperty("_meta");
+    });
   });
 
   it("lists an off-list current model after the listed models", () => {

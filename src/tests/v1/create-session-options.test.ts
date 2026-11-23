@@ -358,7 +358,16 @@ describe("createSession options merging", () => {
     };
     const observedAgent = new ClaudeAcpAgent(client);
     await observedAgent.initialize({ protocolVersion: 1, clientCapabilities: { subagents: {} } });
+    const setupPublished = Promise.withResolvers<void>();
+    const publish = observedAgent.publishCurrentSubagentStates.bind(observedAgent);
+    vi.spyOn(observedAgent, "publishCurrentSubagentStates").mockImplementation((sessionId) => {
+      const published = publish(sessionId);
+      setupPublished.resolve(published);
+      return published;
+    });
     const { sessionId } = await observedAgent.newSession({ cwd: process.cwd(), mcpServers: [] });
+    // Let session setup publish its snapshot before the test starts any children.
+    await setupPublished.promise;
     const session = observedAgent.sessions[sessionId]!;
     const runtime = (session.nativeSubagentRuntime = new NativeSubagentRuntime(
       "rfd",
@@ -3091,6 +3100,32 @@ describe("createSession options merging", () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
 
         expect(updates.filter(neutralEnd).map(neutralEnd)).toEqual([end]);
+      });
+
+      it("ends the neutral replay of a load with an empty history", async () => {
+        sessionMessages = [];
+        const updates: SessionNotification[] = [];
+        let atResponse: SessionNotification[] = [];
+        await (
+          await endAgent(updates, undefined, NEUTRAL_END_CLIENT)
+        )
+          .loadSession({
+            sessionId: "replay-probe",
+            cwd: process.cwd(),
+            mcpServers: [],
+            _meta: { loadReplayEnd: { id: "load-empty" } },
+          })
+          .then(() => (atResponse = [...updates]));
+
+        expect(atResponse).toEqual([
+          {
+            sessionId: "replay-probe",
+            update: {
+              sessionUpdate: "session_info_update",
+              _meta: { loadReplayEnd: { version: 1, id: "load-empty" } },
+            },
+          },
+        ]);
       });
 
       it("echoes the load's id after the replay of a session that is already live", async () => {

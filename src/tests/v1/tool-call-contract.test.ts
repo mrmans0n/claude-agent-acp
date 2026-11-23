@@ -673,6 +673,23 @@ describe("the ACP tool call contract", () => {
           expect(updates).toHaveLength(1);
           expect(updates[0]._meta.planFile).toMatchObject({ planId: "plan-mode:t" });
         });
+
+        // v0.110.1 (#1542) reports a rejected plan as a cancelled turn on ACP v2
+        // only. On v1 the failed result of the rejected review keeps the record.
+        it("keeps the plan file on the failed result of a rejected plan", () => {
+          const withFile = { plan: "1. Do it", planFilePath };
+          const { updates } = report(neutral, "ExitPlanMode", withFile, {
+            content: "The user doesn't want to proceed with this tool use.",
+            is_error: true,
+          });
+          expect(updates).toHaveLength(1);
+          expect(updates[0]).toMatchObject({
+            status: "failed",
+            _meta: {
+              planFile: { version: 1, planId: "plan-mode:t", path: planFilePath, sha256: digest },
+            },
+          });
+        });
       });
     });
   });
