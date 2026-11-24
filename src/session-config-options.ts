@@ -120,6 +120,9 @@ export type ConfigOptionPresentation = {
   /** The client is AIR: each `model` option entry names its model's effort
    *  levels at `_meta.jetbrains.air.reasoningEfforts`. */
   airClient?: boolean;
+  /** Name the recommended model in `_meta.recommendedConfigValue`, and keep the
+   *  rows and the current value as they are. */
+  useNeutralRecommendedValue?: boolean;
 };
 
 /**
@@ -173,6 +176,7 @@ export function buildConfigOptions(
         modelInfos,
         presentation?.useRecommendedValue === true,
         presentation?.airClient === true,
+        presentation?.useNeutralRecommendedValue === true,
       ),
     );
   }
