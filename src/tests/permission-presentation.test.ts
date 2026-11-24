@@ -169,6 +169,53 @@ describe("Claude permission ACP v1 presentation", () => {
     });
   });
 
+  it("sends the record at top level to a client that opted into the neutral form, and only then", () => {
+    const build = (clientCapabilities: Parameters<typeof ClientCapabilities.from>[0]) =>
+      buildClaudePermissionPresentation({
+        capabilities: ClientCapabilities.from(clientCapabilities),
+        toolName: "Bash",
+        input: { command: "rm -rf build" },
+        toolUseID: "tool-1",
+        decisionReason: "Writes outside the sandbox.",
+        defaultToNo: true,
+      })._meta;
+    const permissionPresentation = {
+      version: 1,
+      title: "rm -rf build",
+      description: "Reason: Writes outside the sandbox.",
+      defaultToNo: true,
+    };
+
+    expect(build({ _meta: { permissionPresentation: { version: 1 } } })).toEqual({
+      permissionPresentation,
+    });
+    expect(build({ _meta: { permissionPresentation: true } })).toBeUndefined();
+    expect(build({})).toBeUndefined();
+
+    const both = build({
+      _meta: {
+        jetbrains: { air: { version: 1, capabilities: [] } },
+        permissionPresentation: { version: 1 },
+      },
+    });
+    expect(both).toEqual({
+      jetbrains: { air: { version: 1, permission: permissionPresentation } },
+      permissionPresentation,
+    });
+  });
+
+  it("sends a neutral client a record without the fields the request lacks", () => {
+    const meta = buildClaudePermissionPresentation({
+      capabilities: ClientCapabilities.from({ _meta: { permissionPresentation: { version: 1 } } }),
+      toolName: "Bash",
+      input: { command: "rm -rf build" },
+      toolUseID: "tool-1",
+    })._meta;
+
+    // No decision reason: no description. No defaultToNo hint: no defaultToNo: false.
+    expect(meta).toStrictEqual({ permissionPresentation: { version: 1, title: "rm -rf build" } });
+  });
+
   it("keeps command descriptions and decision reasons in their presentation fields", () => {
     const input = { command: "npm test", description: "Run the tests" };
     const presentation = buildClaudePermissionPresentation({
@@ -452,6 +499,20 @@ describe("Claude permission ACP v1 presentation", () => {
     });
     expect(presentation._meta).toEqual({
       jetbrains: { air: { version: 1, permission: { version: 1, title: "demo: deploy" } } },
+    });
+  });
+
+  // v0.109.1 (#1674): the readable MCP title reaches the neutral record too.
+  it("gives a neutral client the MCP tool title in its record", () => {
+    const presentation = buildClaudePermissionPresentation({
+      capabilities: ClientCapabilities.from({ _meta: { permissionPresentation: { version: 1 } } }),
+      toolName: "mcp__demo__deploy",
+      input: { target: "staging" },
+      toolUseID: "tool-5",
+    });
+    expect(presentation.toolCall?.title).toBe("demo: deploy");
+    expect(presentation._meta).toStrictEqual({
+      permissionPresentation: { version: 1, title: "demo: deploy" },
     });
   });
 });
