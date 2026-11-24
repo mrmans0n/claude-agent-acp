@@ -442,6 +442,190 @@ describe("tool-call diff content", () => {
   });
 });
 
+describe("client-neutral diff patches", () => {
+  it.each([
+    { declaration: { version: 1 }, form: "neutral" },
+    { declaration: { version: 2 }, form: "neutral" },
+    { declaration: true, form: undefined },
+    { declaration: "1", form: undefined },
+    { declaration: [1], form: undefined },
+    { declaration: null, form: undefined },
+    { declaration: {}, form: undefined },
+    { declaration: { version: 0 }, form: undefined },
+    { declaration: { version: 1.5 }, form: undefined },
+    { declaration: { version: "1" }, form: undefined },
+  ])("opts in with $declaration", ({ declaration, form }) => {
+    const capabilities = ClientCapabilities.from({ _meta: { diffPatch: declaration } });
+
+    expect(capabilities.diffPatch).toBe(form !== undefined);
+    expect(capabilities.neutralDiffPatch).toBe(form !== undefined);
+  });
+
+  it("takes the neutral form over the AIR form, and the v2 form over both", () => {
+    const meta = {
+      diffPatch: { version: 1 },
+      jetbrains: { air: { version: 1, capabilities: ["diffPatch"] } },
+    };
+
+    expect(ClientCapabilities.from({ _meta: meta }).patchForm).toBe("neutral");
+    expect(ClientCapabilities.from({ _meta: meta }, { v2: true })).toMatchObject({
+      neutralDiffPatch: false,
+      patchForm: "v2",
+    });
+  });
+
+  // v0.108.0 (#1419): an input field of the wrong type is no path. Such an
+  // Edit gets no diff, so the neutral client keeps its text in `rawInput`.
+  it("leaves the file text out of a neutral client's rawInput only when a diff holds it", () => {
+    const renderer = AcpToolCallRenderer.for({ _meta: { diffPatch: { version: 1 } } });
+    const valid = { file_path: "/repo/a.ts", old_string: "old", new_string: "new" };
+    const invalid = { file_path: 12345, old_string: "old", new_string: "new" };
+
+    const shown = renderer.toolCall({ id: "t1", name: "Edit", input: valid }) as any;
+    expect(shown.content).toEqual([
+      { type: "diff", path: "/repo/a.ts", oldText: "old", newText: "new" },
+    ]);
+    expect(shown.rawInput).toEqual({ file_path: "/repo/a.ts" });
+
+    const noPath = renderer.toolCall({ id: "t2", name: "Edit", input: invalid }) as any;
+    expect(noPath.title).toBe("Edit");
+    expect(noPath.locations).toEqual([]);
+    expect(noPath.content ?? []).toEqual([]);
+    expect(noPath.rawInput).toEqual(invalid);
+    expect(
+      renderer.permissionToolCall({ id: "t2", name: "Edit", input: invalid }).rawInput,
+    ).toEqual(invalid);
+  });
+
+  it("streams a Write's partial input without the content its patch will hold", () => {
+    const partial = { file_path: "/repo/a.ts", content: "export const a" };
+    const refine = (meta: Record<string, unknown>) =>
+      AcpToolCallRenderer.for({ _meta: meta }).partialRefinement(
+        { id: "toolu_write", name: "Write" },
+        partial,
+      ) as { rawInput?: unknown; content?: unknown };
+
+    const neutral = refine({ diffPatch: { version: 1 } });
+    expect(neutral.rawInput).toEqual({ file_path: "/repo/a.ts" });
+    expect(neutral.content).toBeUndefined();
+    expect(refine({}).rawInput).toEqual(partial);
+  });
+
+  it("puts the patch of the AIR form at top-level _meta.diffPatch", async () => {
+    const filePath = await temporaryFile("old\n");
+    const input = { file_path: filePath, old_string: "old", new_string: "new" };
+    const air = await previewPatchContent("Edit", input, undefined, "air");
+    const neutral = await previewPatchContent("Edit", input, undefined, "neutral");
+
+    expect(neutral).toEqual([
+      {
+        type: "diff",
+        path: filePath,
+        oldText: null,
+        newText: "",
+        _meta: { diffPatch: { version: 1, format: "git_patch", text: patchText(air) } },
+      },
+    ]);
+  });
+
+  it("puts the patch of a Write that creates a file at top-level _meta.diffPatch", async () => {
+    const filePath = await temporaryFile(undefined, "created.ts");
+    const input = { file_path: filePath, content: "created\n" };
+    const air = await previewPatchContent("Write", input, undefined, "air");
+    const neutral = await previewPatchContent("Write", input, undefined, "neutral");
+
+    expect(patchText(air)).toContain("new file mode 100644\n--- /dev/null\n");
+    expect(neutral).toEqual([
+      {
+        type: "diff",
+        path: filePath,
+        oldText: null,
+        newText: "",
+        _meta: { diffPatch: { version: 1, format: "git_patch", text: patchText(air) } },
+      },
+    ]);
+  });
+
+  it.each([
+    {
+      name: "Edit",
+      toolResponse: {
+        oldString: "old",
+        newString: "new",
+        originalFile: "line 1\nold\n",
+        userModified: false,
+        replaceAll: false,
+      },
+      kept: { userModified: false, replaceAll: false },
+    },
+    {
+      name: "Write",
+      toolResponse: { type: "update", content: "line 1\nnew\n", originalFile: "line 1\nold\n" },
+      kept: { type: "update" },
+    },
+  ])(
+    "keeps the gitDiff out of a neutral client's $name toolResponse",
+    async ({ name, toolResponse, kept }) => {
+      const filePath = await temporaryFile("line 1\nnew\n");
+      // Claude Code's FileEditOutput and FileWriteOutput (SDK 0.3.325) can carry
+      // the change again as a git diff.
+      const response = {
+        ...toolResponse,
+        filePath,
+        structuredPatch: [
+          {
+            oldStart: 1,
+            oldLines: 2,
+            newStart: 1,
+            newLines: 2,
+            lines: [" line 1", "-old", "+new"],
+          },
+        ],
+        gitDiff: {
+          filename: "file.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          changes: 2,
+          patch: "@@ -1,2 +1,2 @@\n line 1\n-old\n+new\n",
+        },
+      };
+      const hookResponse = async (capabilities: Record<string, unknown>) =>
+        (
+          (await AcpToolCallRenderer.for(capabilities).hookResult({ id: "t", name }, response))
+            ?._meta as { claudeCode?: { toolResponse?: unknown } } | undefined
+        )?.claudeCode?.toolResponse;
+
+      expect(await hookResponse({ _meta: { diffPatch: { version: 1 } } })).toEqual({
+        ...kept,
+        filePath,
+      });
+      // A client that did not opt in keeps the whole toolResponse.
+      expect(await hookResponse({})).toEqual(response);
+    },
+  );
+
+  it("keeps the whole toolResponse of a tool that changes no file for a neutral client", async () => {
+    // Only an Edit's or a Write's file text is in its diff. A Grep in content
+    // mode answers with its matching lines under the same `content` key.
+    const response = {
+      mode: "content",
+      numFiles: 1,
+      filenames: [],
+      content: "src/app.ts:2:const value = 1;",
+      numLines: 1,
+    };
+    const update = await AcpToolCallRenderer.for({
+      _meta: { diffPatch: { version: 1 } },
+    }).hookResult({ id: "toolu_grep", name: "Grep" }, response);
+
+    expect((update?._meta as { claudeCode?: { toolResponse?: unknown } })?.claudeCode).toEqual({
+      toolResponse: response,
+      toolName: "Grep",
+    });
+  });
+});
+
 describe("ACP v2 diffs", () => {
   const hunk = { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["-a", "+b"] };
   const v2 = new ClientCapabilities(false, false, false, undefined, true);
@@ -652,19 +836,34 @@ describe("Write tool calls for an existing file", () => {
     expect(result).toBeUndefined();
   });
 
-  it("shows a created file that cannot have a patch in the hook result", async () => {
-    // No approval ran, and CRLF text has no exact patch, so the hook is the
-    // only report that shows the created file.
-    const filePath = await temporaryFile("a\r\nb\r\n");
-    const result = await new WriteReporter().hookResult(
-      { type: "create", filePath, content: "a\r\nb\r\n", structuredPatch: [], originalFile: null },
-      { capabilities: air },
-    );
+  it.each([
+    { form: "AIR", capabilities: air },
+    {
+      form: "neutral",
+      capabilities: ClientCapabilities.from({ _meta: { diffPatch: { version: 1 } } }),
+    },
+  ])(
+    "shows a created file that cannot have a patch in the $form hook result",
+    async ({ capabilities }) => {
+      // No approval ran, and CRLF text has no exact patch, so the hook is the
+      // only report that shows the created file.
+      const filePath = await temporaryFile("a\r\nb\r\n");
+      const result = await new WriteReporter().hookResult(
+        {
+          type: "create",
+          filePath,
+          content: "a\r\nb\r\n",
+          structuredPatch: [],
+          originalFile: null,
+        },
+        { capabilities },
+      );
 
-    expect(result.content).toEqual([
-      { type: "diff", path: filePath, oldText: null, newText: "a\r\nb\r\n" },
-    ]);
-  });
+      expect(result.content).toEqual([
+        { type: "diff", path: filePath, oldText: null, newText: "a\r\nb\r\n" },
+      ]);
+    },
+  );
 
   it("shows in the approval that the Write overwrites a file whose text is unknown", async () => {
     const filePath = await temporaryFile(Buffer.from([0x61, 0x00, 0x62, 0x0a]));
