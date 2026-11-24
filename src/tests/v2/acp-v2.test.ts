@@ -711,6 +711,7 @@ describe("ACP protocol routing", () => {
           questionCustomAnswer: { version: 1 },
           recommendedConfigValue: { version: 1 },
           commandPresentation: { version: 1 },
+          loadReplayEnd: { version: 1 },
         },
       });
       await authUpdate(1);
@@ -721,6 +722,7 @@ describe("ACP protocol routing", () => {
     expect(response._meta?.questionCustomAnswer).toBeUndefined();
     expect(response._meta?.recommendedConfigValue).toBeUndefined();
     expect(response._meta?.commandPresentation).toBeUndefined();
+    expect(response._meta?.loadReplayEnd).toBeUndefined();
   });
 
   it("ignores the client-neutral agent file-change report opt-in of a v2 client", async () => {
