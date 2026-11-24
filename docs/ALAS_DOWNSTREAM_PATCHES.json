@@ -1,48 +1,619 @@
 {
   "version": 1,
-  "baseTag": "v0.86.0",
+  "baseTag": "v0.112.0",
   "patches": [
     {
       "name": "goal-capability-opt-in",
       "identityCommit": "60749d07ff50308ef96c5251152a8d4986fe680f",
-      "commit": "60749d07ff50308ef96c5251152a8d4986fe680f",
+      "commit": "8961314808ccbd9f4340a4951a9e61d1fb070351",
       "upstreamPr": 1245,
-      "files": ["docs/air-extensions.md", "src/acp-agent.ts", "src/goal-extension.ts"],
-      "tests": ["src/tests/acp-agent.test.ts"],
+      "files": ["docs/air-extensions.md", "src/v1/acp-agent.ts", "src/v1/goal-extension.ts"],
+      "tests": ["src/tests/v1/acp-agent.test.ts"],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.85.1",
-        "toTag": "v0.86.0",
-        "originalCommit": "60749d07ff50308ef96c5251152a8d4986fe680f",
-        "decision": "retain"
-      }
+        "fromTag": "v0.110.1",
+        "toTag": "v0.112.0",
+        "originalCommit": "68546359389119235ac854a39ffd88045eb03f53",
+        "decision": "adapt",
+        "replacementCommit": "8961314808ccbd9f4340a4951a9e61d1fb070351"
+      },
+      "retiredCommits": [
+        "60749d07ff50308ef96c5251152a8d4986fe680f",
+        "e7ec32822231129dcc5b1e9ee25ea3f02260d933",
+        "c16a02cb2c98479194eab5e833a54f45d4e21a4c",
+        "79047b35a8d185d78567d3c6875d1adfb986c8b7",
+        "22067f19cc8c3adc4367f023d534542fd69eaf78",
+        "72c08026539006157f7cd80b006e5a01262acae8",
+        "68546359389119235ac854a39ffd88045eb03f53"
+      ]
     },
     {
       "name": "async-tasks-opt-in",
       "identityCommit": "3e098c71628cc7d5927ee8a3d794faa433dce12d",
-      "commit": "3e098c71628cc7d5927ee8a3d794faa433dce12d",
+      "commit": "9f34c13141373142b4f48c94ea17335a2d38053f",
       "upstreamPr": null,
-      "files": ["src/acp-agent.ts", "src/async-tasks.ts"],
-      "tests": ["src/tests/acp-agent.test.ts", "src/tests/async-tasks.test.ts"],
+      "files": [
+        "README.md",
+        "docs/air-extensions.md",
+        "src/async-tasks.ts",
+        "src/tool-calls/background.ts",
+        "src/v1/acp-agent.ts",
+        "src/v1/async-task-stop.ts"
+      ],
+      "tests": ["src/tests/async-tasks.test.ts", "src/tests/v1/acp-agent.test.ts"],
       "disposition": "active",
       "lastResolution": {
-        "fromTag": "v0.85.1",
-        "toTag": "v0.86.0",
-        "originalCommit": "3e098c71628cc7d5927ee8a3d794faa433dce12d",
-        "decision": "retain"
-      }
+        "fromTag": "v0.110.1",
+        "toTag": "v0.112.0",
+        "originalCommit": "d5665e373570cd9a437198bb8ef011882e8b9805",
+        "decision": "adapt",
+        "replacementCommit": "9f34c13141373142b4f48c94ea17335a2d38053f"
+      },
+      "retiredCommits": [
+        "3e098c71628cc7d5927ee8a3d794faa433dce12d",
+        "2532463eb13fd01c5e4ab645a1272c73f7359130",
+        "a738efd42a88cd6dc2999d218677718e1d053184",
+        "b752b529fd581085e3e6ea1e995daa8e814b6be6",
+        "7f504014fe77d895a99adee24e3ca09d735b4eb8",
+        "d98fd9e5abf588d7c4d703245e129ada6a8c5182",
+        "1f57f966a6baaba1fa7285fb7fc5f40afeb080d2",
+        "6abc8af1b36375344c682a34b18995054f82c9fe",
+        "48f6fdcde0ad99ccf65f36e13b94fda8da278357",
+        "374911daa9a00f103d8d6a16e32a75c639a64724",
+        "b7c1126db9d3549162b04964add612eac25c7d40",
+        "803969a80412f8e062cd81165370181194db0f64",
+        "d5665e373570cd9a437198bb8ef011882e8b9805"
+      ]
     },
     {
       "name": "advisor-tool-results",
       "identityCommit": "af55f8bdedebbc951352d68fba44d616cc4908cb",
-      "commit": "f1d8579c03ae1a5c0f7366f678229c0fb3a54116",
+      "commit": "590b7ed9e90414124c60eb0b853ad6ed4575a24c",
       "upstreamPr": 1247,
       "files": ["src/acp-agent.ts"],
       "tests": ["src/tests/incomplete-tools.test.ts"],
-      "disposition": "active"
+      "disposition": "dropped",
+      "retiredCommits": [
+        "f1d8579c03ae1a5c0f7366f678229c0fb3a54116",
+        "df2799775856e2ec77ae1a65d0303b07776df47c",
+        "590b7ed9e90414124c60eb0b853ad6ed4575a24c"
+      ],
+      "lastResolution": {
+        "fromTag": "v0.96.0",
+        "toTag": "v0.97.0",
+        "originalCommit": "590b7ed9e90414124c60eb0b853ad6ed4575a24c",
+        "decision": "drop"
+      }
+    },
+    {
+      "name": "context-usage-extension",
+      "identityCommit": "5cb2ba332cb3809d52cd8101a8f546d560408ece",
+      "commit": "118c56398f6475e870d27ab352621561b896b045",
+      "upstreamPr": null,
+      "files": ["src/v1/acp-agent.ts"],
+      "tests": ["src/tests/v1/acp-agent.test.ts"],
+      "disposition": "active",
+      "retiredCommits": [
+        "5cb2ba332cb3809d52cd8101a8f546d560408ece",
+        "1f6defde36ba0a5da34259b72bd74dde30e45f42",
+        "1b1425052d7aa057e3d7ebaf84d1067b7c565a30",
+        "eebbea33e42160f5e2b4d700539476086c9c41f1",
+        "f6e9e43e0018babdc7063f50b6a45cf1b585f396",
+        "9f323fa6ec78fc0def9f8ac04089b500060f0181",
+        "ae96867b0666c2d6ae29efd05ae60690d9747f57",
+        "a9ae768536fb31478b27c7f3fc8b631bcadd180e",
+        "f456ab3a19640380a36b5648070c04d57e01144f",
+        "f3ca72222a645a121b3e1e6e1f546acd90893a7e"
+      ],
+      "lastResolution": {
+        "fromTag": "v0.110.1",
+        "toTag": "v0.112.0",
+        "originalCommit": "f3ca72222a645a121b3e1e6e1f546acd90893a7e",
+        "decision": "adapt",
+        "replacementCommit": "118c56398f6475e870d27ab352621561b896b045"
+      }
+    },
+    {
+      "name": "neutral-session-index",
+      "identityCommit": "325c503f05cd7fb9ed98b7a05192b8afb6c8e164",
+      "commit": "2348302b0b43b45e63864e3c4954e4a84ceb45be",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/session-index/list-subscriptions.ts",
+        "src/session-index/meta.ts",
+        "src/session-index/service.ts",
+        "src/session-index/session-info.ts",
+        "src/v1/acp-agent.ts",
+        "src/v1/session-index.ts"
+      ],
+      "tests": [
+        "src/tests/v1/acp-scenarios.test.ts",
+        "src/tests/v1/session-index.test.ts",
+        "src/tests/v2/acp-v2.test.ts"
+      ],
+      "disposition": "active",
+      "lastResolution": {
+        "fromTag": "v0.110.1",
+        "toTag": "v0.112.0",
+        "originalCommit": "9d2171e86ff164731c7e0b4bbe5467a678df57ce",
+        "decision": "adapt",
+        "replacementCommit": "2348302b0b43b45e63864e3c4954e4a84ceb45be"
+      },
+      "retiredCommits": [
+        "325c503f05cd7fb9ed98b7a05192b8afb6c8e164",
+        "b1b5a7faa341850e4437e887abf78dd6783993c0",
+        "4e44af411027d3bf41ce26694f299a058d1f721e",
+        "9c4ddd79b8dfb480a72cf4e1071615c383cee84e",
+        "64b276888e9af32072cd960e86927f61a6c85e6f",
+        "084636fc202d689909027fc28259bcf0b05f3781",
+        "dff2b8b693965471b4e025f6144134dd77c23d40",
+        "71b2d83cde153aa668c3c40105e9ccdd5704ae32",
+        "19dc85dce69ee95097cf85a4d775c249f76f08c6",
+        "9d2171e86ff164731c7e0b4bbe5467a678df57ce"
+      ]
+    },
+    {
+      "name": "settle-at-result",
+      "identityCommit": "5e5dd2485e577189dee329e860f0f7368bf1de2f",
+      "commit": "515c9f4d2471e0685c0f83e1d1607ce067eabc58",
+      "upstreamPr": null,
+      "files": ["src/v1/acp-agent.ts"],
+      "tests": ["src/tests/v1/acp-agent.test.ts", "src/tests/v2/acp-v2.test.ts"],
+      "disposition": "active",
+      "retiredCommits": [
+        "5e5dd2485e577189dee329e860f0f7368bf1de2f",
+        "a90195ee378736d7da5540fbbb1f72f9af6688a2",
+        "6a528efc8f3d208968a72224808fde741027e926",
+        "9234ca9b1c0ddc47dfdadaa26f1ce30cb7c4b508",
+        "1dcdf19fb5d792a3d154c8b7a91dca7574de4284",
+        "32c3016624adff737fa05872397e2e1a12075190",
+        "6124788dbaf14e430353d746aaa518c2cbd4322b",
+        "703809a4cf70cfc7b086989f6677739705f68efd",
+        "a397f7111d8d9c3903479d47812443117f332fa7"
+      ],
+      "lastResolution": {
+        "fromTag": "v0.110.1",
+        "toTag": "v0.112.0",
+        "originalCommit": "a397f7111d8d9c3903479d47812443117f332fa7",
+        "decision": "adapt",
+        "replacementCommit": "515c9f4d2471e0685c0f83e1d1607ce067eabc58"
+      }
+    },
+    {
+      "name": "acp-sdk-2-2-0",
+      "identityCommit": "b464dd4824e8a0716b1948517d1dc6825254ab29",
+      "commit": "b464dd4824e8a0716b1948517d1dc6825254ab29",
+      "upstreamPr": 1491,
+      "files": ["package-lock.json", "package.json", "src/elicitation.ts"],
+      "tests": [
+        "src/tests/acp-scenarios/harness.ts",
+        "src/tests/acp-v2.test.ts",
+        "src/tests/elicitation.test.ts"
+      ],
+      "disposition": "dropped",
+      "retiredCommits": ["b464dd4824e8a0716b1948517d1dc6825254ab29"],
+      "lastResolution": {
+        "fromTag": "v0.99.1",
+        "toTag": "v0.100.0",
+        "originalCommit": "b464dd4824e8a0716b1948517d1dc6825254ab29",
+        "decision": "drop"
+      }
+    },
+    {
+      "name": "subagent-cwd",
+      "identityCommit": "7f76bbe6b76c7f4c2aef88918536c83d2e0acfd3",
+      "commit": "7f76bbe6b76c7f4c2aef88918536c83d2e0acfd3",
+      "upstreamPr": 1496,
+      "files": [
+        "README.md",
+        "src/acp-agent.ts",
+        "src/native-subagents.ts",
+        "src/subagent-history.ts",
+        "src/subagent-replay.ts"
+      ],
+      "tests": [
+        "src/tests/acp-agent.test.ts",
+        "src/tests/acp-v2.test.ts",
+        "src/tests/create-session-options.test.ts",
+        "src/tests/native-subagents.test.ts"
+      ],
+      "disposition": "dropped",
+      "retiredCommits": ["7f76bbe6b76c7f4c2aef88918536c83d2e0acfd3"],
+      "lastResolution": {
+        "fromTag": "v0.99.1",
+        "toTag": "v0.100.0",
+        "originalCommit": "7f76bbe6b76c7f4c2aef88918536c83d2e0acfd3",
+        "decision": "drop"
+      }
+    },
+    {
+      "name": "neutral-fork-point",
+      "identityCommit": "57d8f5f9f6f9f1bc29c1e2d1b96b090fb1943759",
+      "commit": "db3e738ae5e8d23094958ace2eeafc7d83c30b7f",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/fork-session.ts",
+        "src/v1/acp-agent.ts",
+        "src/v2/agent.ts"
+      ],
+      "tests": [
+        "src/tests/v1/acp-agent.test.ts",
+        "src/tests/v1/fork-session.test.ts",
+        "src/tests/v2/acp-v2.test.ts"
+      ],
+      "disposition": "active",
+      "retiredCommits": [
+        "57d8f5f9f6f9f1bc29c1e2d1b96b090fb1943759",
+        "41b37d6df80428f4a9eb9dfa54e5a51c752d4fe4",
+        "040b0ccc182ec64dad0678ea1c74376199272cfc",
+        "2eeb6e9c7d9846893a5f406420abfd1de181f502",
+        "554caa84165ac437b0ae798556218a6bb8c7a6e2",
+        "c012a72b9ba94e2a10ed689662ef68bbb85ddac4",
+        "241ae10e88261aa2c51abff9c9749c5bb8c8b2e5",
+        "7b94301bdf43bfc3f9943bb9a609ec0717aa4a44"
+      ],
+      "lastResolution": {
+        "fromTag": "v0.110.1",
+        "toTag": "v0.112.0",
+        "originalCommit": "7b94301bdf43bfc3f9943bb9a609ec0717aa4a44",
+        "decision": "adapt",
+        "replacementCommit": "db3e738ae5e8d23094958ace2eeafc7d83c30b7f"
+      }
+    },
+    {
+      "name": "neutral-diff-patch",
+      "identityCommit": "02b732ee3e12c65f702a743401af97a334dfce9f",
+      "commit": "60f633c40e86e8a2c2bb424d245b5bbc529b2564",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/diff.ts",
+        "src/tool-calls/client-capabilities.ts",
+        "src/tool-calls/renderer.ts",
+        "src/tool-calls/reporters/file-edit.ts",
+        "src/v1/acp-agent.ts"
+      ],
+      "tests": [
+        "src/tests/diff-patch.test.ts",
+        "src/tests/v1/acp-scenarios.test.ts",
+        "src/tests/v2/acp-v2.test.ts"
+      ],
+      "disposition": "active",
+      "lastResolution": {
+        "fromTag": "v0.110.1",
+        "toTag": "v0.112.0",
+        "originalCommit": "c1e3eabc7cb911247ad326598320aef5c357ed0a",
+        "decision": "adapt",
+        "replacementCommit": "60f633c40e86e8a2c2bb424d245b5bbc529b2564"
+      },
+      "retiredCommits": [
+        "02b732ee3e12c65f702a743401af97a334dfce9f",
+        "8250f80af743230201b7a16c619a33c73add9527",
+        "a52db2d05ea4ff54f7464898408bc1c8e0033d0c",
+        "535e6a02271ec2f2320d649482cd772f89e90fc8",
+        "f548148edfcf1aea28bc83b5762e724c3ce23636",
+        "0104c3fa6a160052ed0a7f95a6ca84bd6b3cdc9a",
+        "c1e3eabc7cb911247ad326598320aef5c357ed0a"
+      ]
+    },
+    {
+      "name": "neutral-plan-file",
+      "identityCommit": "c89808edcdfcddf7fdc6c8a8fd99e6c3532e1c8d",
+      "commit": "60a63d6ee0897a9ee510802d1a575d2a2decfb6c",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/exit-plan.ts",
+        "src/sdk-to-acp.ts",
+        "src/tool-calls/client-capabilities.ts",
+        "src/tool-calls/renderer.ts",
+        "src/tool-calls/reporters/interaction.ts",
+        "src/v1/acp-agent.ts"
+      ],
+      "tests": [
+        "src/tests/clear-context-coordinator.test.ts",
+        "src/tests/tools.test.ts",
+        "src/tests/v1/acp-scenarios.test.ts",
+        "src/tests/v1/tool-call-contract.test.ts",
+        "src/tests/v2/acp-v2.test.ts"
+      ],
+      "disposition": "active",
+      "lastResolution": {
+        "fromTag": "v0.110.1",
+        "toTag": "v0.112.0",
+        "originalCommit": "227344dabacde071c90addab2b74f4e0e53d3fcb",
+        "decision": "adapt",
+        "replacementCommit": "60a63d6ee0897a9ee510802d1a575d2a2decfb6c"
+      },
+      "retiredCommits": [
+        "c89808edcdfcddf7fdc6c8a8fd99e6c3532e1c8d",
+        "b258ec55935952cc70d969064ad973a9f5f93695",
+        "df7b09355a14d4f90e10308f3373c896fe4d0500",
+        "022c1642fbf6e4fbc5ee6e367411e6a52a22fc8a",
+        "0043d5501b6aad4fbf089d93dbc97aa5d6fa8280",
+        "2ad717fe8dd372e6f24a2daaeff0f1ed55c43db3",
+        "aed7a7e9e22680b58306b2dc0362ec4f718b2592",
+        "227344dabacde071c90addab2b74f4e0e53d3fcb"
+      ]
+    },
+    {
+      "name": "neutral-session-failure",
+      "identityCommit": "11faafe89f8de72118ce60df09e1ae480c4499bc",
+      "commit": "cd82c45ff605f455f6f91dc96a0b0faa65c834bb",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/session-failure-extension.ts",
+        "src/tool-calls/client-capabilities.ts",
+        "src/v1/acp-agent.ts"
+      ],
+      "tests": [
+        "src/tests/v1/acp-agent.test.ts",
+        "src/tests/v1/acp-scenarios.test.ts",
+        "src/tests/v1/authorization.test.ts",
+        "src/tests/v2/acp-v2.test.ts"
+      ],
+      "disposition": "active",
+      "lastResolution": {
+        "fromTag": "v0.110.1",
+        "toTag": "v0.112.0",
+        "originalCommit": "31aef44c694297d9aab885cce4d29d28e08724b4",
+        "decision": "adapt",
+        "replacementCommit": "cd82c45ff605f455f6f91dc96a0b0faa65c834bb"
+      },
+      "retiredCommits": [
+        "11faafe89f8de72118ce60df09e1ae480c4499bc",
+        "c4f7f902f275711c2befc2aad31a76a3790bd557",
+        "1bc524178b503cac16f160a79ee7571bc11ee1a0",
+        "25a4c33caa72b89fb2bf8adb6b6b85362204ffb8",
+        "0dd2b6ce0cf998ac3c60d20bab5b5822ae8209b2",
+        "d3d36cecd4b5bb53c1f86e3c7f57161b1f43354f",
+        "0dae8cd02bac4ab8334fcb45d263c07eb9c881d2",
+        "31aef44c694297d9aab885cce4d29d28e08724b4"
+      ]
+    },
+    {
+      "name": "neutral-agent-file-change-report",
+      "identityCommit": "48f68190febed509f4fa8d24d62b742430a714e7",
+      "commit": "bb15ca3a3c8dd6e27da0774e1cc72b6b199564ca",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/file-change-audit.ts",
+        "src/tool-calls/client-capabilities.ts",
+        "src/v1/acp-agent.ts"
+      ],
+      "tests": [
+        "src/tests/file-change-audit.test.ts",
+        "src/tests/v1/acp-agent.test.ts",
+        "src/tests/v1/acp-scenarios.test.ts",
+        "src/tests/v1/file-change-audit-integration.test.ts",
+        "src/tests/v2/acp-v2.test.ts"
+      ],
+      "disposition": "active",
+      "lastResolution": {
+        "fromTag": "v0.110.1",
+        "toTag": "v0.112.0",
+        "originalCommit": "1ceca7ea16af34aa29000ab195ff48f2d3e89dee",
+        "decision": "adapt",
+        "replacementCommit": "bb15ca3a3c8dd6e27da0774e1cc72b6b199564ca"
+      },
+      "retiredCommits": [
+        "48f68190febed509f4fa8d24d62b742430a714e7",
+        "bd1e7418ebfbdb7ced468f11465ff2428c1f5dd6",
+        "2b48bcb34eb8fee8a51e3b21b9c594865ffba78a",
+        "b303524481afc6d91983dd1fe695d98d57ccc0dc",
+        "5ef94cd8153899392d289c96676a21109e93abd3",
+        "e32c12de8f20ec87b99255f54afb016463147b60",
+        "4bf851da97dd077915e333237608b0fb156f5ed8",
+        "1ceca7ea16af34aa29000ab195ff48f2d3e89dee"
+      ]
+    },
+    {
+      "name": "neutral-permission-presentation",
+      "identityCommit": "591bd918a4540fc37f7cfd1d7eae42636bf723f9",
+      "commit": "ffbbdc581cacd1ffde9cdd78754d0025cd8edab1",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/elicitation.ts",
+        "src/permissions/presentation.ts",
+        "src/tool-calls/client-capabilities.ts",
+        "src/v1/acp-agent.ts"
+      ],
+      "tests": [
+        "src/tests/elicitation.test.ts",
+        "src/tests/permission-presentation.test.ts",
+        "src/tests/v1/acp-agent.test.ts",
+        "src/tests/v2/acp-v2.test.ts"
+      ],
+      "disposition": "active",
+      "lastResolution": {
+        "fromTag": "v0.110.1",
+        "toTag": "v0.112.0",
+        "originalCommit": "3fb94c8912873c473b6dbfb9b92706567d0b9547",
+        "decision": "adapt",
+        "replacementCommit": "ffbbdc581cacd1ffde9cdd78754d0025cd8edab1"
+      },
+      "retiredCommits": [
+        "591bd918a4540fc37f7cfd1d7eae42636bf723f9",
+        "d6505c6854d047ed680f081d5396cf4d1257fed5",
+        "c77bd655f99f6793d22d382870a01fdfd46ee2cf",
+        "c204412568ad01b98a1665b753d2bdbcfa46c5cf",
+        "1172e64330bbeb46397baf94b2830911cb244578",
+        "0c5128a9fda4b29850fa012dc85b9d1e738f494b",
+        "2d96a1b74a7e34d0ae41fc515eb4107ee60bb80f",
+        "3fb94c8912873c473b6dbfb9b92706567d0b9547"
+      ]
+    },
+    {
+      "name": "neutral-recommended-config-value",
+      "identityCommit": "6fdbdcc5bbc42124daa06ad60b81f85d7abbe758",
+      "commit": "ac2600ed6aecc822155adf0e47b0ed5c1bf70895",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/session-config-options.ts",
+        "src/session-model.ts",
+        "src/tool-calls/client-capabilities.ts",
+        "src/v1/acp-agent.ts"
+      ],
+      "tests": [
+        "src/tests/model-presentation.test.ts",
+        "src/tests/v1/acp-agent.test.ts",
+        "src/tests/v2/acp-v2.test.ts"
+      ],
+      "disposition": "active",
+      "lastResolution": {
+        "fromTag": "v0.110.1",
+        "toTag": "v0.112.0",
+        "originalCommit": "eec36af7a695b433f1d9d5406709a4906e48db1f",
+        "decision": "adapt",
+        "replacementCommit": "ac2600ed6aecc822155adf0e47b0ed5c1bf70895"
+      },
+      "retiredCommits": [
+        "6fdbdcc5bbc42124daa06ad60b81f85d7abbe758",
+        "27bb4fa76406dcc52a1b48eecd910dde38692eb4",
+        "49019007825c542a0c6a2acfc95a738489b3c5b9",
+        "b2ec271ca4de24a25a53052d38fa2cbc5d64698a",
+        "4849cc4334ce9664492807a286d8b3b4e3056e11",
+        "728d7905dafc45c035a0d45667728deafa5e377b",
+        "8f5ea2f3d57d1cffeee97b0f58d7294364e7345f",
+        "117cc9e5de7cb6603fe5531f9af76d25313f8126",
+        "eec36af7a695b433f1d9d5406709a4906e48db1f"
+      ]
+    },
+    {
+      "name": "neutral-command-presentation",
+      "identityCommit": "f0575103dc41baca51afee91ae9a63f8805412d3",
+      "commit": "3dc43cb307ad9a658af3be33b2e11d653fb5393a",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/slash-commands.ts",
+        "src/tool-calls/client-capabilities.ts",
+        "src/v1/acp-agent.ts"
+      ],
+      "tests": ["src/tests/v1/acp-agent.test.ts", "src/tests/v2/acp-v2.test.ts"],
+      "disposition": "active",
+      "lastResolution": {
+        "fromTag": "v0.110.1",
+        "toTag": "v0.112.0",
+        "originalCommit": "71bce700d226d07b3f22fa22a2daf9a1c1274bac",
+        "decision": "adapt",
+        "replacementCommit": "3dc43cb307ad9a658af3be33b2e11d653fb5393a"
+      },
+      "retiredCommits": [
+        "f0575103dc41baca51afee91ae9a63f8805412d3",
+        "e07754fd0d7ca34b00ab559fa1c412346bde0c9a",
+        "4f38fe21b686200de8136a31f9226ffc896fdb52",
+        "f6e7137a6d91ab5d396eecfa01593e042d10a348",
+        "5c982a6a601ec5d628c7acbeea546ec77c3d7a7a",
+        "8247af1c7d5d23d5850c5ba497f582bb6550e146",
+        "979dcfb8e01a0e43d09e6b8f19279552535518b6",
+        "31aea9de437b6d5628d51b105007293a2d0618d7",
+        "71bce700d226d07b3f22fa22a2daf9a1c1274bac"
+      ]
+    },
+    {
+      "name": "neutral-load-replay-end",
+      "identityCommit": "dfb31b948a4a53f6da2feb4d23c2e3eca22193c9",
+      "commit": "153b09f5d5d2419f418aa6a2e27155bc6b4319ca",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/tool-calls/client-capabilities.ts",
+        "src/v1/acp-agent.ts"
+      ],
+      "tests": [
+        "src/tests/v1/acp-agent.test.ts",
+        "src/tests/v1/create-session-options.test.ts",
+        "src/tests/v2/acp-v2.test.ts"
+      ],
+      "disposition": "active",
+      "lastResolution": {
+        "fromTag": "v0.110.1",
+        "toTag": "v0.112.0",
+        "originalCommit": "9f430b8c252d3ea2d04030a48df2622db696596b",
+        "decision": "adapt",
+        "replacementCommit": "153b09f5d5d2419f418aa6a2e27155bc6b4319ca"
+      },
+      "retiredCommits": [
+        "dfb31b948a4a53f6da2feb4d23c2e3eca22193c9",
+        "710feeb54099c061b36dce6afcc23955cd74b9ac",
+        "024239cf31bbaa6c83b81437bdcdd547389eafdd",
+        "a99af2055f8a24b1c4d35f7ba10cd94d05258fbd",
+        "debe4e91bed4acf39ef12351b2b813aaa39cf954",
+        "5cc816d4e5621dbe1889db17065a47f485a58202",
+        "a17a8ee4701c6274fe10758c37986b76de3d0164",
+        "f58e1ea2e225addc1e23a89b4502ef09634e479c",
+        "9f430b8c252d3ea2d04030a48df2622db696596b"
+      ]
+    },
+    {
+      "name": "neutral-prompt-suggestions",
+      "identityCommit": "6f95b38665472c9c6a58a17a68654911cf5b387f",
+      "commit": "c13b5e095029b18af556d8d45915358880abe207",
+      "upstreamPr": null,
+      "files": [
+        "docs/air-extensions.md",
+        "src/prompt-suggestions.ts",
+        "src/tool-calls/client-capabilities.ts",
+        "src/v1/acp-agent.ts"
+      ],
+      "tests": [
+        "src/tests/v1/acp-agent.test.ts",
+        "src/tests/v1/create-session-options.test.ts",
+        "src/tests/v1/prompt-suggestions.test.ts",
+        "src/tests/v1/session-doubles.ts",
+        "src/tests/v2/acp-v2.test.ts"
+      ],
+      "disposition": "active",
+      "lastResolution": {
+        "fromTag": "v0.110.1",
+        "toTag": "v0.112.0",
+        "originalCommit": "e203f073ac96d52f56ad718681469dd1dfa52701",
+        "decision": "adapt",
+        "replacementCommit": "c13b5e095029b18af556d8d45915358880abe207"
+      },
+      "retiredCommits": [
+        "6f95b38665472c9c6a58a17a68654911cf5b387f",
+        "fcdcd009281a38df0c4fdba1a521fad85e473900",
+        "0bf8966a23f6fcba8bca6b4daec3aace7baa4556",
+        "59ae74739d61513302d1d91467d24c74bfdbfe23",
+        "eb0c0ba66fae8cc7daaa1a1814b56f9a40dee19c",
+        "7f64794e8b33e496896b868146a4ee44a4cedc42",
+        "265b1db5d6f71582569cfda1a40c166d44b0a4bc",
+        "c6d733b91a93e3bebf277df3b8aca1dc71c05c63",
+        "74bb024f2a3f73c43462195a5c1aa1da81ba5180",
+        "e203f073ac96d52f56ad718681469dd1dfa52701"
+      ]
     }
   ],
-  "retiredCommits": [],
+  "retiredCommits": [
+    "e3dba66f9a6e59be956ae14a4a3b2e527dab27e2",
+    "1b234d51245c7dee3fee6c78725e397350e8b667",
+    "00b0613ba3cc76c75d5e23d1613db1a766564af2",
+    "348049cab3b544328cf6d576d60307c01da6128d",
+    "ff040bf76ec9d79a3b9c652916cf7c9f4bba3e94",
+    "6b6121d47cbd0cd2810d5df1cd7b455a8a1ae820",
+    "7b35b7bb6ea89743cc2b7592403332e29f285945",
+    "1924bf70460366d29cf87101bdff69f7610453eb",
+    "03df17e6ecd1a60a4fa3c0ee82c63503161d855b",
+    "5ca8451fbca66b01f9e9dedba88aa0786b28e1f1",
+    "8afce540c1dd7e3d0126b76af8189e4f8a84c3b8",
+    "d0477c01233374ab54a30200a15282bd0152e816",
+    "115eb1275016dec4102c88ac5a1d1af2d64b9bf4",
+    "1f42ae8d520a178293a05e93a899a77f143bc71a",
+    "cf34e049b94b891d9e1d3918a4856b5298193af9",
+    "1fc61f97312f69fecadf90a2a17d45e4fc456ff9",
+    "24dd4c34d240554703f7f666b25301978c274c4b",
+    "00ee6fcecba3bc2da83b6dd339f172c16fabfc7c",
+    "d2ddd27e4a81b2e998dfc16b73e28f352dee02a5",
+    "fffd277b800e6d564fc7f3d0719a0e31e20adfd4"
+  ],
   "preservedTransitions": [
     {
       "fromTag": "v0.85.1",
@@ -62,6 +633,69 @@
       "fromTag": "v0.85.1",
       "toTag": "v0.86.0",
       "commit": "f4c9bfb1e756a6a7157509de01f765f6c86b231b",
+      "constituentCommits": [],
+      "decision": "retain"
+    },
+    {
+      "fromTag": "v0.86.0",
+      "toTag": "v0.87.0",
+      "commit": "bd7e7a0411d3667e29456f6428c776ab5a58ffd6",
+      "constituentCommits": [],
+      "decision": "retain"
+    },
+    {
+      "fromTag": "v0.86.0",
+      "toTag": "v0.87.0",
+      "commit": "e23fec92eb26331d03cf39bad1221258c8d16832",
+      "constituentCommits": [],
+      "decision": "retain"
+    },
+    {
+      "fromTag": "v0.89.1",
+      "toTag": "v0.90.0",
+      "commit": "6003d7888d4647a97a08644343009a726291e809",
+      "constituentCommits": [],
+      "decision": "retain"
+    },
+    {
+      "fromTag": "v0.91.0",
+      "toTag": "v0.92.0",
+      "commit": "2ddc71dcfe4c84e92e3ecf57028019d5b6ca476d",
+      "constituentCommits": [],
+      "decision": "retain"
+    },
+    {
+      "fromTag": "v0.94.0",
+      "toTag": "v0.95.0",
+      "commit": "673d403a3d1a2589451b2500270fc9506bb21ea8",
+      "constituentCommits": [],
+      "decision": "retain"
+    },
+    {
+      "fromTag": "v0.99.1",
+      "toTag": "v0.100.0",
+      "commit": "868f5f8e92d24a35787983d756dc9d2c64c62269",
+      "constituentCommits": [],
+      "decision": "retain"
+    },
+    {
+      "fromTag": "v0.100.0",
+      "toTag": "v0.101.0",
+      "commit": "b39543b8737ed314edd9de19b9260ce2557d3de9",
+      "constituentCommits": [],
+      "decision": "retain"
+    },
+    {
+      "fromTag": "v0.101.0",
+      "toTag": "v0.101.1",
+      "commit": "c7edaecb4cb21245d313baa64fae637c1dc6c811",
+      "constituentCommits": [],
+      "decision": "retain"
+    },
+    {
+      "fromTag": "v0.102.0",
+      "toTag": "v0.107.0",
+      "commit": "5aae0e75708a97143000294a28d11f507cddcb5d",
       "constituentCommits": [],
       "decision": "retain"
     }
