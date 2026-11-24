@@ -576,6 +576,39 @@ describe("client-neutral agent file-change report", () => {
       uncertainty: NEUTRAL_AGENT_FILE_CHANGE_REPORT_UNCERTAINTY,
     });
   });
+
+  // v0.110.1 (#1542) reworks src/v2/session.ts, which still publishes the
+  // report with `agentFileChangeReportMeta(report)`, and src/v2/file-changes.ts
+  // builds its reporter without a form: both must stay on the AIR form.
+  it("keeps the AIR form when the caller names none, as the v2 agent does", async () => {
+    const request = { version: 1, requestId: "request-v2" };
+    const airMeta = { jetbrains: { air: { agentFileChangeReportRequest: request } } };
+    expect(agentFileChangeReportRequestId(airMeta)).toBe("request-v2");
+    expect(
+      agentFileChangeReportRequestId({ agentFileChangeReportRequest: request }),
+    ).toBeUndefined();
+
+    const published: AgentFileChangeReportResult[] = [];
+    const reporter = createNativeFileChangeReporter({
+      cwd: process.cwd(),
+      additionalDirectories: [],
+      publish: async (result) => void published.push(result),
+      logError: () => {},
+    });
+    expect(reporter.request({ agentFileChangeReportRequest: request })).toBeUndefined();
+    const fileChangeReport = reporter.request(airMeta);
+    expect(fileChangeReport).toBeDefined();
+    await reporter.report(
+      { promptUuid: "prompt-uuid", fileChangeReport },
+      { rewindFiles: vi.fn(async () => ({ canRewind: true, filesChanged: ["src/a.ts"] })) },
+    );
+
+    expect(published).toHaveLength(1);
+    expect(published[0]).not.toHaveProperty("uncertainty");
+    expect(agentFileChangeReportMeta(published[0]!)).toEqual({
+      jetbrains: { air: { version: 1, agentFileChangeReport: published[0] } },
+    });
+  });
 });
 
 describe("recordSubagentFileEdits", () => {

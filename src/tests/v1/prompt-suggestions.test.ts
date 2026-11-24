@@ -340,6 +340,20 @@ describe("the follow-up prompt of a client of the client-neutral form", () => {
     expect(published).toEqual([metaUpdate("Run the tests")]);
   });
 
+  it.each([true, { version: 1.5 }, { version: "1" }, { version: 0 }, {}])(
+    "gives a client whose promptSuggestions opt-in is %j no prediction for a prompt with an id",
+    async (optIn) => {
+      const { client, published } = recorder();
+      const agent = await agentFor(client, {
+        _meta: { promptSuggestions: optIn },
+      } as ClientCapabilities);
+
+      await run(agent, ["Run the tests"], { requestIds: ["turn-1"] });
+
+      expect(published).toEqual([]);
+    },
+  );
+
   it("drops a prediction the next prompt outran", async () => {
     const { client, published } = recorder();
     const agent = await agentFor(client, NEUTRAL_CLIENT);

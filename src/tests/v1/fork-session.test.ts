@@ -426,4 +426,22 @@ describe("client-neutral fork point", () => {
 
     expect(await getSessionMessages(result.sessionId)).toHaveLength(2);
   });
+
+  it("takes an explicit version 1 and a message id with surrounding blanks", async () => {
+    const result = await forkSession(
+      {
+        sessionId,
+        cwd: sourceCwd,
+        mcpServers: [],
+        _meta: { forkPoint: { version: 1, messageId: "  msg_first  " } },
+      },
+      { messageIdForGrouping, neutralForkPoint: true },
+    );
+
+    // The response names the message the fork ends at, without the blanks.
+    expect(result._meta).toEqual({
+      forkPoint: { boundary: "message", messageId: "msg_first", matchedBy: "id" },
+    });
+    expect(await getSessionMessages(result.sessionId)).toHaveLength(2);
+  });
 });

@@ -528,6 +528,24 @@ describe("client-neutral diff patches", () => {
     ]);
   });
 
+  it("puts the patch of a Write that creates a file at top-level _meta.diffPatch", async () => {
+    const filePath = await temporaryFile(undefined, "created.ts");
+    const input = { file_path: filePath, content: "created\n" };
+    const air = await previewPatchContent("Write", input, undefined, "air");
+    const neutral = await previewPatchContent("Write", input, undefined, "neutral");
+
+    expect(patchText(air)).toContain("new file mode 100644\n--- /dev/null\n");
+    expect(neutral).toEqual([
+      {
+        type: "diff",
+        path: filePath,
+        oldText: null,
+        newText: "",
+        _meta: { diffPatch: { version: 1, format: "git_patch", text: patchText(air) } },
+      },
+    ]);
+  });
+
   it.each([
     {
       name: "Edit",
