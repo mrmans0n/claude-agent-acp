@@ -680,18 +680,37 @@ describe("createSession options merging", () => {
   describe("the predicted follow-up prompt", () => {
     const AIR = { _meta: { jetbrains: { air: { version: 1, capabilities: [] } } } };
     const ADVERTISED = { session: { promptSuggestions: {} } };
+    const NEUTRAL = { _meta: { promptSuggestions: { version: 1 } } };
 
     // Claude Code spends a request per turn on a prediction: only a client
     // that gets the prediction has it on.
     it.each<[string, ClientCapabilities, true | undefined]>([
       ["AIR", AIR as ClientCapabilities, true],
       ["a client that advertises session.promptSuggestions", ADVERTISED, true],
+      ["a client of the client-neutral form", NEUTRAL, true],
       ["no other client", {}, undefined],
     ])("asks the SDK for it for %s", async (_, clientCapabilities, asked) => {
       await agent.initialize({ protocolVersion: 1, clientCapabilities });
       await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
 
       expect(capturedOptions!.promptSuggestions).toBe(asked);
+    });
+
+    // The session keeps the prediction state (`PromptSuggestions`) for those
+    // clients only. The client-neutral form gets no prediction for a turn
+    // whose prompt named no request id; the other forms get every turn's.
+    it.each<[string, ClientCapabilities, number | undefined]>([
+      ["AIR", AIR as ClientCapabilities, 1],
+      ["a client that advertises session.promptSuggestions", ADVERTISED, 1],
+      ["a client of the client-neutral form", NEUTRAL, 0],
+      ["no other client", {}, undefined],
+    ])("keeps the prediction state for %s", async (_, clientCapabilities, sent) => {
+      await agent.initialize({ protocolVersion: 1, clientCapabilities });
+      const { sessionId } = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+
+      const state = agent.sessions[sessionId]?.promptSuggestions;
+      state?.resultArrived();
+      expect(state?.suggested("Run the tests", false).length).toBe(sent);
     });
 
     it("lets a caller turn it off", async () => {
@@ -735,6 +754,48 @@ describe("createSession options merging", () => {
 
     expect((capturedOptions as Record<string, unknown>)[option]).toBe(own ?? "argv");
   });
+
+  // v0.108.0 (#1647) sets the MCP delivery next to the predicted follow-up
+  // prompt, and v0.109.0 (#1669) the settings delivery with it, before the
+  // caller's options, which win over all three.
+  it.each([
+    ["a client of the client-neutral form", { _meta: { promptSuggestions: { version: 1 } } }, true],
+    ["any other client", {}, false],
+  ])(
+    "sets the MCP and settings delivery next to the predicted follow-up prompt of %s",
+    async (_label, clientCapabilities, predicts) => {
+      vi.stubEnv("CLAUDE_CODE_EXECUTABLE", "/usr/bin/false");
+      onTestFinished(() => {
+        vi.unstubAllEnvs();
+      });
+      await agent.initialize({ protocolVersion: 1, clientCapabilities });
+      await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
+      expect(capturedOptions!.promptSuggestions).toBe(predicts ? true : undefined);
+      expect(capturedOptions).toMatchObject({
+        mcpServersDelivery: "argv",
+        settingsDelivery: "argv",
+      });
+
+      await agent.newSession({
+        cwd: process.cwd(),
+        mcpServers: [],
+        _meta: {
+          claudeCode: {
+            options: {
+              promptSuggestions: !predicts,
+              mcpServersDelivery: "initialize",
+              settingsDelivery: "initialize",
+            },
+          },
+        },
+      });
+      expect(capturedOptions).toMatchObject({
+        promptSuggestions: !predicts,
+        mcpServersDelivery: "initialize",
+        settingsDelivery: "initialize",
+      });
+    },
+  );
 
   it("defaults tools to claude_code preset when not provided", async () => {
     await agent.newSession({

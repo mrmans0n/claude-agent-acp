@@ -1023,7 +1023,7 @@ A failed command restores the previous state.
 
 After a turn, the Claude Code CLI can predict the prompt the user is likely to send next.
 The adapter asks for it with the SDK option `promptSuggestions: true` and forwards the one prediction of the turn.
-It asks only in a session of AIR or of a client that advertises `session.promptSuggestions`, on v1 and v2: a prediction costs a request per turn, and no other client would get it.
+It asks only in a session of AIR, of a client that advertises `session.promptSuggestions` (v1 and v2), or of a client with the [client-neutral opt-in](#client-neutral-predicted-prompt) (v1): a prediction costs a request per turn, and no other client would get it.
 
 AIR reads the prediction from a `_meta` key outside the AIR namespace, which the adapter used before ACP had an update for it:
 
@@ -1035,7 +1035,7 @@ AIR reads the prediction from a `_meta` key outside the AIR namespace, which the
 ```
 
 The key names no vendor.
-The adapter sends it only to an AIR client; see the [compatibility rule](#compatibility-rule).
+The adapter sends it to an AIR client (see the [compatibility rule](#compatibility-rule)) and, on v1, to a client with the client-neutral opt-in below.
 
 Any client that advertises `session.promptSuggestions` gets the same prediction as ACP's unstable `prompt_suggestions_update`, on v1 and v2:
 
@@ -1066,6 +1066,39 @@ A prediction the next prompt outran — the user sent it before the adapter read
 The CLI predicts nothing on the first turn of a session, after an API error, in plan mode, and at the account's usage limit, so many turns end with no prediction.
 A client must treat a turn without one as normal.
 A caller can turn the whole feature off with `_meta.claudeCode.options.promptSuggestions: false` on `session/new`; a user can turn it off in Claude Code settings or with `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false`.
+
+### Client-neutral predicted prompt
+
+A client that is not AIR can get the prediction too.
+It declares `initialize.clientCapabilities._meta.promptSuggestions: {"version": 1}` (any integer version of at least 1), and the agent answers with `_meta.promptSuggestions: {"version": 1}` in the `initialize` response.
+The client then asks per turn: a `session/prompt` that wants the prediction of its turn names an id, a non-empty string of at most 256 characters:
+
+```json
+{ "_meta": { "promptSuggestions": { "id": "<client id of this prompt>" } } }
+```
+
+The prediction of that turn carries the id:
+
+```json
+{
+  "sessionUpdate": "session_info_update",
+  "_meta": {
+    "promptSuggestions": {
+      "suggestions": [{ "text": "Run the tests" }],
+      "id": "<client id of this prompt>"
+    }
+  }
+}
+```
+
+- A prompt without an id gets no prediction.
+- A turn whose prediction says nothing answers the request with `suggestions: []` and the id, so the client can stop waiting.
+  A turn whose CLI predicts nothing at all sends nothing; the client must not wait for it forever.
+- The clear at the next prompt and at a `conversation_reset` carries no id, as above.
+- A prediction the next prompt outran is dropped, as above.
+- A client that declares the AIR form too gets one `_meta` update; it carries the id when the prompt named one.
+- A client that also advertises `session.promptSuggestions` gets `prompt_suggestions_update` too, for every turn and by its own rules; the `_meta` update keeps the rules above.
+- ACP v2 ignores the neutral opt-in.
 
 ## Recommended config values
 
