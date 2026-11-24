@@ -16167,7 +16167,7 @@ describe("logout", () => {
     });
   });
 
-  describe.each(["permissionPresentation", "questionCustomAnswer"])(
+  describe.each(["permissionPresentation", "questionCustomAnswer", "recommendedConfigValue"])(
     "client-neutral %s advert",
     (key) => {
       it("advertises version 1 to a client that opts in with any version, with no AIR key", async () => {
@@ -32980,6 +32980,44 @@ describe("agent selection config option", () => {
       expect(defaultEntry.description).toBe("claude-opus-5-20251201");
     });
 
+    it("names the running default's row for a client of the neutral recommendation", () => {
+      const modelInfos = [
+        {
+          value: "default",
+          displayName: "Default",
+          description: "",
+          resolvedModel: "claude-sonnet-5",
+        },
+        {
+          value: "sonnet",
+          displayName: "Sonnet",
+          description: "",
+          resolvedModel: "claude-sonnet-5",
+        },
+      ];
+      const options = buildConfigOptions(
+        modes,
+        {
+          currentModelId: "default",
+          availableModels: modelInfos.map((info) => ({
+            modelId: info.value,
+            name: info.displayName,
+          })),
+        },
+        modelInfos as any,
+        undefined,
+        [],
+        "default",
+        undefined,
+        { useRecommendedValue: false, useNeutralRecommendedValue: true },
+      );
+      const modelOption = options.find((o) => o.id === "model");
+      expect(modelOption?._meta).toEqual({
+        recommendedConfigValue: { version: 1, value: "sonnet" },
+      });
+      expect(modelOption?.currentValue).toBe("default");
+    });
+
     it("leaves description undefined when default model has no resolvedModel", () => {
       const modelsNoDesc = {
         currentModelId: "default",
@@ -33116,6 +33154,263 @@ describe("agent selection config option", () => {
       expect(session.currentAgent).toBe("default");
       const agentOption = session.configOptions.find((o) => o.id === "agent");
       expect(agentOption?.currentValue).toBe("default");
+    });
+  });
+
+  describe("switching the model", () => {
+    it("keeps the neutral recommendation on the model option that a model switch rebuilds", async () => {
+      const agent = new ClaudeAcpAgent({ sessionUpdate: async () => {} } as unknown as AcpClient, {
+        log: () => {},
+        error: () => {},
+      });
+      await initializeClient(agent, { _meta: { recommendedConfigValue: { version: 1 } } });
+      const modelInfos = [
+        {
+          value: "default",
+          displayName: "Default",
+          description: "",
+          resolvedModel: "claude-sonnet-5",
+        },
+        {
+          value: "sonnet",
+          displayName: "Sonnet",
+          description: "",
+          resolvedModel: "claude-sonnet-5",
+        },
+        {
+          value: "haiku",
+          displayName: "Haiku",
+          description: "",
+          resolvedModel: "claude-haiku-4-5",
+        },
+      ];
+      const models = {
+        currentModelId: "default",
+        availableModels: modelInfos.map((info) => ({
+          modelId: info.value,
+          name: info.displayName,
+        })),
+      };
+      function* idle() {}
+      const query = Object.assign(idle(), {
+        setModel: vi.fn(async () => {}),
+        applyFlagSettings: vi.fn(async () => {}),
+        getContextUsage: vi.fn(async () => ({ rawMaxTokens: 200_000 })),
+        interrupt: vi.fn(),
+        close: vi.fn(),
+      });
+      agent.sessions["model-session"] = mockSessionState(
+        {
+          query,
+          input: new Pushable(),
+          models,
+          modelInfos,
+          configOptions: buildConfigOptions(
+            baseModes,
+            models,
+            modelInfos,
+            undefined,
+            [],
+            "default",
+          ),
+        },
+        agent,
+        "model-session",
+      );
+
+      const { configOptions } = await agent.setSessionConfigOption({
+        sessionId: "model-session",
+        configId: "model",
+        value: "haiku",
+      });
+
+      // The rebuilt row list and current value stay those of a plain client.
+      const model = configOptions.find((option) => option.id === "model");
+      expect(query.setModel).toHaveBeenCalledWith("haiku");
+      expect(model?.currentValue).toBe("haiku");
+      expect(model?._meta).toEqual({ recommendedConfigValue: { version: 1, value: "sonnet" } });
+    });
+
+    // A model that the picker does not list goes to Claude Code as it is
+    // (#1630). The rebuilt option still names the running default's row.
+    it("keeps the neutral recommendation after a switch to a model the picker does not list", async () => {
+      const options = async (clientCapabilities: ClientCapabilities) => {
+        const agent = new ClaudeAcpAgent(
+          { sessionUpdate: async () => {} } as unknown as AcpClient,
+          {
+            log: () => {},
+            error: () => {},
+          },
+        );
+        await initializeClient(agent, clientCapabilities);
+        const modelInfos = [
+          {
+            value: "default",
+            displayName: "Default",
+            description: "",
+            resolvedModel: "claude-sonnet-5",
+          },
+          {
+            value: "sonnet",
+            displayName: "Sonnet",
+            description: "",
+            resolvedModel: "claude-sonnet-5",
+          },
+        ];
+        const models = {
+          currentModelId: "default",
+          availableModels: modelInfos.map((info) => ({
+            modelId: info.value,
+            name: info.displayName,
+          })),
+        };
+        function* idle() {}
+        const query = Object.assign(idle(), {
+          setModel: vi.fn(async () => {}),
+          applyFlagSettings: vi.fn(async () => {}),
+          getContextUsage: vi.fn(async () => ({ rawMaxTokens: 200_000 })),
+          interrupt: vi.fn(),
+          close: vi.fn(),
+        });
+        agent.sessions["model-session"] = mockSessionState(
+          {
+            query,
+            input: new Pushable(),
+            models,
+            modelInfos,
+            configOptions: buildConfigOptions(
+              baseModes,
+              models,
+              modelInfos,
+              undefined,
+              [],
+              "default",
+            ),
+          },
+          agent,
+          "model-session",
+        );
+        const { configOptions } = await agent.setSessionConfigOption({
+          sessionId: "model-session",
+          configId: "model",
+          value: "claude-opus-4-1-20250805",
+        });
+        expect(query.setModel).toHaveBeenCalledWith("claude-opus-4-1-20250805");
+        return configOptions.find((option) => option.id === "model")!;
+      };
+
+      const plain = await options({});
+      const neutral = await options({ _meta: { recommendedConfigValue: { version: 1 } } });
+      expect(neutral.currentValue).toBe("claude-opus-4-1-20250805");
+      expect(neutral._meta).toEqual({ recommendedConfigValue: { version: 1, value: "sonnet" } });
+      expect({ ...neutral, _meta: undefined }).toEqual({ ...plain, _meta: undefined });
+    });
+
+    // v0.110.0 (#1692): each entry of the model option names its model's
+    // effort levels at `_meta.jetbrains.air.reasoningEfforts`, for every AIR
+    // client. The neutral record stays on the option, a client that also
+    // declares AIR gets both, and a client of the neutral record alone gets
+    // no AIR key on any entry.
+    it("keeps the neutral recommendation next to AIR's per-model efforts", async () => {
+      const modelOption = async (clientCapabilities: ClientCapabilities) => {
+        const agent = new ClaudeAcpAgent(
+          { sessionUpdate: async () => {} } as unknown as AcpClient,
+          {
+            log: () => {},
+            error: () => {},
+          },
+        );
+        await initializeClient(agent, clientCapabilities);
+        const modelInfos = [
+          {
+            value: "default",
+            displayName: "Default",
+            description: "",
+            resolvedModel: "claude-sonnet-5",
+          },
+          {
+            value: "sonnet",
+            displayName: "Sonnet",
+            description: "",
+            resolvedModel: "claude-sonnet-5",
+            supportsEffort: true,
+            supportedEffortLevels: ["low", "medium", "high"],
+          },
+          {
+            value: "haiku",
+            displayName: "Haiku",
+            description: "",
+            resolvedModel: "claude-haiku-4-5",
+          },
+        ];
+        const models = {
+          currentModelId: "default",
+          availableModels: modelInfos.map((info) => ({
+            modelId: info.value,
+            name: info.displayName,
+          })),
+        };
+        function* idle() {}
+        const query = Object.assign(idle(), {
+          setModel: vi.fn(async () => {}),
+          applyFlagSettings: vi.fn(async () => {}),
+          getContextUsage: vi.fn(async () => ({ rawMaxTokens: 200_000 })),
+          interrupt: vi.fn(),
+          close: vi.fn(),
+        });
+        agent.sessions["model-session"] = mockSessionState(
+          {
+            query,
+            input: new Pushable(),
+            models,
+            modelInfos,
+            configOptions: buildConfigOptions(
+              baseModes,
+              models,
+              modelInfos as any,
+              undefined,
+              [],
+              "default",
+            ),
+          },
+          agent,
+          "model-session",
+        );
+        const { configOptions } = await agent.setSessionConfigOption({
+          sessionId: "model-session",
+          configId: "model",
+          value: "haiku",
+        });
+        expect(query.setModel).toHaveBeenCalledWith("haiku");
+        const model = configOptions.find((option) => option.id === "model")!;
+        return model as typeof model & { options: Array<Record<string, unknown>> };
+      };
+      const efforts = {
+        jetbrains: {
+          air: {
+            version: 1,
+            reasoningEfforts: { values: ["low", "medium", "high"], recommended: "medium" },
+          },
+        },
+      };
+
+      const neutral = await modelOption({ _meta: { recommendedConfigValue: { version: 1 } } });
+      expect(neutral._meta).toEqual({ recommendedConfigValue: { version: 1, value: "sonnet" } });
+      expect(neutral.options.map((entry) => entry.value)).toEqual(["default", "sonnet", "haiku"]);
+      expect(neutral.options.filter((entry) => entry._meta !== undefined)).toEqual([]);
+
+      const both = await modelOption({
+        _meta: {
+          recommendedConfigValue: { version: 1 },
+          jetbrains: { air: { version: 1, capabilities: [] } },
+        },
+      });
+      expect(both._meta).toEqual({ recommendedConfigValue: { version: 1, value: "sonnet" } });
+      expect(both.options).toEqual([
+        expect.objectContaining({ value: "default", _meta: efforts }),
+        expect.objectContaining({ value: "sonnet", _meta: efforts }),
+        expect.not.objectContaining({ _meta: expect.anything() }),
+      ]);
     });
   });
 });
