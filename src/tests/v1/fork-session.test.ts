@@ -5,7 +5,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import { messageIdForGrouping } from "../../sdk-to-acp.js";
-import { forkSession } from "../../fork-session.js";
+import { clientOptsIntoNeutralForkPoint, forkSession } from "../../fork-session.js";
 import { writeRewindPoint } from "../../session-rewind.js";
 import { encodeProjectPath } from "../../session-index/project-dirs.js";
 
@@ -98,7 +98,21 @@ afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
 });
 
-describe.each(["same directory", "different directory"])("fork into %s", (directory) => {
+const INACTIVE_FINGERPRINT = `sha256:${createHash("sha256").update("Inactive answer").digest("hex")}`;
+
+/** The `_meta` of a fork at `point`, in the AIR or the client-neutral form. */
+function forkMeta(form: "air" | "neutral", point: Record<string, unknown>) {
+  return form === "air"
+    ? { jetbrains: { air: { fork: { version: 1, ...point } } } }
+    : { forkPoint: point };
+}
+
+describe.each([
+  { directory: "same directory", form: "air" as const },
+  { directory: "different directory", form: "air" as const },
+  { directory: "same directory", form: "neutral" as const },
+  { directory: "different directory", form: "neutral" as const },
+])("fork into $directory with the $form fork point", ({ directory, form }) => {
   it.each([
     { resolution: "latest", messageId: undefined, expectedAnswer: "Active answer", count: 4 },
     {
@@ -106,20 +120,36 @@ describe.each(["same directory", "different directory"])("fork into %s", (direct
       messageId: "msg_first",
       expectedAnswer: "First answer",
       count: 2,
+      matchedId: "msg_first",
     },
     {
       resolution: "inactive branch",
       messageId: "msg_inactive",
       expectedAnswer: "Inactive answer",
       count: 4,
+      matchedId: "msg_inactive",
+    },
+    {
+      resolution: "segment suffix",
+      messageId: "msg_first:segment:2",
+      expectedAnswer: "First answer",
+      count: 2,
+      matchedId: "msg_first",
     },
     {
       resolution: "fingerprint",
       messageId: "stale-message-id",
       expectedAnswer: "Inactive answer",
       count: 4,
+      matchedId: "msg_inactive",
     },
-    { resolution: "live map", messageId: "msg_active", expectedAnswer: "Active answer", count: 4 },
+    {
+      resolution: "live map",
+      messageId: "msg_active",
+      expectedAnswer: "Active answer",
+      count: 4,
+      matchedId: "msg_active",
+    },
   ])("resolves the fork point through $resolution", async (scenario) => {
     const originalMessages = await getSessionMessages(sessionId);
     expect(originalMessages.map(messageIdForGrouping)).not.toContain("msg_inactive");
@@ -130,24 +160,18 @@ describe.each(["same directory", "different directory"])("fork into %s", (direct
         cwd,
         mcpServers: [],
         ...(scenario.messageId && {
-          _meta: {
-            jetbrains: {
-              air: {
-                fork: {
-                  version: 1,
-                  messageId: scenario.messageId,
-                  ...(scenario.resolution === "fingerprint" && {
-                    messageFingerprint: `sha256:${createHash("sha256").update("Inactive answer").digest("hex")}`,
-                    messageOccurrence: 1,
-                  }),
-                },
-              },
-            },
-          },
+          _meta: forkMeta(form, {
+            messageId: scenario.messageId,
+            ...(scenario.resolution === "fingerprint" && {
+              messageFingerprint: INACTIVE_FINGERPRINT,
+              messageOccurrence: 1,
+            }),
+          }),
         }),
       },
       {
         messageIdForGrouping,
+        neutralForkPoint: form === "neutral",
         ...(scenario.resolution === "live map" && {
           liveMessageIdToUuid: new Map([["msg_active", activeUuid]]),
         }),
@@ -155,6 +179,18 @@ describe.each(["same directory", "different directory"])("fork into %s", (direct
     );
 
     expect(result.sessionId).not.toBe(sessionId);
+    // Only the neutral form reports where the fork ends.
+    expect(result._meta).toEqual(
+      form === "neutral" && scenario.matchedId
+        ? {
+            forkPoint: {
+              boundary: "message",
+              messageId: scenario.matchedId,
+              matchedBy: scenario.resolution === "fingerprint" ? "fingerprint" : "id",
+            },
+          }
+        : undefined,
+    );
     const messages = await getSessionMessages(result.sessionId);
     expect(messages).toHaveLength(scenario.count);
     expect(messages.at(-1)?.message).toMatchObject({
@@ -174,12 +210,16 @@ describe.each(["same directory", "different directory"])("fork into %s", (direct
           sessionId,
           cwd: directory === "same directory" ? sourceCwd : destinationCwd,
           mcpServers: [],
-          _meta: { jetbrains: { air: { fork: { version: 1, messageId: "missing" } } } },
+          _meta: forkMeta(form, { messageId: "missing" }),
         },
-        { messageIdForGrouping },
+        { messageIdForGrouping, neutralForkPoint: form === "neutral" },
       ),
     ).rejects.toMatchObject({
       code: -32602,
+      data:
+        form === "neutral"
+          ? { forkPoint: { messageId: "missing", reason: "notFound" } }
+          : { messageId: "missing" },
       message: expect.stringContaining(
         `Fork point message missing was not found in session ${sessionId}`,
       ),
@@ -229,6 +269,184 @@ describe("fork at a session cursor", () => {
   });
 });
 
+// v0.109.0 (#1658): a cursorId wins over any fork point, also over the
+// client-neutral one of a client that opted in.
+it("forks a neutral fork point client at the cursor, without reading its _meta.forkPoint", async () => {
+  const followup = (await getSessionMessages(sessionId, { dir: sourceCwd }))[2]!;
+  const response = await forkSession(
+    {
+      sessionId,
+      cwd: destinationCwd,
+      mcpServers: [],
+      cursorId: `before:${followup.uuid}`,
+      _meta: { forkPoint: { messageId: "missing" } },
+    },
+    { messageIdForGrouping, neutralForkPoint: true },
+  );
+
+  // The fork ends at the cursor, so no fork point is reported.
+  expect(response._meta).toBeUndefined();
+  const forked = await getSessionMessages(response.sessionId);
+  expect(forked.map((message) => message.message)).toEqual([
+    { role: "user", content: "First prompt" },
+    expect.objectContaining({ id: "msg_first" }),
+  ]);
+});
+
+describe("client-neutral fork point", () => {
+  it.each([
+    { capability: { version: 1 }, optsIn: true },
+    { capability: { version: 2 }, optsIn: true },
+    { capability: true, optsIn: false },
+    { capability: { version: 0 }, optsIn: false },
+    { capability: { version: 1.5 }, optsIn: false },
+    { capability: { version: "1" }, optsIn: false },
+    { capability: [{ version: 1 }], optsIn: false },
+    { capability: undefined, optsIn: false },
+  ])("opts in at initialize with $capability: $optsIn", ({ capability, optsIn }) => {
+    expect(clientOptsIntoNeutralForkPoint({ _meta: { forkPoint: capability } })).toBe(optsIn);
+  });
+
+  it("resolves a fingerprint without an occurrence", async () => {
+    const result = await forkSession(
+      {
+        sessionId,
+        cwd: sourceCwd,
+        mcpServers: [],
+        _meta: { forkPoint: { messageId: "stale", messageFingerprint: INACTIVE_FINGERPRINT } },
+      },
+      { messageIdForGrouping, neutralForkPoint: true },
+    );
+
+    expect(result._meta).toEqual({
+      forkPoint: { boundary: "message", messageId: "msg_inactive", matchedBy: "fingerprint" },
+    });
+    expect((await getSessionMessages(result.sessionId)).at(-1)?.message).toMatchObject({
+      content: [{ type: "text", text: "Inactive answer" }],
+    });
+  });
+
+  it.each([
+    { invalid: "a non-object fork point", forkPoint: "msg_first", field: "forkPoint" },
+    { invalid: "a null fork point", forkPoint: null, field: "forkPoint" },
+    { invalid: "an array fork point", forkPoint: ["msg_first"], field: "forkPoint" },
+    {
+      invalid: "another version",
+      forkPoint: { version: 2, messageId: "msg_first" },
+      field: "version",
+    },
+    { invalid: "a missing message id", forkPoint: {}, field: "messageId" },
+    { invalid: "a blank message id", forkPoint: { messageId: "  " }, field: "messageId" },
+    { invalid: "a numeric message id", forkPoint: { messageId: 7 }, field: "messageId" },
+    {
+      invalid: "a fingerprint without the sha256 prefix",
+      forkPoint: { messageId: "msg_first", messageFingerprint: INACTIVE_FINGERPRINT.slice(7) },
+      field: "messageFingerprint",
+    },
+    {
+      invalid: "an uppercase fingerprint",
+      forkPoint: {
+        messageId: "msg_first",
+        messageFingerprint: `sha256:${INACTIVE_FINGERPRINT.slice(7).toUpperCase()}`,
+      },
+      field: "messageFingerprint",
+    },
+    {
+      invalid: "a short fingerprint",
+      forkPoint: { messageId: "msg_first", messageFingerprint: "sha256:abc" },
+      field: "messageFingerprint",
+    },
+    {
+      invalid: "a zero occurrence",
+      forkPoint: { messageId: "msg_first", messageOccurrence: 0 },
+      field: "messageOccurrence",
+    },
+    {
+      invalid: "a fractional occurrence",
+      forkPoint: { messageId: "msg_first", messageOccurrence: 1.5 },
+      field: "messageOccurrence",
+    },
+    {
+      invalid: "a string occurrence",
+      forkPoint: { messageId: "msg_first", messageOccurrence: "1" },
+      field: "messageOccurrence",
+    },
+  ])("rejects $invalid instead of forking the whole session", async ({ forkPoint, field }) => {
+    await expect(
+      forkSession(
+        { sessionId, cwd: sourceCwd, mcpServers: [], _meta: { forkPoint } },
+        { messageIdForGrouping, neutralForkPoint: true },
+      ),
+    ).rejects.toMatchObject({ code: -32602, data: { forkPoint: { field } } });
+  });
+
+  it("rejects a fork point from a client that did not opt in", async () => {
+    await expect(
+      forkSession(
+        {
+          sessionId,
+          cwd: sourceCwd,
+          mcpServers: [],
+          _meta: { forkPoint: { messageId: "msg_first" } },
+        },
+        { messageIdForGrouping },
+      ),
+    ).rejects.toMatchObject({ code: -32602, data: { forkPoint: { field: "forkPoint" } } });
+  });
+
+  it("fails a fork point in a session without a transcript as an unknown session", async () => {
+    // v0.100 maps the SDK's "Session <id> not found" to -32002, so a client can
+    // tell a missing session from a fork point that matches no message.
+    const missing = randomUUID();
+    await expect(
+      forkSession(
+        {
+          sessionId: missing,
+          cwd: sourceCwd,
+          mcpServers: [],
+          _meta: { forkPoint: { messageId: "msg_first" } },
+        },
+        { messageIdForGrouping, neutralForkPoint: true },
+      ),
+    ).rejects.toMatchObject({ code: -32002, data: { sessionId: missing } });
+  });
+
+  it("takes the neutral fork point over an AIR one in the same request", async () => {
+    const result = await forkSession(
+      {
+        sessionId,
+        cwd: sourceCwd,
+        mcpServers: [],
+        _meta: {
+          ...forkMeta("air", { messageId: "msg_inactive" }),
+          forkPoint: { messageId: "msg_first" },
+        },
+      },
+      { messageIdForGrouping, neutralForkPoint: true },
+    );
+
+    expect(await getSessionMessages(result.sessionId)).toHaveLength(2);
+  });
+
+  it("takes an explicit version 1 and a message id with surrounding blanks", async () => {
+    const result = await forkSession(
+      {
+        sessionId,
+        cwd: sourceCwd,
+        mcpServers: [],
+        _meta: { forkPoint: { version: 1, messageId: "  msg_first  " } },
+      },
+      { messageIdForGrouping, neutralForkPoint: true },
+    );
+
+    // The response names the message the fork ends at, without the blanks.
+    expect(result._meta).toEqual({
+      forkPoint: { boundary: "message", messageId: "msg_first", matchedBy: "id" },
+    });
+    expect(await getSessionMessages(result.sessionId)).toHaveLength(2);
+  });
+});
+
 describe("fork after a rewind", () => {
   const fork = (extra: Partial<Parameters<typeof forkSession>[0]>, deps = {}) =>
     forkSession(
@@ -273,5 +491,34 @@ describe("fork after a rewind", () => {
     expect(
       (await fs.readdir(path.dirname(sourceFile))).filter((name) => name.endsWith(".jsonl")),
     ).toEqual([path.basename(sourceFile)]);
+  });
+
+  // The client-neutral fork point looks a message up as the AIR form does,
+  // so a pending rewind cuts its lookup too.
+  it.each([
+    ["a message of the retained part", "msg_first", true],
+    ["an active message of the dropped part", "msg_active", false],
+    ["an inactive message of the dropped part", "msg_inactive", false],
+  ])("finds a neutral fork point at %s only before the cut", async (_, messageId, found) => {
+    const request = fork({ _meta: { forkPoint: { messageId } } }, { neutralForkPoint: true });
+
+    if (!found) {
+      await expect(request).rejects.toMatchObject({
+        code: -32602,
+        data: { forkPoint: { messageId, reason: "notFound" } },
+      });
+      expect(
+        (await fs.readdir(path.dirname(sourceFile))).filter((name) => name.endsWith(".jsonl")),
+      ).toEqual([path.basename(sourceFile)]);
+      return;
+    }
+    const response = await request;
+    expect(response._meta).toEqual({
+      forkPoint: { boundary: "message", messageId, matchedBy: "id" },
+    });
+    expect((await getSessionMessages(response.sessionId)).map((m) => m.message)).toEqual([
+      { role: "user", content: "First prompt" },
+      expect.objectContaining({ id: "msg_first" }),
+    ]);
   });
 });
