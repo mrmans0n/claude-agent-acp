@@ -633,6 +633,28 @@ describe("AsyncTaskRuntime", () => {
     });
   });
 
+  it("advertises the stop control at top level to the neutral opt-in only, never to AIR", () => {
+    const steering = { steering: { supported: true } };
+    expect(asyncTaskCapabilityMeta({ _meta: { "async-tasks": true } }, steering)).toEqual({
+      ...steering,
+      "async-tasks": {
+        version: 1,
+        controlMethod: "_session/async_task/stop",
+        actions: ["stop"],
+      },
+    });
+    // AIR with asyncTasks learns of the stop control from its capability list.
+    const air = {
+      _meta: {
+        "async-tasks": true,
+        jetbrains: { air: { version: 1, capabilities: ["asyncTasks"] } },
+      },
+    };
+    expect(clientSupportsAsyncTasks(air)).toBe(true);
+    expect(asyncTaskCapabilityMeta(air, steering)).toEqual(steering);
+    expect(asyncTaskCapabilityMeta({ _meta: {} }, null)).toBeUndefined();
+  });
+
   it("publishes one durable lifecycle with progress and a terminal state", async () => {
     const published: AcpSessionNotification[] = [];
     const runtime = new AsyncTaskRuntime(true, "session", async (notification) => {

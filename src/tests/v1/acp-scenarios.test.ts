@@ -987,6 +987,23 @@ describe.skipIf(baselineDir)("ACP scenarios", () => {
         ._meta;
     const patch = (text: string) => ({ version: 1, format: "git_patch", text });
 
+    // v0.112.0 (#1704): sessionRewind joins the AIR capability list of initialize;
+    // the client-neutral diffPatch key stays a top-level sibling of jetbrains.
+    it("advertises diffPatch next to the AIR sessionRewind of a client that declares both", async () => {
+      const response = await new Agent({} as never, { log: () => {}, error: () => {} }).initialize({
+        protocolVersion: 1,
+        clientCapabilities: {
+          _meta: {
+            diffPatch: { version: 1 },
+            jetbrains: { air: { version: 1, capabilities: ["sessionRewind"] } },
+          },
+        },
+      });
+
+      expect(response._meta?.diffPatch).toEqual({ version: 1, format: "git_patch" });
+      expect((response._meta?.jetbrains as any)?.air?.capabilities).toContain("sessionRewind");
+    });
+
     it("advertises the git patch format only to a client that opts in", async () => {
       expect(initializeMeta(await runNeutral("session-setup")).diffPatch).toEqual({
         version: 1,
@@ -1225,6 +1242,23 @@ describe.skipIf(baselineDir)("ACP scenarios", () => {
         },
       ],
     };
+
+    // v0.112.0 (#1704): sessionRewind joins the AIR capability list of initialize;
+    // the client-neutral planFile key stays a top-level sibling of jetbrains.
+    it("advertises planFile next to the AIR sessionRewind of a client that declares both", async () => {
+      const response = await new Agent({} as never, { log: () => {}, error: () => {} }).initialize({
+        protocolVersion: 1,
+        clientCapabilities: {
+          _meta: {
+            planFile: { version: 1 },
+            jetbrains: { air: { version: 1, capabilities: ["sessionRewind"] } },
+          },
+        },
+      });
+
+      expect(response._meta?.planFile).toEqual({ version: 1 });
+      expect((response._meta?.jetbrains as any)?.air?.capabilities).toContain("sessionRewind");
+    });
 
     it("advertises the plan file only to a client that opts in", async () => {
       expect(initializeMeta(await runNeutral("session-setup")).planFile).toEqual({ version: 1 });

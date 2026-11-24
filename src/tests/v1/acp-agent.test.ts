@@ -24,6 +24,7 @@ import {
 } from "@agentclientprotocol/sdk/unstable";
 import type { AcpSessionNotification } from "../../acp-subagents.js";
 import { NativeSubagentRuntime } from "../../native-subagents.js";
+import { PromptSuggestions } from "../../prompt-suggestions.js";
 import { nodeToWebWritable, nodeToWebReadable } from "../../utils.js";
 import { createPostToolUseHook, markdownEscape, toDisplayPath } from "../../tools.js";
 import { toolUpdateFromDiffToolResponse } from "../../diff.js";
@@ -6254,6 +6255,28 @@ describe("permission request cancellation", () => {
   // v0.108.0 (#1627): Claude Code's setting decides whether the request
   // offers clearing the context. The neutral presentation record does not
   // change with the options.
+  // v0.112.0 (#1704): sessionRewind joins the AIR capability list of initialize;
+  // the client-neutral permissionPresentation and questionCustomAnswer key stays a top-level sibling of jetbrains.
+  it("advertises permissionPresentation and questionCustomAnswer next to the AIR sessionRewind of a client that declares both", async () => {
+    const response = await new ClaudeAcpAgent({} as unknown as AcpClient, {
+      log: () => {},
+      error: () => {},
+    }).initialize({
+      protocolVersion: 1,
+      clientCapabilities: {
+        _meta: {
+          permissionPresentation: { version: 1 },
+          questionCustomAnswer: { version: 1 },
+          jetbrains: { air: { version: 1, capabilities: ["sessionRewind"] } },
+        },
+      },
+    });
+
+    expect(response._meta?.permissionPresentation).toEqual({ version: 1 });
+    expect(response._meta?.questionCustomAnswer).toEqual({ version: 1 });
+    expect((response._meta?.jetbrains as any)?.air?.capabilities).toContain("sessionRewind");
+  });
+
   it("sends a neutral permissionPresentation client one ExitPlanMode record with and without clear-context options", async () => {
     async function ask(showClearContextOnPlanAccept: boolean) {
       let request: RequestPermissionRequest | undefined;
@@ -14762,6 +14785,26 @@ describe("model refusal fallback handling", () => {
     expect(notice.content.text).toContain("This request tripped a safety classifier.");
   });
 
+  // v0.112.0 (#1704): sessionRewind joins the AIR capability list of initialize;
+  // the client-neutral sessionFailure key stays a top-level sibling of jetbrains.
+  it("advertises sessionFailure next to the AIR sessionRewind of a client that declares both", async () => {
+    const response = await new ClaudeAcpAgent({} as unknown as AcpClient, {
+      log: () => {},
+      error: () => {},
+    }).initialize({
+      protocolVersion: 1,
+      clientCapabilities: {
+        _meta: {
+          sessionFailure: { version: 1 },
+          jetbrains: { air: { version: 1, capabilities: ["sessionRewind"] } },
+        },
+      },
+    });
+
+    expect(response._meta?.sessionFailure).toEqual({ version: 1 });
+    expect((response._meta?.jetbrains as any)?.air?.capabilities).toContain("sessionRewind");
+  });
+
   it("publishes the model fallback as a neutral advisory without ACP notices", async () => {
     const { agent, sessionUpdate } = createCapturingAgent();
     await agent.initialize({
@@ -15725,6 +15768,46 @@ describe("skill commands in available_commands_update", () => {
     expect(commands.find((c) => c.name === "mcp:review")?._meta).toBeUndefined();
   });
 
+  // v0.112.0 (#1704): sessionRewind joins the AIR capability list of initialize;
+  // the client-neutral commandPresentation key stays a top-level sibling of jetbrains.
+  it("advertises commandPresentation next to the AIR sessionRewind of a client that declares both", async () => {
+    const response = await new ClaudeAcpAgent({} as unknown as AcpClient, {
+      log: () => {},
+      error: () => {},
+    }).initialize({
+      protocolVersion: 1,
+      clientCapabilities: {
+        _meta: {
+          commandPresentation: { version: 1 },
+          jetbrains: { air: { version: 1, capabilities: ["sessionRewind"] } },
+        },
+      },
+    });
+
+    expect(response._meta?.commandPresentation).toEqual({ version: 1 });
+    expect((response._meta?.jetbrains as any)?.air?.capabilities).toContain("sessionRewind");
+  });
+
+  // v0.112.0 (#1704): sessionRewind joins the AIR capability list of initialize;
+  // the client-neutral loadReplayEnd key stays a top-level sibling of jetbrains.
+  it("advertises loadReplayEnd next to the AIR sessionRewind of a client that declares both", async () => {
+    const response = await new ClaudeAcpAgent({} as unknown as AcpClient, {
+      log: () => {},
+      error: () => {},
+    }).initialize({
+      protocolVersion: 1,
+      clientCapabilities: {
+        _meta: {
+          loadReplayEnd: { version: 1 },
+          jetbrains: { air: { version: 1, capabilities: ["sessionRewind"] } },
+        },
+      },
+    });
+
+    expect(response._meta?.loadReplayEnd).toEqual({ version: 1 });
+    expect((response._meta?.jetbrains as any)?.air?.capabilities).toContain("sessionRewind");
+  });
+
   it("marks a skill in the client-neutral form for a client that opts in", async () => {
     const neutral = await advertisedCommands({ _meta: { commandPresentation: { version: 1 } } });
     expect(neutral.find((c) => c.name === "review")?._meta).toEqual({
@@ -16379,6 +16462,26 @@ describe("logout", () => {
   describe("client-neutral agent file-change report advert", () => {
     const optIn = { agentFileChangeReport: { version: 1 } };
 
+    // v0.112.0 (#1704): sessionRewind joins the AIR capability list of initialize;
+    // the client-neutral agentFileChangeReport key stays a top-level sibling of jetbrains.
+    it("advertises agentFileChangeReport next to the AIR sessionRewind of a client that declares both", async () => {
+      const response = await new ClaudeAcpAgent({} as unknown as AcpClient, {
+        log: () => {},
+        error: () => {},
+      }).initialize({
+        protocolVersion: 1,
+        clientCapabilities: {
+          _meta: {
+            agentFileChangeReport: { version: 1 },
+            jetbrains: { air: { version: 1, capabilities: ["sessionRewind"] } },
+          },
+        },
+      });
+
+      expect(response._meta?.agentFileChangeReport).toEqual({ version: 1 });
+      expect((response._meta?.jetbrains as any)?.air?.capabilities).toContain("sessionRewind");
+    });
+
     it("advertises it at top level to a client that opts in, with no AIR key", async () => {
       const response = await createMockAgent().initialize({
         protocolVersion: 1,
@@ -16616,6 +16719,26 @@ describe("session/fork", () => {
 
   // The reader runs from setup (#1623), so a cron cycle that Claude Code runs
   // before the first prompt predicts after its own result, for no request.
+  // v0.112.0 (#1704): sessionRewind joins the AIR capability list of initialize;
+  // the client-neutral promptSuggestions key stays a top-level sibling of jetbrains.
+  it("advertises promptSuggestions next to the AIR sessionRewind of a client that declares both", async () => {
+    const response = await new ClaudeAcpAgent({} as unknown as AcpClient, {
+      log: () => {},
+      error: () => {},
+    }).initialize({
+      protocolVersion: 1,
+      clientCapabilities: {
+        _meta: {
+          promptSuggestions: { version: 1 },
+          jetbrains: { air: { version: 1, capabilities: ["sessionRewind"] } },
+        },
+      },
+    });
+
+    expect(response._meta?.promptSuggestions).toEqual({ version: 1 });
+    expect((response._meta?.jetbrains as any)?.air?.capabilities).toContain("sessionRewind");
+  });
+
   it("gives a neutral promptSuggestions client only the prediction of the prompt that asked", async () => {
     const state = (state: "running" | "idle") => ({
       type: "system",
@@ -16657,6 +16780,65 @@ describe("session/fork", () => {
 
     await vi.waitFor(() => expect(predictions()).toHaveLength(1));
     expect(predictions()).toEqual([{ suggestions: [{ text: "Run the tests" }], id: "prompt-1" }]);
+  });
+
+  // v0.112.0 (#1704): a rewind during the prompt's awaits leaves the prompt a
+  // new session, whose predictions start fresh. The request id goes to it.
+  it("gives a neutral promptSuggestions client the prediction of a prompt that follows a rewind", async () => {
+    const state = (state: "running" | "idle") => ({
+      type: "system",
+      subtype: "session_state_changed",
+      state,
+      uuid: randomUUID(),
+      session_id: "resumed-id",
+    });
+    const { agent, updates } = forkingAgent(
+      (prompt) => [
+        userEcho(prompt),
+        state("running"),
+        successfulResultMessage(),
+        {
+          type: "prompt_suggestion",
+          suggestion: "Run the tests",
+          uuid: randomUUID(),
+          session_id: "resumed-id",
+        },
+        state("idle"),
+      ],
+      [state("idle")],
+    );
+    await initializeClient(agent, { _meta: { promptSuggestions: { version: 1 } } });
+    await agent.resumeSession({ sessionId: "resumed-id", cwd: "/workspace", mcpServers: [] });
+    await vi.waitFor(() => expect(agent.sessions["resumed-id"].lastSessionState).toBe("idle"));
+    // The prompt's second rewind check finds a rewind. Following it gives the
+    // prompt a session with fresh predictions, as the rewind's new session has.
+    vi.spyOn(agent as any, "rewindToFollow")
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    vi.spyOn(agent as any, "followRewind").mockImplementationOnce(async (...args: unknown[]) => {
+      const session = args[1] as { promptSuggestions?: PromptSuggestions };
+      session.promptSuggestions = PromptSuggestions.forClient({
+        meta: false,
+        update: false,
+        neutral: true,
+      });
+      return session;
+    });
+
+    await agent.prompt({
+      sessionId: "resumed-id",
+      prompt: [{ type: "text", text: "go on" }],
+      _meta: { promptSuggestions: { id: "prompt-1" } },
+    });
+
+    await vi.waitFor(() =>
+      expect(
+        updates.flatMap(({ update }) => {
+          const meta = update.sessionUpdate === "session_info_update" ? (update._meta as any) : {};
+          return meta?.promptSuggestions ? [meta.promptSuggestions] : [];
+        }),
+      ).toEqual([{ suggestions: [{ text: "Run the tests" }], id: "prompt-1" }]),
+    );
   });
 
   // v0.108.1 (#1603): a client in the RFD form of subagent sessions gets the
@@ -25506,6 +25688,32 @@ describe("deferred settlement for live background subagents (issues #864/#866)",
     await agent.sessions["test-session"]?.consumer;
   });
 
+  it.each([
+    { settleAtResult: true, optsIn: true },
+    { settleAtResult: false, optsIn: false },
+    { settleAtResult: "true", optsIn: false },
+    { settleAtResult: 1, optsIn: false },
+    { settleAtResult: { supported: true }, optsIn: false },
+  ])(
+    "ends turns at the result and advertises it for a settleAtResult opt-in of $settleAtResult: $optsIn",
+    async ({ settleAtResult, optsIn }) => {
+      const agent = new ClaudeAcpAgent({} as unknown as AcpClient, {
+        log: () => {},
+        error: () => {},
+      });
+      const response = await agent.initialize({
+        protocolVersion: 1,
+        clientCapabilities: { _meta: { settleAtResult } },
+      });
+
+      // Only literal `true` opts in, and the advertisement follows the gate.
+      expect((response._meta as any)?.settleAtResult).toEqual(
+        optsIn ? { supported: true } : undefined,
+      );
+      expect((agent as any).endsTurnsWithLiveSubagents()).toBe(optsIn);
+    },
+  );
+
   it("answers the prompt at its result while a subagent is live, for a client that opts into settleAtResult", async () => {
     const { agent, events } = chunkCapturingAgent();
     const response = await agent.initialize({
@@ -29384,6 +29592,30 @@ describe("turn steering (_session/steering)", () => {
     await agent.dispose();
   });
 
+  it.each([
+    { contextUsage: true, advertised: true },
+    { contextUsage: false, advertised: false },
+    { contextUsage: "true", advertised: false },
+    { contextUsage: 1, advertised: false },
+    { contextUsage: {}, advertised: false },
+    { contextUsage: { supported: true }, advertised: false },
+  ])(
+    "advertises context usage for a contextUsage opt-in of $contextUsage: $advertised",
+    async ({ contextUsage, advertised }) => {
+      const agent = createMockAgent();
+      const response = await agent.initialize({
+        protocolVersion: 1,
+        clientCapabilities: { _meta: { contextUsage } },
+      });
+
+      // Only literal `true` opts in.
+      expect((response._meta as any)?.contextUsage).toEqual(
+        advertised ? { supported: true } : undefined,
+      );
+      await agent.dispose();
+    },
+  );
+
   it("advertises async tasks with steering and goals for an opted-in non-AIR client", async () => {
     const agent = createMockAgent();
     const response = await agent.initialize({
@@ -29453,6 +29685,30 @@ describe("turn steering (_session/steering)", () => {
         },
       },
     });
+  });
+
+  // v0.112.0 (#1704): the AIR capability list that goalMeta() wraps now ends
+  // with sessionRewind for an AIR client that declares it.
+  it("advertises the goal next to the session rewind of an AIR client, and no rewind to a goal opt-in client", async () => {
+    const initialize = (clientMeta: Record<string, unknown>) =>
+      new ClaudeAcpAgent({} as unknown as AcpClient, { log: () => {}, error: () => {} }).initialize(
+        { protocolVersion: 1, clientCapabilities: { _meta: clientMeta } },
+      );
+    const goal = { version: 1, controlMethod: GOAL_CONTROL_METHOD, actions: ["set", "clear"] };
+
+    const air = await initialize({
+      jetbrains: { air: { version: 1, capabilities: ["sessionRewind"] } },
+    });
+    const airMeta = (air._meta?.jetbrains as { air: Record<string, unknown> }).air;
+    expect(airMeta.capabilities).toContain("sessionRewind");
+    expect(airMeta.goal).toEqual(goal);
+    expect(air._meta).not.toHaveProperty("goal");
+
+    // The rewind is AIR's: a goal opt-in client that names it gets the goal only.
+    const neutral = await initialize({ goal: {}, sessionRewind: {} });
+    expect(neutral._meta?.goal).toEqual(goal);
+    expect(neutral._meta).not.toHaveProperty("jetbrains");
+    expect(JSON.stringify(neutral._meta)).not.toContain("sessionRewind");
   });
 
   it("submits set and clear through the session prompt queue when the session is idle", async () => {
@@ -33459,6 +33715,26 @@ describe("agent selection config option", () => {
   });
 
   describe("switching the model", () => {
+    // v0.112.0 (#1704): sessionRewind joins the AIR capability list of initialize;
+    // the client-neutral recommendedConfigValue key stays a top-level sibling of jetbrains.
+    it("advertises recommendedConfigValue next to the AIR sessionRewind of a client that declares both", async () => {
+      const response = await new ClaudeAcpAgent({} as unknown as AcpClient, {
+        log: () => {},
+        error: () => {},
+      }).initialize({
+        protocolVersion: 1,
+        clientCapabilities: {
+          _meta: {
+            recommendedConfigValue: { version: 1 },
+            jetbrains: { air: { version: 1, capabilities: ["sessionRewind"] } },
+          },
+        },
+      });
+
+      expect(response._meta?.recommendedConfigValue).toEqual({ version: 1 });
+      expect((response._meta?.jetbrains as any)?.air?.capabilities).toContain("sessionRewind");
+    });
+
     it("keeps the neutral recommendation on the model option that a model switch rebuilds", async () => {
       const agent = new ClaudeAcpAgent({ sessionUpdate: async () => {} } as unknown as AcpClient, {
         log: () => {},
