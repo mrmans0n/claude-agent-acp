@@ -6,6 +6,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { messageIdForGrouping } from "../../sdk-to-acp.js";
 import { clientOptsIntoNeutralForkPoint, forkSession } from "../../fork-session.js";
+import { writeRewindPoint } from "../../session-rewind.js";
 import { encodeProjectPath } from "../../session-index/project-dirs.js";
 
 // Use the real SDK against temporary transcripts, without starting Claude Code.
@@ -443,5 +444,81 @@ describe("client-neutral fork point", () => {
       forkPoint: { boundary: "message", messageId: "msg_first", matchedBy: "id" },
     });
     expect(await getSessionMessages(result.sessionId)).toHaveLength(2);
+  });
+});
+
+describe("fork after a rewind", () => {
+  const fork = (extra: Partial<Parameters<typeof forkSession>[0]>, deps = {}) =>
+    forkSession(
+      { sessionId, cwd: sourceCwd, mcpServers: [], ...extra },
+      { messageIdForGrouping, ...deps },
+    );
+  const messagePoint = (messageId: string) => ({
+    _meta: { jetbrains: { air: { fork: { version: 1, messageId } } } },
+  });
+  let droppedPrompt: string;
+
+  beforeEach(async () => {
+    // The user rewound the follow-up: it and its answers stay in the transcript.
+    const [, firstAnswer, followup] = await getSessionMessages(sessionId, { dir: sourceCwd });
+    droppedPrompt = followup!.uuid;
+    await writeRewindPoint(sessionId, {
+      resumeSessionAt: firstAnswer!.uuid,
+      droppedPromptUuid: droppedPrompt,
+    });
+  });
+
+  it.each([
+    ["the whole session", {}],
+    ["a message of the retained part", messagePoint("msg_first")],
+  ])("copies the retained history for %s", async (_, extra) => {
+    const forked = await getSessionMessages((await fork(extra)).sessionId);
+    expect(forked.map((message) => message.message)).toEqual([
+      { role: "user", content: "First prompt" },
+      expect.objectContaining({ id: "msg_first" }),
+    ]);
+  });
+
+  it.each([
+    ["the dropped prompt's cursor", () => ({ cursorId: `before:${droppedPrompt}` }), "cursorId"],
+    ["an active message of the dropped part", () => messagePoint("msg_active"), "messageId"],
+    ["an inactive message of the dropped part", () => messagePoint("msg_inactive"), "messageId"],
+  ])("rejects %s with -32602 and forks nothing", async (_, request, field) => {
+    await expect(fork(request())).rejects.toMatchObject({
+      code: -32602,
+      data: expect.objectContaining({ [field]: expect.any(String) }),
+    });
+    expect(
+      (await fs.readdir(path.dirname(sourceFile))).filter((name) => name.endsWith(".jsonl")),
+    ).toEqual([path.basename(sourceFile)]);
+  });
+
+  // The client-neutral fork point looks a message up as the AIR form does,
+  // so a pending rewind cuts its lookup too.
+  it.each([
+    ["a message of the retained part", "msg_first", true],
+    ["an active message of the dropped part", "msg_active", false],
+    ["an inactive message of the dropped part", "msg_inactive", false],
+  ])("finds a neutral fork point at %s only before the cut", async (_, messageId, found) => {
+    const request = fork({ _meta: { forkPoint: { messageId } } }, { neutralForkPoint: true });
+
+    if (!found) {
+      await expect(request).rejects.toMatchObject({
+        code: -32602,
+        data: { forkPoint: { messageId, reason: "notFound" } },
+      });
+      expect(
+        (await fs.readdir(path.dirname(sourceFile))).filter((name) => name.endsWith(".jsonl")),
+      ).toEqual([path.basename(sourceFile)]);
+      return;
+    }
+    const response = await request;
+    expect(response._meta).toEqual({
+      forkPoint: { boundary: "message", messageId, matchedBy: "id" },
+    });
+    expect((await getSessionMessages(response.sessionId)).map((m) => m.message)).toEqual([
+      { role: "user", content: "First prompt" },
+      expect.objectContaining({ id: "msg_first" }),
+    ]);
   });
 });

@@ -9,7 +9,7 @@
  * `session_state_changed`.
  */
 import { randomUUID } from "node:crypto";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -25,6 +25,7 @@ import {
 import { McpOverAcp } from "../../mcp-servers.js";
 import { acpProtocolRouter } from "../../serve.js";
 import { validateV2Notification } from "../acp-scenarios/schema.js";
+import { writeRewindPoint } from "../../session-rewind.js";
 import { SettingsManager } from "../../settings.js";
 import type { AgentHandle } from "../../v2/agent.js";
 import { v2ElicitationRequest } from "../../v2/elicitation.js";
@@ -35,6 +36,7 @@ import {
   transcriptCompactSummary,
   transcriptUser,
   writeTranscript,
+  sideloadRefusal,
 } from "../helpers.js";
 
 /** One Claude Code process: the prompts it reads and the messages it sends. */
@@ -55,6 +57,7 @@ type FakeClaudeCode = {
   stopTask: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
   applyFlagSettings: ReturnType<typeof vi.fn>;
+  setMcpServers: ReturnType<typeof vi.fn>;
   /** The dry-run rewind of a prompt's checkpoint: the files it changed. */
   rewindFiles: ReturnType<typeof vi.fn>;
 };
@@ -75,6 +78,8 @@ const sdk = vi.hoisted(() => ({
   previewGate: undefined as Promise<void> | undefined,
   /** When set, Claude Code fails to start with it. */
   startFailure: undefined as Error | undefined,
+  /** When set, Claude Code refuses a start that has MCP servers with it. */
+  mcpServersRefusal: undefined as Error | undefined,
   /** When set, the SDK refuses the query's options with it: `query()` throws. */
   optionsRefusal: undefined as Error | undefined,
   /** When set, Claude Code refuses flag settings with it: `applyFlagSettings` rejects. */
@@ -128,6 +133,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async () => {
           if (sdk.flagRefusal) throw sdk.flagRefusal;
         }),
         rewindFiles: vi.fn(async () => ({ canRewind: true, filesChanged: [] })),
+        setMcpServers: vi.fn(async () => ({ added: [], removed: [], errors: {} })),
       };
       sdk.processes.push(fake);
       const messages: AsyncGenerator<Record<string, unknown>> = {
@@ -152,6 +158,9 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async () => {
         initializationResult: async () => {
           await sdk.startGate;
           if (sdk.startFailure) throw sdk.startFailure;
+          if (sdk.mcpServersRefusal && Object.keys(options.mcpServers ?? {}).length > 0) {
+            throw sdk.mcpServersRefusal;
+          }
           return { models: sdk.models };
         },
         supportedCommands: async () => [
@@ -167,7 +176,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async () => {
         rewindFiles: fake.rewindFiles,
         mcpServerStatus: async () => sdk.mcpServers,
         ...(sdk.enableRemoteControl ? { enableRemoteControl: sdk.enableRemoteControl } : {}),
-        setMcpServers: async () => ({ added: [], removed: [], errors: {} }),
+        setMcpServers: fake.setMcpServers,
         // A server that needs OAuth: Claude Code returns its authorization URL.
         mcpAuthenticate: async () => ({
           authUrl: "https://mcp.example.com/authorize",
@@ -232,6 +241,7 @@ beforeEach(async () => {
   sdk.subagents = new Map();
   sdk.previewGate = undefined;
   sdk.startFailure = undefined;
+  sdk.mcpServersRefusal = undefined;
   sdk.optionsRefusal = undefined;
   sdk.flagRefusal = undefined;
   sdk.startGate = undefined;
@@ -1722,6 +1732,51 @@ describe("ACP v2 core", () => {
     });
   });
 
+  it("starts a session without the MCP servers that Claude Code refuses, and says so once", async () => {
+    sdk.mcpServersRefusal = sideloadRefusal();
+    const client = v2Client();
+    await client.connect(async (agent) => {
+      await agent.request(v2.methods.agent.initialize, {
+        protocolVersion: v2.PROTOCOL_VERSION,
+        info: { name: "v2-test-client", version: "1.0.0" },
+        capabilities: {},
+      });
+      const mcpServers: v2.McpServer[] = [
+        { type: "stdio", name: "files", command: "/usr/local/bin/mcp-files" },
+        { type: "stdio", name: "search", command: "/usr/local/bin/mcp-search" },
+      ];
+      const { sessionId } = await agent.request(v2.methods.agent.session.new, { cwd, mcpServers });
+      // The refused query is closed, and the session runs on a second one without servers.
+      expect(sdk.processes).toHaveLength(2);
+      expect(sdk.processes[0].close).toHaveBeenCalledOnce();
+      const claude = sdk.processes[1];
+      expect(claude.options.mcpServers).toEqual({});
+      const turn = () => {
+        claude.send({ type: "system", subtype: "init", uuid: randomUUID(), mcp_servers: [] });
+        claude.send(result());
+      };
+      turn();
+      await vi.waitFor(() => expect(client.states()).toEqual(["running", "idle"]));
+      // A resume of the active session does not hand the servers to the query either.
+      await agent.request(v2.methods.agent.session.resume, { sessionId, cwd, mcpServers });
+      expect(claude.setMcpServers).not.toHaveBeenCalled();
+      turn();
+      await vi.waitFor(() => expect(client.states().slice(-2)).toEqual(["running", "idle"]));
+    });
+
+    expect(client.sessionUpdates.filter((update) => update.sessionUpdate === "notice")).toEqual([
+      {
+        sessionUpdate: "notice",
+        severity: "warning",
+        title: "2 MCP servers failed to start",
+        description:
+          'The tools of "files" and "search" are unavailable in this session. Your organization\'s ' +
+          "managed settings (disableSideloadFlags) let Claude Code use MCP servers only from " +
+          "sources that your administrator approved.",
+      },
+    ]);
+  });
+
   it("reports a client MCP server that failed to start as a notice, once", async () => {
     const client = v2Client();
     await client.connect(async (agent) => {
@@ -3103,6 +3158,97 @@ describe("ACP v2 core", () => {
         "cursor_update",
       ]);
       expect(replayed.at(-1)).toEqual(cursorOf("u2"));
+    });
+
+    describe("after a rewind", () => {
+      /** `u2` was rewound: it stays in the transcript as the dropped branch. */
+      async function rewound(sessionId: string) {
+        const directory = path.join(tempDir, "claude", "projects", "project");
+        await writeTranscript(directory, sessionId, [
+          transcriptUser("u1", "Build it"),
+          transcriptAssistant("a1", "Built."),
+          transcriptUser("u2", "Test it"),
+        ]);
+        await writeRewindPoint(sessionId, { resumeSessionAt: "a1", droppedPromptUuid: "u2" });
+        return {
+          transcript: path.join(directory, `${sessionId}.jsonl`),
+          point: path.join(directory, sessionId, "rewind.json"),
+        };
+      }
+
+      it("resumes at the rewind point, and replays the history before it with its cursors only", async () => {
+        const sessionId = randomUUID();
+        await rewound(sessionId);
+        vi.mocked(getSessionMessages).mockResolvedValueOnce(twoTurns);
+        const client = v2Client();
+        await client.connect(async (agent) => {
+          await agent.request(v2.methods.agent.initialize, {
+            protocolVersion: v2.PROTOCOL_VERSION,
+            info: { name: "v2-test-client", version: "1.0.0" },
+            capabilities: {},
+          });
+          await agent.request(v2.methods.agent.session.resume, {
+            sessionId,
+            cwd,
+            replayFrom: { type: "start" },
+          });
+        });
+
+        expect(sdk.processes.at(-1)!.options).toMatchObject({
+          resume: sessionId,
+          resumeSessionAt: "a1",
+        });
+        const replayed = client.sessionUpdates.slice(
+          0,
+          client.sessionUpdates.findIndex((update) => update.sessionUpdate === "replay_complete"),
+        );
+        expect(
+          replayed.flatMap((update) =>
+            update.sessionUpdate === "user_message" ? [update.messageId] : [],
+          ),
+        ).toEqual(["u1"]);
+        expect(replayed.map((update) => update.sessionUpdate)).not.toContain("cursor_update");
+      });
+
+      it("rejects a fork at a cursor of the dropped turn", async () => {
+        const client = v2Client();
+        await client.connect(async (agent) => {
+          const { response } = await openSession(agent);
+          const { sessionId } = response;
+          await rewound(sessionId);
+          vi.mocked(getSessionMessages).mockResolvedValueOnce(twoTurns);
+          await expect(
+            agent.request(v2.methods.agent.session.fork, {
+              sessionId,
+              cwd,
+              cursorId: "before:u2",
+            }),
+          ).rejects.toMatchObject({ code: -32602, data: { cursorId: "before:u2" } });
+          expect(forkSession).not.toHaveBeenCalled();
+        });
+      });
+
+      it("is neither read nor changed by a session/options probe", async () => {
+        const sessionId = randomUUID();
+        const files = await rewound(sessionId);
+        const before = await Promise.all([readFile(files.transcript), readFile(files.point)]);
+        const client = v2Client();
+        await client.connect(async (agent) => {
+          await agent.request(v2.methods.agent.initialize, {
+            protocolVersion: v2.PROTOCOL_VERSION,
+            info: { name: "v2-test-client", version: "1.0.0" },
+            capabilities: {},
+          });
+          await agent.request(v2.methods.agent.session.options, { sessionId, cwd });
+        });
+
+        const probe = sdk.processes.at(-1)!;
+        expect(probe.options).toMatchObject({ resume: sessionId, persistSession: false });
+        expect(probe.options.resumeSessionAt).toBeUndefined();
+        expect(await Promise.all([readFile(files.transcript), readFile(files.point)])).toEqual(
+          before,
+        );
+      });
     });
 
     it.each([

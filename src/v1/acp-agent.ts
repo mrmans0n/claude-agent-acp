@@ -146,6 +146,7 @@ import {
   airCustomInstructions,
   AIR_DIFF_PATCH_CAPABILITY,
   AIR_PLAN_FILE_CAPABILITY,
+  AIR_SESSION_REWIND_CAPABILITY,
   AIR_LOAD_REPLAY_END_CAPABILITY,
   AIR_LOAD_REPLAY_END_KEY,
   AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY,
@@ -193,7 +194,15 @@ import {
 } from "../auth-status.js";
 import { AuthStatusReporter, cliLogout } from "../auth-status-reporter.js";
 import { terminalAuthMethods as authMethodsForTerminal } from "../auth-methods.js";
-import { McpOverAcp, sdkMcpServers, type UnservedMcpServer } from "../mcp-servers.js";
+import {
+  McpOverAcp,
+  mcpServerNames,
+  refusedMcpServers,
+  type SdkMcpServers,
+  sdkMcpServers,
+  startAroundRefusedMcpServers,
+  type UnservedMcpServer,
+} from "../mcp-servers.js";
 import { claudeCliPath, cliDelivery } from "../claude-cli.js";
 import { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { randomUUID } from "node:crypto";
@@ -221,6 +230,25 @@ import {
   NEUTRAL_FORK_POINT_KEY,
   neutralForkPointCapability,
 } from "../fork-session.js";
+import {
+  anchoredForkCursorUpdate,
+  type CursorEntity,
+  forkCursorUpdate,
+  hasForkCursor,
+  LastReportedEntity,
+  promptGetsCursor,
+  withRewindCapability,
+} from "../session-cursors.js";
+import {
+  cutAtRewindPoint,
+  loadRewindableHistory,
+  parseSessionRewindRequest,
+  prepareRewoundResume,
+  rewindSession,
+  SESSION_REWIND_METHOD,
+  type SessionRewindRequest,
+  type SessionRewindResponse,
+} from "../session-rewind.js";
 import {
   clientSystemPrompt,
   sessionSystemPrompt,
@@ -308,7 +336,7 @@ import {
   collapseHookSpeaker,
   informationalNotice,
   MAX_NOTICE_TITLE_LENGTH,
-  mcpServerStartupNotice,
+  mcpServerStartupNotices,
   modelRefusalFallback,
   normalizeNoticeText,
   noticeOrTranscriptUpdate,
@@ -724,6 +752,9 @@ type Turn = {
    *  so the consumer can't promote them via the replay; it falls back to
    *  promoting the queue head when the result arrives. */
   isLocalOnlyCommand: boolean;
+  /** Whether the prompt gets a session cursor when Claude Code takes it in
+   *  (see {@link promptGetsCursor}). */
+  getsCursor: boolean;
   /** Whitespace-normalized text this turn delivered as live `notice` updates
    *  (SDK `informational` frames on the notice lane). A hook-blocked turn's
    *  result repeats the block reason verbatim with zero output tokens; the
@@ -1516,6 +1547,9 @@ export type Session = {
    *  `initialize` now describes a credential that no longer works, so the next
    *  turn recreates the query before it runs. */
   needsSignOutRespawn?: boolean;
+  /** The Claude Code session the query runs, when it is not the ACP session
+   *  id: a cleared context continues in a new Claude session under the old id. */
+  claudeSessionId?: string;
   /** The in-flight recreation, so turns that arrive together share one. */
   signOutRespawn?: Promise<void>;
 } & sessionIndex.SessionIndexFields;
@@ -1713,6 +1747,39 @@ function startMcpServerAuthentication(
   );
 }
 
+/** How `ClaudeAcpAgent.createSession` creates a session. */
+type SessionCreation = {
+  resume?: string;
+  forkSession?: boolean;
+  publicSessionId?: string;
+  permissionMode?: PermissionMode;
+  /** Start a NEW conversation, but under this id instead of a random one.
+   *  `resume` continues a stored conversation and fails when the CLI never
+   *  wrote one; this keeps the ACP session id alive with an empty history.
+   *  The SDK accepts a caller-chosen id as long as `resume` is not set. */
+  reuseSessionId?: string;
+  /** With `resume`: the conversation is resumed only up to this transcript
+   *  entry, and everything after it is dropped. `resumeDropsTurn` names the
+   *  turn that may legitimately be in the dropped range; Claude Code
+   *  refuses the resume when it finds anything else there. */
+  resumeSessionAt?: string;
+  resumeDropsTurn?: string;
+  /** Concrete model id from the resumed transcript's last real assistant
+   *  message. Claude Code restores from this same record, so it lets us
+   *  report the live model without a slow getContextUsage control request. */
+  resumedModelHint?: string | Promise<string | undefined>;
+  /** The state that a replay on the same session uses before this record exists. */
+  replayState?: ReplayState;
+  /** A close of this session during startup cancels registration of its replacement. */
+  replacingSession?: Session;
+  /**
+   * `session/options`: the query answers with the modes and config options
+   * and closes. No session is registered, and Claude Code stores nothing
+   * of the query (`persistSession: false`).
+   */
+  optionsOnly?: boolean;
+};
+
 export class ClaudeAcpAgent {
   sessions: {
     [key: string]: Session;
@@ -1730,6 +1797,10 @@ export class ClaudeAcpAgent {
   private providerUpdate: Promise<void> | null = null;
   /** Per session: queue that runs mode/config changes and query restarts one at a time. */
   private readonly configurationChanges = new Map<string, Promise<void>>();
+  /** The `_session/rewind` of each session that one is running for. It never rejects. */
+  private readonly sessionRewinds = new Map<string, Promise<void>>();
+  /** The session a finished rewind left in place of the one it closed, so a prompt that still holds the old one can follow it. */
+  private readonly rewoundSessions = new WeakMap<Session, Session>();
   private readonly exitPlan: ExitPlanCoordinator<Session, Turn>;
   /** The connection's `authStatus` state and pushes, connection-scoped like
    *  `authenticate`/`logout`. */
@@ -1767,6 +1838,8 @@ export class ClaudeAcpAgent {
    * (see {@link endSession}) or the connection ends (see `AnnouncedChildren`).
    */
   private readonly announcedChildren = new AnnouncedChildren();
+  /** What anchors a live cursor: the last entity that the client holds per session. */
+  private readonly lastEntities = new LastReportedEntity();
   /**
    * AIR's draft: the model that the last load of each session replayed to each
    * child session, as the model id and the entry that went out. See
@@ -1815,13 +1888,26 @@ export class ClaudeAcpAgent {
     );
   }
 
-  constructor(client: AcpClient, logger?: Logger) {
+  constructor(
+    client: AcpClient,
+    logger?: Logger,
+    /**
+     * Names the session and tool call of the MCP requests that Claude Code
+     * sends to the client's `acp` servers (see `mcp-servers.ts`): the one that
+     * `client` serves those servers with.
+     */
+    private readonly mcp = new McpOverAcp(),
+  ) {
     this.sessions = {};
     this.client = new ChangedMetaClient(
       client,
       () => this.toolCallCapabilities.air.client,
-      // Before the client can name the child that a `subagent_update` announces.
-      (update) => this.announcedChildren.sending(update),
+      (update) => {
+        // Before the client can name the child that a `subagent_update` announces.
+        this.announcedChildren.sending(update);
+        this.mcp.sending(update);
+        this.lastEntities.sending(update as Parameters<LastReportedEntity["sending"]>[0]);
+      },
     );
     this.logger = logger ?? console;
     this.exitPlan = new ExitPlanCoordinator<Session, Turn>({
@@ -2013,6 +2099,12 @@ export class ClaudeAcpAgent {
                   AIR_PLAN_FILE_CAPABILITY,
                   AIR_BACKGROUND_SUBAGENTS_CAPABILITY,
                   ...this.sessionIndex.capabilities(),
+                  ...(clientSupportsAirCapability(
+                    request.clientCapabilities,
+                    AIR_SESSION_REWIND_CAPABILITY,
+                  )
+                    ? [AIR_SESSION_REWIND_CAPABILITY]
+                    : []),
                 )
               : undefined,
           ),
@@ -2257,6 +2349,89 @@ export class ClaudeAcpAgent {
    *  {@link sessionIndex.SessionIndexConnection.forking}). */
   forking<T>(sourceId: string, fork: () => Promise<T>): Promise<T> {
     return this.sessionIndex.forking(sourceId, fork);
+  }
+
+  /**
+   * `_session/rewind` (see `session-rewind.ts`). Queued with the session's
+   * configuration changes, so a mode or model change sent meanwhile lands on
+   * the resumed query. A prompt sent meanwhile waits for it in `startTurn`:
+   * the rewind closes the query the prompt would otherwise run on.
+   */
+  rewindSession(params: SessionRewindRequest): Promise<SessionRewindResponse> {
+    // Only AIR knows the method, and only when it declared `sessionRewind`.
+    if (!this.supportsSessionRewind()) {
+      return Promise.reject(RequestError.methodNotFound(SESSION_REWIND_METHOD));
+    }
+    const { sessionId } = params;
+    const rewind = (async () => {
+      // Outside the queue: a provider update queues its own restart there.
+      while (this.providerUpdate) await this.providerUpdate;
+      return this.serializeConfigurationChange(sessionId, () => this.rewindLiveSession(params));
+    })();
+    const settled = rewind.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.sessionRewinds.set(sessionId, settled);
+    void settled.then(() => {
+      if (this.sessionRewinds.get(sessionId) === settled) this.sessionRewinds.delete(sessionId);
+    });
+    return rewind;
+  }
+
+  private rewindLiveSession(params: SessionRewindRequest): Promise<SessionRewindResponse> {
+    const { sessionId } = params;
+    const session = this.sessions[sessionId];
+    if (!session) throw RequestError.sessionNotFound(sessionId);
+    const creationParams = session.creationParams;
+    if (!creationParams || session.queryClosed) {
+      throw RequestError.internalError(undefined, SESSION_ENDED_MESSAGE);
+    }
+    return rewindSession(params, {
+      logger: this.logger,
+      clearedContext: session.claudeSessionId !== undefined,
+      // A `/remote-control` command in flight answers into the session's output
+      // after the query that the rewind closes was asked for it.
+      claudeIsWorking: () =>
+        this.claudeIsWorking(sessionId, session) || session.remoteControlCommand !== undefined,
+      // A closed query also ends the background tasks and subagents.
+      hasBackgroundWork: () =>
+        [...session.liveBackgroundTasks.values()].some((task) => !task.endedPerLevel),
+      loadHistory: () => loadRewindableHistory(sessionId, this.logger),
+      // The task list and the published failures outlive the dropped turns (and
+      // a failed cut): their entries carry ids of their own, which the transcript
+      // does not attribute to a turn. The ACP message ids are not carried: they
+      // may name a dropped message, and a fork then reads the stored history.
+      replaceQuery: async (resumeAt) => {
+        await this.replaceSessionQuery(sessionId, session, creationParams, resumeAt, {
+          cwd: session.cwd,
+          taskState: session.taskState,
+          subagentChecklists: session.subagentChecklists,
+          forwardSubagentText: session.forwardSubagentText,
+          sessionFailureState: session.sessionFailureState,
+          messageIdToUuid: new Map(),
+        });
+        const recreated = this.sessions[sessionId];
+        if (recreated && recreated !== session) this.rewoundSessions.set(session, recreated);
+      },
+      // The client drops the entities after the cut, which the anchor may name.
+      // The edited message's cursor lies where the dropped one did.
+      rewound: (cursorId) => this.lastEntities.rewind(sessionId, cursorId),
+      abandon: async (error) => {
+        if (error instanceof RequestError && error.code === AUTH_REQUIRED_CODE) {
+          // As after a sign-out: keep the husk, so the prompt after a sign-in
+          // recreates its query instead of meeting "Session not found".
+          session.needsSignOutRespawn = true;
+          return error;
+        }
+        // Not a closed husk: a `session/load` resumes the conversation again.
+        await this.teardownSession(sessionId);
+        return RequestError.internalError(
+          undefined,
+          `The rewind failed and the session could not be resumed: ${error}. Load the session again.`,
+        );
+      },
+    });
   }
 
   async resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse> {
@@ -2603,6 +2778,9 @@ export class ClaudeAcpAgent {
     if (origin === "client") this.sessions[params.sessionId]?.idleCompaction?.disarm("prompt");
     const received = ++this.promptsReceived;
     while (this.providerUpdate) await this.providerUpdate;
+    // A rewind closes the session's query and resumes a new one.
+    const rewinding = this.sessionRewinds.get(params.sessionId);
+    if (rewinding) await rewinding;
     let session = this.sessions[params.sessionId];
     if (!session) {
       throw RequestError.sessionNotFound(params.sessionId);
@@ -2639,13 +2817,17 @@ export class ClaudeAcpAgent {
 
     // Only a prompt that is the command awaits here: an await on every prompt
     // would let other work run between its checks and its turn's enqueue.
-    const remoteControl = parseRemoteControlCommand(params.prompt)
-      ? await adapterRemoteControlCommand(
-          params.prompt,
-          session.query,
-          session.terminalSlashCommands,
-        )
-      : null;
+    const isRemoteControl = parseRemoteControlCommand(params.prompt) !== null;
+    const askRemoteControl = () =>
+      adapterRemoteControlCommand(params.prompt, session.query, session.terminalSlashCommands);
+    let remoteControl = isRemoteControl ? await askRemoteControl() : null;
+    // A rewind that closed the query during that await did not see the command
+    // (`remoteControlCommand` is not set yet). It goes on with the session the
+    // rewind leaves, and is asked again of its query.
+    while (isRemoteControl && this.rewindToFollow(params.sessionId, session)) {
+      session = await this.followRewind(params.sessionId, session);
+      remoteControl = await askRemoteControl();
+    }
     if (remoteControl) {
       // The reply bypasses the turn queue, so it would land inside the output of
       // a turn that is still running. Refuse instead of interleaving.
@@ -2698,6 +2880,16 @@ export class ClaudeAcpAgent {
       await this.publishTaskPlan(params.sessionId, session.taskState);
     }
 
+    // A rewind that started during the awaits above did not see this prompt,
+    // which is not queued yet, and closes the query it was set up on. The
+    // prompt goes on with the session the rewind leaves, also when the rewind
+    // finished before this point. Only the subscription guard runs again: it is
+    // per query.
+    if (this.rewindToFollow(params.sessionId, session)) {
+      session = await this.followRewind(params.sessionId, session);
+      if (origin === "client") session.idleCompaction?.disarm("prompt");
+    }
+
     const userMessage = promptToClaude(params);
     const promptUuid = randomUUID();
     userMessage.uuid = promptUuid;
@@ -2708,7 +2900,7 @@ export class ClaudeAcpAgent {
     const isLocalOnlyCommand =
       firstText.startsWith("/") && LOCAL_ONLY_COMMANDS.has(firstText.split(" ", 1)[0]);
 
-    const fileChangeReport = session.fileChangeReporter?.request(params._meta);
+    let fileChangeReport = session.fileChangeReporter?.request(params._meta);
 
     const localCommand = this.localCommandMarkdown(params);
     const localCommandAbort = localCommand ? new AbortController() : undefined;
@@ -2726,19 +2918,50 @@ export class ClaudeAcpAgent {
       // then keeps the ordering it has without this feature.
       const cleared = session.promptSuggestions?.clear();
       if (cleared?.length) await this.publishPromptSuggestions(params.sessionId, cleared);
-      // A client of the neutral form asks for the prediction of this turn by id.
+    }
+
+    // A `/remote-control` command still in flight answers into the session's
+    // output; wait for its reply before this prompt's turn can begin. A rewind
+    // may have replaced the session during the awaits above, including the
+    // command's network call, and a command may be in flight on the successor
+    // too (a `/remote-control` prompt that the same rewind held). So wait for
+    // the current session's command, follow a rewind, and look again, until
+    // neither is pending. The check that ends the loop and the turn's enqueue
+    // below have no await between them, so no command can start in between.
+    // A failure of the command's reply is reported to the command's own prompt.
+    // A command that was waited for is done: its prompt clears the field in a
+    // `finally` that may run after this wait resumes, so it is not waited for twice.
+    let waited: Promise<void> | undefined;
+    for (;;) {
+      if (session.remoteControlCommand && session.remoteControlCommand !== waited) {
+        waited = session.remoteControlCommand;
+        await waited.catch(() => {});
+        continue;
+      }
+      if (!this.rewindToFollow(params.sessionId, session)) break;
+      const followed = await this.followRewind(params.sessionId, session);
+      if (followed === session) continue;
+      // What the prompt took from the old session (the file change report, the
+      // title context and the idle compaction's disarm) is taken again from
+      // the new one.
+      session = followed;
+      fileChangeReport = session.fileChangeReporter?.request(params._meta);
+      if (origin === "client") {
+        session.titles.onPrompt(params.prompt);
+        session.idleCompaction?.disarm("prompt");
+      }
+    }
+
+    // A client of the neutral form asks for the prediction of this turn by id.
+    // The session that runs the turn takes it: a rewind during the awaits
+    // above replaced the session, and the new one holds its own predictions.
+    if (origin === "client") {
       session.promptSuggestions?.prompted(
         this.toolCallCapabilities.neutralPromptSuggestions
           ? promptSuggestionsRequestId(params._meta)
           : undefined,
       );
     }
-
-    // A `/remote-control` command still in flight answers into the session's
-    // output; wait for its reply before this prompt's turn can begin. Nothing
-    // below awaits before the turn is queued, so no command can start between.
-    // A failure of the command's reply is reported to the command's own prompt.
-    if (session.remoteControlCommand) await session.remoteControlCommand.catch(() => {});
 
     // A `session/close` during the awaits above tore the session down, and
     // its consumer is gone, so the prompt would never be inserted. End it
@@ -2765,6 +2988,7 @@ export class ClaudeAcpAgent {
       promptUuid,
       events,
       isLocalOnlyCommand,
+      getsCursor: promptGetsCursor(params.prompt),
       ...(localCommand ? { localCommand } : {}),
       ...(localCommandAbort ? { localCommandAbort } : {}),
       ...(fileChangeReport ? { fileChangeReport } : {}),
@@ -2795,6 +3019,78 @@ export class ClaudeAcpAgent {
     await this.publishGoalFromPrompt(params.sessionId, firstText, promptUuid).catch((error) =>
       this.logger.error(`Session ${params.sessionId}: failed to publish the prompt's goal:`, error),
     );
+  }
+
+  /** Checked before `followRewind` so that a prompt which has nothing to follow does not yield. */
+  private rewindToFollow(sessionId: string, session: Session): boolean {
+    return this.sessionRewinds.has(sessionId) || this.rewoundSessions.has(session);
+  }
+
+  /** Waits for a running rewind of the session and returns the session the rewinds left in place of `session`; a session that ended otherwise is returned as it is. */
+  private async followRewind(sessionId: string, session: Session): Promise<Session> {
+    let moved = false;
+    for (;;) {
+      const running = this.sessionRewinds.get(sessionId);
+      if (running) {
+        await running;
+        if (!this.sessions[sessionId]) throw RequestError.sessionNotFound(sessionId);
+      }
+      const next = this.rewoundSessions.get(session);
+      if (next) {
+        session = next;
+        moved = true;
+        continue;
+      }
+      if (running) continue;
+      if (!moved) return session;
+      // Only the end of the chain must be alive: an intermediate session of two
+      // rewinds in one await is closed by the second rewind.
+      if (session.queryClosed) throw RequestError.internalError(undefined, SESSION_ENDED_MESSAGE);
+      const guard = this.runClaudeSubscriptionGuard(sessionId, session);
+      if (guard) await guard;
+      if (!this.rewoundSessions.has(session) && !this.sessionRewinds.has(sessionId)) {
+        return session;
+      }
+    }
+  }
+
+  /** Whether the client is AIR and declared `sessionRewind`: only it knows `_session/rewind`. */
+  private supportsSessionRewind(): boolean {
+    return (
+      this.toolCallCapabilities.air.client &&
+      clientSupportsAirCapability(this.clientCapabilities, AIR_SESSION_REWIND_CAPABILITY)
+    );
+  }
+
+  /**
+   * Sends a `cursor_update` to a client that declared `session.cursors`, and to
+   * no other: its `SessionUpdate` union is closed. A failed send is logged only,
+   * as the cursor is announced again by the next replay.
+   *
+   * `before` is the entity that this client holds right before the cursor.
+   *
+   * It carries `rewind` only where `_session/rewind` can act: not for a cursor
+   * that is `beforeCompaction` (`rewindable` false), and not in a session whose
+   * context was cleared (`clearedContext`).
+   */
+  private announceCursor(
+    sessionId: string,
+    update: ReturnType<typeof anchoredForkCursorUpdate>,
+    before: CursorEntity | undefined,
+    { rewindable: inChain = true }: { rewindable?: boolean } = {},
+  ): void {
+    if (this.clientCapabilities?.session?.cursors == null) return;
+    this.lastEntities.recordCursor(sessionId, update.cursorId, before);
+    const rewindable =
+      inChain &&
+      this.supportsSessionRewind() &&
+      this.sessions[sessionId]?.claudeSessionId === undefined;
+    this.client
+      .sessionUpdate({
+        sessionId,
+        update: rewindable ? withRewindCapability(update) : update,
+      } as AcpSessionNotification)
+      .catch((error) => this.logger.error(`Session ${sessionId}: cursor_update failed:`, error));
   }
 
   /** Runs the command, and sends its reply (see `runRemoteControlCommand`). */
@@ -2919,6 +3215,8 @@ export class ClaudeAcpAgent {
   /** Tells the user about client-provided MCP servers that `system`/init
    *  reports as `failed` or `needs-auth`, and about the ones the query started
    *  without (`session.unservedMcpServers`), once per server per session.
+   *  Servers that failed for the same reason share one notice (see
+   *  `mcpServerStartupNotices`).
    *  Servers from the user's Claude Code settings are left to `/mcp`: they are
    *  the same in every session, so a broken one would be reported in every
    *  session. A `needs-auth` server is reported only when the OAuth flow can't
@@ -2941,15 +3239,18 @@ export class ClaudeAcpAgent {
     if (!notStarted.length) return;
     const oauthAvailable =
       !!this.clientCapabilities?.elicitation?.url && supportsMcpOAuth(session.query);
-    for (const server of notStarted) {
-      if (session.reportedMcpServers?.has(server.name)) continue;
-      const notice = mcpServerStartupNotice(server, oauthAvailable);
-      if (!notice) continue;
-      (session.reportedMcpServers ??= new Set()).add(server.name);
+    const unreported = notStarted.filter((server) => !session.reportedMcpServers?.has(server.name));
+    for (const { servers, status, notice } of mcpServerStartupNotices(unreported, oauthAvailable)) {
+      for (const name of servers) (session.reportedMcpServers ??= new Set()).add(name);
       await sendUpdate({
         sessionId,
         update: noticeOrTranscriptUpdate(notice, supportsNotices, undefined, {
-          claudeCode: { kind: "mcpServerStatus", server: server.name, status: server.status },
+          // `server` for a notice about one server, `servers` for one about several.
+          claudeCode: {
+            kind: "mcpServerStatus",
+            ...(servers.length === 1 ? { server: servers[0] } : { servers }),
+            status,
+          },
         }),
       });
     }
@@ -2992,6 +3293,9 @@ export class ClaudeAcpAgent {
       resumedModelHint?: string | Promise<string | undefined>;
       replacingSession?: Session;
       optionsOnly?: boolean;
+      resumeSessionAt?: string;
+      resumeDropsTurn?: string;
+      replayState?: ReplayState;
     },
   ): Promise<NewSessionResponse> {
     try {
@@ -3754,6 +4058,17 @@ export class ClaudeAcpAgent {
       turn.insertedReported = true;
       turn.events.inserted(turn.promptUuid);
       this.startForeground(params.sessionId, turn);
+      // v1 does not report the prompt the client sent, so the cursor lies after
+      // the entity before it. The first prompt has none, and a session that was
+      // resumed without a replay holds none (no anchor, no cursor).
+      const anchor = this.lastEntities.after(params.sessionId);
+      if (turn.getsCursor && anchor) {
+        this.announceCursor(
+          params.sessionId,
+          anchoredForkCursorUpdate(turn.promptUuid, anchor),
+          this.lastEntities.last(params.sessionId),
+        );
+      }
     };
 
     /** Ensure there is an active turn before a user-turn result that carries no
@@ -6855,6 +7170,9 @@ export class ClaudeAcpAgent {
                     ? stripLocalCommandMetadata(message.message.content)
                     : null;
                 if (remoteContent !== null) {
+                  // Before the message itself is reported below.
+                  const before = this.lastEntities.last(params.sessionId);
+                  const hasHistory = before !== undefined;
                   for (const notification of toAcpNotifications(
                     remoteContent as ContentBlockParam[] | string,
                     "user",
@@ -6870,6 +7188,18 @@ export class ClaudeAcpAgent {
                     },
                   )) {
                     await sendUpdate(notification);
+                  }
+                  // This client reported the message with its `messageId`: the
+                  // cursor lies before it, as in a replay.
+                  if (
+                    hasHistory &&
+                    promptGetsCursor(
+                      typeof remoteContent === "string"
+                        ? [{ type: "text", text: remoteContent }]
+                        : (remoteContent as ContentBlockParam[]),
+                    )
+                  ) {
+                    this.announceCursor(params.sessionId, forkCursorUpdate(message.uuid), before);
                   }
                 }
                 // Otherwise an unrelated replay (e.g. the echo of an already-settled turn).
@@ -8071,6 +8401,8 @@ export class ClaudeAcpAgent {
     await this.teardownSession(sessionId);
     // After the teardown's last updates, which name the children.
     this.announcedChildren.rootClosed(sessionId);
+    this.mcp.sessionClosed(sessionId);
+    this.lastEntities.forget(sessionId);
   }
 
   /** Idempotent: a session that is not loaded here is already closed. */
@@ -8197,12 +8529,18 @@ export class ClaudeAcpAgent {
   ): Promise<void> {
     const replayStartedAt = performance.now();
     const toolUseCache: ToolUseCache = {};
+    // A replay rebuilds the client's entities, and its cursors anchor to those.
+    this.lastEntities.forget(sessionId);
     // A load replays the messages before each compaction too, unless reading them fails.
-    const messages = await readHistoryAcrossCompactions(
+    // The rewind cut comes first: the dropped turns get no replay and no cursor.
+    const current = await cutAtRewindPoint(
       sessionId,
       resumedMessages ?? (await getSessionMessages(sessionId)),
       this.logger,
     );
+    const messages = await readHistoryAcrossCompactions(sessionId, current, this.logger);
+    // A cursor whose resume point a compaction left out cannot be rewound to.
+    const currentUuids = new Set(current.map((message) => message.uuid));
     const historyLoadedAt = performance.now();
     this.logger.log(
       `[session/replay] sessionId=${sessionId} phase=read durationMs=${Math.round(historyLoadedAt - replayStartedAt)} messages=${messages.length}`,
@@ -8700,7 +9038,21 @@ export class ClaudeAcpAgent {
         }
       }
     };
-    for (const message of messages) await replayMessage(message);
+    for (const [index, message] of messages.entries()) {
+      // Before the message's own chunk: the cursor lies before the message.
+      const before = this.lastEntities.last(sessionId);
+      await replayMessage(message);
+      // A task notification record is no user message to the client (see `replayMessage`).
+      if (
+        !pending?.stopped &&
+        hasForkCursor(messages, index) &&
+        !isTaskNotificationRecord(message)
+      ) {
+        this.announceCursor(sessionId, forkCursorUpdate(message.uuid), before, {
+          rewindable: currentUuids.has(messages[index - 1]!.uuid),
+        });
+      }
+    }
     if (rfdReplay && !pending?.stopped) {
       await rfdReplay.finish(clientSupportsNotices(this.clientCapabilities), sessionId);
       this.replayedSubagents.set(sessionId, rfdReplay);
@@ -9168,22 +9520,35 @@ export class ClaudeAcpAgent {
    * the callback beats the spawning Agent/Task frame, the root keeps it; the
    * later frame announces the child with its correct nested lineage. A
    * workflow agent gets no task_started, so the root always keeps its tool use.
+   *
+   * `reportingSessionId` is the session whose updates report the agent's tool
+   * calls as the consumer reads them from the stream: the root session for
+   * the main conversation, a subagent's child session once it is announced,
+   * and the root session for a subagent of a client without child sessions.
+   * Undefined for an agent whose task_started the consumer has not read,
+   * which a workflow agent never gets, and for a child that is not announced.
    */
   private toolUseOwner(
     session: Session,
     sessionId: string,
     agentID: string | undefined,
-  ): { parentToolUseId?: string; toolCallSessionId: string } {
-    const parentToolUseId = agentID
-      ? session.liveBackgroundTasks.get(agentID)?.parentToolUseId
-      : undefined;
+  ): { parentToolUseId?: string; toolCallSessionId: string; reportingSessionId?: string } {
+    const task = agentID ? session.liveBackgroundTasks.get(agentID) : undefined;
+    const childSessions = clientSupportsSubagents(this.clientCapabilities);
     const child =
-      clientSupportsSubagents(this.clientCapabilities) && agentID
-        ? session.nativeSubagentsByTaskId?.get(agentID)
-        : undefined;
+      childSessions && agentID ? session.nativeSubagentsByTaskId?.get(agentID) : undefined;
+    const announced = child?.announced ? child.sessionId : undefined;
+    const reportingSessionId = !agentID
+      ? sessionId
+      : childSessions
+        ? announced
+        : task?.isSubagent
+          ? sessionId
+          : undefined;
     return {
-      ...(parentToolUseId ? { parentToolUseId } : {}),
-      toolCallSessionId: child?.announced ? child.sessionId : sessionId,
+      ...(task?.parentToolUseId ? { parentToolUseId: task.parentToolUseId } : {}),
+      toolCallSessionId: announced ?? sessionId,
+      ...(reportingSessionId !== undefined ? { reportingSessionId } : {}),
     };
   }
 
@@ -10221,33 +10586,39 @@ export class ClaudeAcpAgent {
     );
   }
 
-  private async createSession(
+  /**
+   * Creates the session. When Claude Code refuses to start with the session's
+   * MCP servers, the session is created without them (see
+   * `startAroundRefusedMcpServers`).
+   */
+  private createSession(
     params: NewSessionRequest,
-    creationOpts: {
-      resume?: string;
-      forkSession?: boolean;
-      publicSessionId?: string;
-      permissionMode?: PermissionMode;
-      /** Start a NEW conversation, but under this id instead of a random one.
-       *  `resume` continues a stored conversation and fails when the CLI never
-       *  wrote one; this keeps the ACP session id alive with an empty history.
-       *  The SDK accepts a caller-chosen id as long as `resume` is not set. */
-      reuseSessionId?: string;
-      /** Concrete model id from the resumed transcript's last real assistant
-       *  message. Claude Code restores from this same record, so it lets us
-       *  report the live model without a slow getContextUsage control request. */
-      resumedModelHint?: string | Promise<string | undefined>;
-      /** The state that a replay on the same session uses before this record exists. */
-      replayState?: ReplayState;
-      /** A close of this session during startup cancels registration of its replacement. */
-      replacingSession?: Session;
-      /**
-       * `session/options`: the query answers with the modes and config options
-       * and closes. No session is registered, and Claude Code stores nothing
-       * of the query (`persistSession: false`).
-       */
-      optionsOnly?: boolean;
-    } = {},
+    creationOpts: SessionCreation = {},
+  ): Promise<NewSessionResponse> {
+    const names = mcpServerNames(
+      params.mcpServers,
+      (params._meta as NewSessionMeta | undefined)?.claudeCode?.options?.mcpServers,
+    );
+    return startAroundRefusedMcpServers(
+      // A `session/options` probe starts no MCP servers.
+      !creationOpts.optionsOnly && names.length > 0,
+      (withoutMcpServers) =>
+        this.startSession(
+          params,
+          creationOpts,
+          withoutMcpServers ? refusedMcpServers(names) : undefined,
+        ),
+    );
+  }
+
+  /**
+   * One start of {@link createSession}. `refused`: the session's MCP servers
+   * when Claude Code refused to start with them, each unserved.
+   */
+  private async startSession(
+    params: NewSessionRequest,
+    creationOpts: SessionCreation,
+    refused: SdkMcpServers | undefined,
   ): Promise<NewSessionResponse> {
     const createStartedAt = performance.now();
     // Validate `cwd` up front. The ACP spec requires an absolute path, and the
@@ -10281,6 +10652,15 @@ export class ClaudeAcpAgent {
     const timing = new SessionTiming(this.logger, "create", sessionId, createStartedAt);
     timing.phase("validate-cwd");
 
+    // A resume stops at a pending rewind point, or the dropped turns come back.
+    // The `session/options` probe persists nothing, so it leaves the transcript
+    // and `rewind.json` alone. A rewind passes its own point.
+    const resumeSessionAt =
+      creationOpts.resumeSessionAt ??
+      (creationOpts.resume !== undefined && !creationOpts.optionsOnly
+        ? await prepareRewoundResume(creationOpts.resume, this.logger)
+        : undefined);
+
     // Most session/load calls already carry a transcript snapshot so history
     // replay and model restoration share one local read. A few resume paths
     // intentionally call createSession directly (legacy session/new metadata,
@@ -10298,10 +10678,9 @@ export class ClaudeAcpAgent {
       timing.phase("resume-transcript");
     }
 
-    const { configs: mcpServers, unserved: unservedMcpServers } = await sdkMcpServers(
-      params.mcpServers,
-      (server) => this.client.mcpServerOverAcp(server),
-    );
+    const { configs: mcpServers, unserved: unservedMcpServers } =
+      refused ??
+      (await sdkMcpServers(params.mcpServers, (server) => this.client.mcpServerOverAcp(server)));
     for (const server of unservedMcpServers) {
       this.logger.error(
         `Session ${sessionId} starts without MCP server ${server.name}: ${server.error}`,
@@ -10461,6 +10840,23 @@ export class ClaudeAcpAgent {
     const subagentConfigHook = subagentForm(this.clientCapabilities)
       ? this.subagentConfigurationHook(sessionId)
       : undefined;
+    // None for a session without `acp` MCP servers: it has no MCP request to
+    // name a session for, so Claude Code waits on no hook of these.
+    // The bridge hears of no server that the query starts without.
+    const servedMcpServers = refused ? [] : params.mcpServers;
+    const mcpToolUse = this.mcp.toolUseHooks(sessionId, servedMcpServers, {
+      childSessions: clientSupportsSubagents(this.clientCapabilities),
+      reporting: (agentId) => {
+        const session = this.sessions[sessionId];
+        return session && this.toolUseOwner(session, sessionId, agentId).reportingSessionId;
+      },
+      // In the RFD form, a subagent's child session has its agent id (see
+      // `NativeSubagentRuntime`). AIR's draft announces none with `subagent_update`.
+      childSessionId: (agentId) =>
+        subagentForm(this.clientCapabilities) === "rfd" ? agentId : undefined,
+      definesAgent: (name) =>
+        this.sessions[sessionId]?.agents.some((agent) => agent.name === name) === true,
+    });
     const suggestionForms = {
       meta: this.toolCallCapabilities.air.client,
       update: clientTakesPromptSuggestions(this.clientCapabilities?.session),
@@ -10508,7 +10904,7 @@ export class ClaudeAcpAgent {
       includePartialMessages: true,
       forwardSubagentText,
       mcpServers: {
-        ...(userProvidedOptions?.mcpServers || {}),
+        ...(refused ? {} : userProvidedOptions?.mcpServers),
         ...mcpServers,
       },
       allowDangerouslySkipPermissions: allowBypass,
@@ -10552,17 +10948,19 @@ export class ClaudeAcpAgent {
                 ...(userProvidedOptions?.hooks?.SubagentStop ?? []),
                 { hooks: [subagentConfigHook] },
               ],
-              PostToolUseFailure: [
-                ...(userProvidedOptions?.hooks?.PostToolUseFailure ?? []),
-                { hooks: [subagentConfigHook] },
-              ],
             }
           : {}),
-        ...(subagentConfigHook
+        ...(subagentConfigHook || mcpToolUse
           ? {
+              PostToolUseFailure: [
+                ...(userProvidedOptions?.hooks?.PostToolUseFailure ?? []),
+                ...(subagentConfigHook ? [{ hooks: [subagentConfigHook] }] : []),
+                ...(mcpToolUse ? [mcpToolUse.PostToolUseFailure] : []),
+              ],
               PreToolUse: [
                 ...(userProvidedOptions?.hooks?.PreToolUse || []),
-                { hooks: [subagentConfigHook] },
+                ...(subagentConfigHook ? [{ hooks: [subagentConfigHook] }] : []),
+                ...(mcpToolUse ? [mcpToolUse.PreToolUse] : []),
               ],
             }
           : {}),
@@ -10579,6 +10977,7 @@ export class ClaudeAcpAgent {
               }),
             ],
           },
+          ...(mcpToolUse ? [mcpToolUse.PostToolUse] : []),
         ],
         // Mirror model switches the adapter didn't drive into the ACP picker
         // and the model-dependent bookkeeping (context window, mode clamping,
@@ -10664,6 +11063,13 @@ export class ClaudeAcpAgent {
         ],
       },
       ...(creationOpts.resume !== undefined && { resume: creationOpts.resume }),
+      ...(creationOpts.resume !== undefined &&
+        resumeSessionAt !== undefined && {
+          resumeSessionAt,
+          ...(creationOpts.resumeDropsTurn !== undefined && {
+            resumeDropsTurn: creationOpts.resumeDropsTurn,
+          }),
+        }),
       ...(creationOpts.forkSession !== undefined && { forkSession: creationOpts.forkSession }),
       // The probe neither reports session updates through our hooks nor
       // starts the MCP servers in the client's options or workspace settings.
@@ -10943,6 +11349,9 @@ export class ClaudeAcpAgent {
         resumedFromHistory: creationOpts.resume !== undefined,
         cwd: params.cwd,
         sessionFingerprint: computeSessionFingerprint(params),
+        ...(creationOpts.publicSessionId && options.sessionId
+          ? { claudeSessionId: options.sessionId }
+          : {}),
         creationParams: params,
         unservedMcpServers,
         settingsManager,
@@ -11015,6 +11424,7 @@ export class ClaudeAcpAgent {
         fileChangeReporter,
         promptSuggestions: PromptSuggestions.forClient(suggestionForms),
       };
+      this.mcp.sessionStarted(sessionId, servedMcpServers);
       const registered = this.sessions[sessionId];
       registered.idleCompaction = new IdleCompaction(
         {
@@ -11127,6 +11537,8 @@ export class ClaudeAcpAgent {
     sessionId: string,
     session: Session,
     creationParams: NewSessionRequest,
+    resumeAt?: { resumeSessionAt: string; resumeDropsTurn?: string },
+    keepState?: ReplayState,
   ): Promise<void> {
     this.closeQueryStream(session);
     // Keep the old record visible so closeSession and dispose can mark it torn down.
@@ -11134,6 +11546,8 @@ export class ClaudeAcpAgent {
     await this.recreateLiveSession(withoutEffort(creationParams), sessionId, {
       permissionMode: session.modes.currentModeId as PermissionMode,
       replacingSession: session,
+      ...resumeAt,
+      ...(keepState ? { replayState: keepState } : {}),
     });
     const recreated = this.sessions[sessionId];
     if (!recreated || recreated.tornDown) return;
@@ -11616,7 +12030,7 @@ export function v1AgentApp(
     };
   const app = acpAgent({ name: "claude-code-acp" })
     .onConnect((connection) => {
-      agent = new ClaudeAcpAgent(new ClientConnection(connection.client, mcp), logger);
+      agent = new ClaudeAcpAgent(new ClientConnection(connection.client, mcp), logger, mcp);
       onAgent(agent);
     })
     .onNotification(methods.agent.mcp.message, mcp.handleNotification)
@@ -11671,6 +12085,13 @@ export function v1AgentApp(
     .onRequest(methods.agent.providers.disable, (ctx) => agent.unstable_disableProvider(ctx.params))
     .onRequest(methods.agent.logout, (ctx) => agent.logout(ctx.params))
     .onRequest(methods.agent.auth.status, () => agent.authStatusResponse())
+    .onRequest<SessionRewindRequest, SessionRewindResponse>(
+      SESSION_REWIND_METHOD,
+      { parse: parseSessionRewindRequest },
+      // Registered before `session/prompt`: the lock is taken in the same tick as the request,
+      // so a prompt sent right after it waits in `startTurn`.
+      ofRootSession("rewind", (ctx) => agent.rewindSession(ctx.params)),
+    )
     .onRequest(
       methods.agent.session.prompt,
       ofRootSession("prompt", (ctx) => runPromptWithCancellation(agent, ctx.params, ctx.signal)),

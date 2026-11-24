@@ -864,7 +864,7 @@ describe("client-neutral session index", () => {
       agent.listSessions({ cwd: repo, _meta: neutralListMeta({ limit: 0 }) }),
     ).rejects.toMatchObject({
       code: -32602,
-      message: expect.stringContaining("`_meta.sessionIndex.list.limit`"),
+      message: expect.stringContaining("_meta.sessionIndex.list.limit must"),
     });
   });
 
@@ -879,14 +879,14 @@ describe("client-neutral session index", () => {
     ).rejects.toMatchObject({
       code: -32602,
       data: { archived: "bogus" },
-      message: expect.stringContaining("`_meta.sessionIndex.list.archived`"),
+      message: expect.stringContaining("_meta.sessionIndex.list.archived must"),
     });
     await expect(
       agent.listSessions({ cwd: workspace, _meta: neutralListMeta({ includeWorktrees: "yes" }) }),
     ).rejects.toMatchObject({
       code: -32602,
       data: { includeWorktrees: "yes" },
-      message: expect.stringContaining("`_meta.sessionIndex.list.includeWorktrees`"),
+      message: expect.stringContaining("_meta.sessionIndex.list.includeWorktrees must"),
     });
     // The same filters under the AIR namespace are not read for this client.
     const page = await agent.listSessions({
@@ -897,6 +897,36 @@ describe("client-neutral session index", () => {
       [session.id, false],
     ]);
   });
+
+  // v0.112.0 (#1709): error messages are plain text. The neutral path names
+  // its own namespace in the same words as upstream's AIR message.
+  it.each([
+    {
+      list: { archived: "bogus" },
+      message: 'list.archived must be "unarchived", "archived" or "all"',
+    },
+    { list: { includeWorktrees: "yes" }, message: "list.includeWorktrees must be a boolean" },
+    { list: { limit: 0 }, message: "list.limit must be an integer of at least 1" },
+  ])(
+    "names the invalid filter $list in plain text under each namespace",
+    async ({ list, message }) => {
+      const { agent: airAgent } = await indexAgent();
+      const { agent } = await neutralAgent();
+
+      await expect(
+        airAgent.listSessions({ cwd: workspace, _meta: listMeta(list) }),
+      ).rejects.toMatchObject({
+        code: -32602,
+        message: `Invalid params: _meta.jetbrains.air.${message}`,
+      });
+      await expect(
+        agent.listSessions({ cwd: workspace, _meta: neutralListMeta(list) }),
+      ).rejects.toMatchObject({
+        code: -32602,
+        message: `Invalid params: _meta.sessionIndex.${message}`,
+      });
+    },
+  );
 
   it("renames, archives and unarchives, and reports the archive state under _meta.sessionIndex", async () => {
     const session = await writeTranscript({});
