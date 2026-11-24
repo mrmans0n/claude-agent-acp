@@ -27362,6 +27362,78 @@ describe("turn steering (_session/steering)", () => {
     });
   });
 
+  it("advertises and publishes goals for an opted-in non-AIR client", async () => {
+    const updates: SessionNotification[] = [];
+    const agent = new ClaudeAcpAgent(
+      {
+        sessionUpdate: async (notification: SessionNotification) => updates.push(notification),
+      } as unknown as AcpClient,
+      { log: () => {}, error: () => {} },
+    );
+    const response = await agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: { _meta: { goal: {} } },
+    });
+    injectGeneratorSession(agent, (input) => {
+      async function* messageGenerator() {
+        const prompt = await input[Symbol.asyncIterator]().next();
+        yield userEcho(prompt.value);
+        yield createResultMessage();
+        yield idleMessage();
+      }
+      return messageGenerator();
+    });
+
+    expect(response._meta?.goal).toEqual({
+      version: 1,
+      controlMethod: GOAL_CONTROL_METHOD,
+      actions: ["set", "clear"],
+    });
+    expect(response._meta).not.toHaveProperty("jetbrains");
+
+    await agent.prompt({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "/goal Ship the change" }],
+    });
+    expect(updates).toContainEqual({
+      sessionId: "test-session",
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: {
+          goal: {
+            objective: "Ship the change",
+            status: "active",
+            controlMethod: GOAL_CONTROL_METHOD,
+          },
+        },
+      },
+    });
+  });
+
+  // v0.112.0 (#1704): the AIR capability list that goalMeta() wraps now ends
+  // with sessionRewind for an AIR client that declares it.
+  it("advertises the goal next to the session rewind of an AIR client, and no rewind to a goal opt-in client", async () => {
+    const initialize = (clientMeta: Record<string, unknown>) =>
+      new ClaudeAcpAgent({} as unknown as AcpClient, { log: () => {}, error: () => {} }).initialize(
+        { protocolVersion: 1, clientCapabilities: { _meta: clientMeta } },
+      );
+    const goal = { version: 1, controlMethod: GOAL_CONTROL_METHOD, actions: ["set", "clear"] };
+
+    const air = await initialize({
+      jetbrains: { air: { version: 1, capabilities: ["sessionRewind"] } },
+    });
+    const airMeta = (air._meta?.jetbrains as { air: Record<string, unknown> }).air;
+    expect(airMeta.capabilities).toContain("sessionRewind");
+    expect(airMeta.goal).toEqual(goal);
+    expect(air._meta).not.toHaveProperty("goal");
+
+    // The rewind is AIR's: a goal opt-in client that names it gets the goal only.
+    const neutral = await initialize({ goal: {}, sessionRewind: {} });
+    expect(neutral._meta?.goal).toEqual(goal);
+    expect(neutral._meta).not.toHaveProperty("jetbrains");
+    expect(JSON.stringify(neutral._meta)).not.toContain("sessionRewind");
+  });
+
   it("submits set and clear through the session prompt queue when the session is idle", async () => {
     const agent = createMockAgent();
     const prompt = vi.spyOn(agent, "prompt").mockResolvedValue({ stopReason: "end_turn" });
