@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AcpSessionNotification } from "../acp-subagents.js";
 import {
   AsyncTaskRuntime,
+  asyncTaskCapabilityMeta,
   backgroundBashTaskFromToolResult,
   clientSupportsAsyncTasks,
 } from "../async-tasks.js";
@@ -608,6 +609,50 @@ describe("AsyncTaskRuntime", () => {
       }),
     ).toBe(true);
     expect(clientSupportsAsyncTasks({})).toBe(false);
+  });
+
+  it.each([true, false, null, {}, [], "true"])(
+    "requires literal true for provider-neutral async task opt-in (%j)",
+    (asyncTasks) => {
+      expect(clientSupportsAsyncTasks({ _meta: { "async-tasks": asyncTasks } })).toBe(
+        asyncTasks === true,
+      );
+    },
+  );
+
+  it("does not let the neutral flag bypass a mixed AIR client without asyncTasks", () => {
+    const capabilities = {
+      _meta: {
+        "async-tasks": true,
+        jetbrains: { air: { version: 1, capabilities: [] } },
+      },
+    };
+    expect(clientSupportsAsyncTasks(capabilities)).toBe(false);
+    expect(asyncTaskCapabilityMeta(capabilities, { steering: { supported: true } })).toEqual({
+      steering: { supported: true },
+    });
+  });
+
+  it("advertises the stop control at top level to the neutral opt-in only, never to AIR", () => {
+    const steering = { steering: { supported: true } };
+    expect(asyncTaskCapabilityMeta({ _meta: { "async-tasks": true } }, steering)).toEqual({
+      ...steering,
+      "async-tasks": {
+        version: 1,
+        controlMethod: "_session/async_task/stop",
+        actions: ["stop"],
+      },
+    });
+    // AIR with asyncTasks learns of the stop control from its capability list.
+    const air = {
+      _meta: {
+        "async-tasks": true,
+        jetbrains: { air: { version: 1, capabilities: ["asyncTasks"] } },
+      },
+    };
+    expect(clientSupportsAsyncTasks(air)).toBe(true);
+    expect(asyncTaskCapabilityMeta(air, steering)).toEqual(steering);
+    expect(asyncTaskCapabilityMeta({ _meta: {} }, null)).toBeUndefined();
   });
 
   it("publishes one durable lifecycle with progress and a terminal state", async () => {
