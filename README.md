@@ -22,6 +22,7 @@ This tool implements an ACP agent by using the official [Claude Agent SDK](https
 - `/plugin` (aliases `/plugins`, `/marketplace`) in the chat: the adapter runs `claude plugin …` for install, uninstall, enable, disable, update, and list, and `marketplace add|list|remove|update`, because Claude Code refuses `/plugin` in SDK mode, then reloads the session's plugins. It is not available in remote (`sdk-url`) sessions
 - Prompt suggestions: the prompt that Claude Code predicts the user sends next, as ACP's unstable `prompt_suggestions_update`, for a client that advertises `session.promptSuggestions`
 - Session-scoped long-running goals for AIR through the [goal extension](docs/air-extensions.md#goal) under `_meta.jetbrains.air.goal`
+- Background task lifecycle and per-task stop control through the opt-in [async tasks extension](docs/air-extensions.md#async-tasks), including the provider-neutral `clientCapabilities._meta["async-tasks"]: true` negotiation
 - Structured errors, recovery, and warnings through the opt-in [session failure extension](docs/air-extensions.md#session-failure)
 - Concrete model and effort defaults through the opt-in [recommended config value extension](docs/air-extensions.md#recommended-config-values)
 - Tool permission presentation, editable choices, and durable effects through the [permission extension](docs/air-extensions.md#permission-presentation)
