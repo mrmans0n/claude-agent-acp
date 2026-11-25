@@ -60,6 +60,12 @@ const air = (...capabilities: string[]): ClientCapabilities => ({
   _meta: { jetbrains: { air: { version: 1, capabilities } } },
 });
 const REWIND_CLIENT = air(AIR_SESSION_REWIND_CAPABILITY);
+/** A client that is not AIR and opts into the client-neutral `sessionRewind`. */
+const neutral = (sessionRewind: unknown): ClientCapabilities => ({
+  session: { cursors: {} },
+  _meta: { sessionRewind },
+});
+const NEUTRAL_REWIND_CLIENT = neutral({ version: 1 });
 
 function user(uuid: string, content: unknown) {
   return {
@@ -214,10 +220,29 @@ describe("_session/rewind on v1", { timeout: 10_000 }, () => {
       })) as InitializeResponse;
       const listed = (response._meta as any)?.jetbrains?.air?.capabilities ?? [];
       expect(listed.includes(AIR_SESSION_REWIND_CAPABILITY)).toBe(advertised);
+      expect((response._meta as any)?.sessionRewind).toBeUndefined();
+    });
+
+    it.each([
+      ["version 1", { version: 1 }, { version: 1 }],
+      ["a later version", { version: 2 }, { version: 1 }],
+      ["true", true, undefined],
+      ["no version", {}, undefined],
+      ["version 0", { version: 0 }, undefined],
+    ])("answers a neutral opt-in with %s at top level", async (_, optIn, advertised) => {
+      const response = (await agent.initialize({
+        protocolVersion: 1,
+        clientCapabilities: neutral(optIn),
+      })) as InitializeResponse;
+      expect((response._meta as any)?.sessionRewind).toEqual(advertised);
+      // The client stays a non-AIR client: no AIR capability list.
+      expect((response._meta as any)?.jetbrains).toBeUndefined();
     });
 
     it.each([
       ["a client that declares sessionRewind", REWIND_CLIENT, { fork: {}, rewind: {} }],
+      ["a client of the neutral form", NEUTRAL_REWIND_CLIENT, { fork: {}, rewind: {} }],
+      ["a client whose neutral opt-in is malformed", neutral(true), { fork: {} }],
       ["an AIR client that does not", air(), { fork: {} }],
       ["a client that is not AIR", { session: { cursors: {} } }, { fork: {} }],
     ])("puts rewind on the cursors of %s", async (_, capabilities, expected) => {
@@ -284,26 +309,32 @@ describe("_session/rewind on v1", { timeout: 10_000 }, () => {
   });
 
   describe("rewinding", () => {
-    it("recreates the same session at the cut, with the user's choices", async () => {
-      const sessionId = await start();
-      await agent.setSessionConfigOption({ sessionId, configId: "model", value: "opus" });
-      const before = queries[0]!;
+    it.each([
+      ["an AIR client", REWIND_CLIENT],
+      ["a client of the neutral form", NEUTRAL_REWIND_CLIENT],
+    ])(
+      "recreates the same session at the cut, with the user's choices, for %s",
+      async (_, client) => {
+        const sessionId = await start(client);
+        await agent.setSessionConfigOption({ sessionId, configId: "model", value: "opus" });
+        const before = queries[0]!;
 
-      expect(await rewind(sessionId)).toEqual({ rewound: true });
+        expect(await rewind(sessionId)).toEqual({ rewound: true });
 
-      expect(before.close).toHaveBeenCalled();
-      const resumed = queries.at(-1)!;
-      expect(resumed.request.options).toMatchObject({
-        resume: sessionId,
-        resumeSessionAt: "a2",
-        resumeDropsTurn: "u3",
-      });
-      expect(resumed.state.model).toBe("opus");
-      expect(agent.sessions[sessionId]!.query).toBe(resumed);
-      // The reader runs: a prompt reaches the resumed query and ends its turn.
-      expect(await prompt(sessionId, "edited")).toMatchObject({ stopReason: "end_turn" });
-      expect(resumed.prompts).toHaveLength(1);
-    });
+        expect(before.close).toHaveBeenCalled();
+        const resumed = queries.at(-1)!;
+        expect(resumed.request.options).toMatchObject({
+          resume: sessionId,
+          resumeSessionAt: "a2",
+          resumeDropsTurn: "u3",
+        });
+        expect(resumed.state.model).toBe("opus");
+        expect(agent.sessions[sessionId]!.query).toBe(resumed);
+        // The reader runs: a prompt reaches the resumed query and ends its turn.
+        expect(await prompt(sessionId, "edited")).toMatchObject({ stopReason: "end_turn" });
+        expect(resumed.prompts).toHaveLength(1);
+      },
+    );
 
     it("gives the edited message a cursor after the entity that the client keeps, and rewinds again", async () => {
       const sessionId = await start();
@@ -755,6 +786,7 @@ describe("_session/rewind on v1", { timeout: 10_000 }, () => {
     it.each([
       ["an AIR client that did not declare sessionRewind", air()],
       ["a client that is not AIR", { session: { cursors: {} } }],
+      ["a client whose neutral opt-in is malformed", neutral(true)],
     ])("answers method not found to %s", async (_, clientCapabilities) => {
       let created!: ClaudeAcpAgent;
       const connection = acpClient({ name: "rewind-test" }).connect(

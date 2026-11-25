@@ -2113,6 +2113,28 @@ The request fails with `-32602` for:
 
 A `sessionId` that is not held by the agent fails with `-32002`.
 
+### Client-neutral session rewind
+
+Any ACP v1 client can use `_session/rewind` without declaring `_meta.jetbrains.air`.
+It opts in at `initialize` with `clientCapabilities._meta.sessionRewind: { "version": 1 }`.
+Only an object whose `version` is an integer of at least 1 opts in; `true`, a string, an array, `null`, a missing `version`, `0` or a fraction enables nothing.
+
+The `initialize` response of an opted-in client carries the agent side at top level:
+
+```json
+{
+  "_meta": {
+    "sessionRewind": { "version": 1 }
+  }
+}
+```
+
+- The request, the response, the refusal reasons and the errors are those of the AIR form above.
+- The session's cursors carry `{ "fork": {}, "rewind": {} }` under the same rules. The client still needs `clientCapabilities.session.cursors` to get any `cursor_update`.
+- The opt-in changes nothing else: the client keeps the tool call, subagent and failure forms of a client that is not AIR, and gets no AIR capability list.
+- An AIR client follows only its AIR capability, and its `initialize` response has no top-level `sessionRewind` unless it opts in here too.
+- ACP v2 ignores the opt-in, as it has no `_session/rewind`.
+
 ## Presentation hints
 
 Each session mode and each value of the mode config option carries `_meta.jetbrains.air.kind`:

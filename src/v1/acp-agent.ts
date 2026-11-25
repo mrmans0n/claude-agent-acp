@@ -241,6 +241,9 @@ import {
 import {
   cutAtRewindPoint,
   loadRewindableHistory,
+  clientOptsIntoNeutralSessionRewind,
+  NEUTRAL_SESSION_REWIND_KEY,
+  neutralSessionRewindCapability,
   parseSessionRewindRequest,
   prepareRewoundResume,
   rewindSession,
@@ -2118,6 +2121,10 @@ export class ClaudeAcpAgent {
           ...(clientOptsIntoNeutralForkPoint(this.clientCapabilities)
             ? { [NEUTRAL_FORK_POINT_KEY]: neutralForkPointCapability() }
             : {}),
+          // ACP v1 only, like `_session/rewind` itself.
+          ...(clientOptsIntoNeutralSessionRewind(this.clientCapabilities)
+            ? { [NEUTRAL_SESSION_REWIND_KEY]: neutralSessionRewindCapability() }
+            : {}),
           // ACP v1 only: a v2 client gets the v2 patch form (`ClientCapabilities.from`).
           ...(this.toolCallCapabilities.neutralDiffPatch
             ? { [NEUTRAL_DIFF_PATCH_KEY]: neutralDiffPatchCapability() }
@@ -2317,7 +2324,7 @@ export class ClaudeAcpAgent {
    * the rewind closes the query the prompt would otherwise run on.
    */
   rewindSession(params: SessionRewindRequest): Promise<SessionRewindResponse> {
-    // Only AIR knows the method, and only when it declared `sessionRewind`.
+    // Only a client that declared `sessionRewind`, as AIR or in the neutral form, knows the method.
     if (!this.supportsSessionRewind()) {
       return Promise.reject(RequestError.methodNotFound(SESSION_REWIND_METHOD));
     }
@@ -2957,11 +2964,15 @@ export class ClaudeAcpAgent {
     }
   }
 
-  /** Whether the client is AIR and declared `sessionRewind`: only it knows `_session/rewind`. */
+  /**
+   * Whether the client knows `_session/rewind`: AIR that declared
+   * `sessionRewind`, or a client of the client-neutral form.
+   */
   private supportsSessionRewind(): boolean {
     return (
-      this.toolCallCapabilities.air.client &&
-      clientSupportsAirCapability(this.clientCapabilities, AIR_SESSION_REWIND_CAPABILITY)
+      (this.toolCallCapabilities.air.client &&
+        clientSupportsAirCapability(this.clientCapabilities, AIR_SESSION_REWIND_CAPABILITY)) ||
+      clientOptsIntoNeutralSessionRewind(this.clientCapabilities)
     );
   }
 
