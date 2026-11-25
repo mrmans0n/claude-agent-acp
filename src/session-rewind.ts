@@ -39,6 +39,32 @@ import { cursorMessageId, forkPointOf } from "./session-cursors.js";
 
 export const SESSION_REWIND_METHOD = "_session/rewind";
 
+/** The top-level `_meta` key of the client-neutral session rewind. */
+export const NEUTRAL_SESSION_REWIND_KEY = "sessionRewind";
+const NEUTRAL_SESSION_REWIND_VERSION = 1;
+
+/**
+ * Whether `initialize.clientCapabilities._meta.sessionRewind` is an object
+ * whose `version` is an integer of at least 1: a client that is not AIR asks
+ * for `_session/rewind` and for `rewind` on its session cursors.
+ */
+export function clientOptsIntoNeutralSessionRewind(capabilities: unknown): boolean {
+  const meta = (capabilities as { _meta?: unknown } | null | undefined)?._meta;
+  const optIn = (meta as Record<string, unknown> | null | undefined)?.[NEUTRAL_SESSION_REWIND_KEY];
+  if (!optIn || typeof optIn !== "object" || Array.isArray(optIn)) return false;
+  const version = (optIn as { version?: unknown }).version;
+  return (
+    typeof version === "number" &&
+    Number.isInteger(version) &&
+    version >= NEUTRAL_SESSION_REWIND_VERSION
+  );
+}
+
+/** The agent side of the client-neutral session rewind, for the initialize `_meta`. */
+export function neutralSessionRewindCapability(): { version: number } {
+  return { version: NEUTRAL_SESSION_REWIND_VERSION };
+}
+
 export type SessionRewindRequest = {
   sessionId: string;
   /** A cursor that the session announced, before the user message to drop. */
