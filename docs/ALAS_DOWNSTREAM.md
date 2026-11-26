@@ -210,6 +210,13 @@ id says the turn predicted nothing. The SDK `promptSuggestions` option is now on
 AIR and neutral clients, so other clients no longer pay for predictions they never get.
 A client that declares AIR too gets one update. Upstream has no equivalent.
 
+The neutral-session-rewind patch gives a client that is not AIR `_session/rewind`, which
+upstream serves to AIR only. It opts in with
+`clientCapabilities._meta.sessionRewind: { "version": 1 }` under ACP v1 and gets
+`_meta.sessionRewind: { "version": 1 }` back. Its session cursors then carry the `rewind`
+capability under the rules of the AIR form, and the request, response and refusal reasons
+are unchanged. Upstream has no equivalent.
+
 For each target release, `scripts/audit-downstream-patches.mjs` classifies every
 patch:
 
