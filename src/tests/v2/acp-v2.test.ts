@@ -25,6 +25,8 @@ import { v2DiffContent } from "../../diff.js";
 import { type AcpProtocols, acpProtocolRouter, acpProtocolsFromEnv } from "../../serve.js";
 import { v1PermissionResponse, v2PermissionRequest } from "../../v2/permissions.js";
 import { v1PromptRequest } from "../../v2/prompt.js";
+import { SessionConfig } from "../../v2/config.js";
+import { SessionReports } from "../../v2/reports.js";
 import { V2Terminals } from "../../v2/terminal.js";
 import { V2ToolCallMeta } from "../../v2/tool-call-meta.js";
 import { v2RestartedToolCall } from "../../v2/tool-call.js";
@@ -47,6 +49,12 @@ import {
 import packageJson from "../../../package.json" with { type: "json" };
 
 const execFileSpy = vi.hoisted(() => vi.fn());
+const pluginRunner = vi.hoisted(() => ({ run: vi.fn() }));
+
+vi.mock("../../plugin-command.js", async () => ({
+  ...(await vi.importActual<typeof import("../../plugin-command.js")>("../../plugin-command.js")),
+  runPluginCommand: pluginRunner.run,
+}));
 
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
@@ -875,6 +883,7 @@ const SESSION_COMMANDS: v2.AvailableCommand[] = [
     description: "Show the MCP servers and their status, or reconnect, enable, or disable a server",
     input: { type: "text", hint: "[reconnect|enable|disable [<server>|all]]" },
   },
+  expect.objectContaining({ type: "command", name: "plugin" }),
 ];
 
 describe("ACP v2 sessions", () => {
@@ -954,6 +963,86 @@ describe("ACP v2 sessions", () => {
     expect(client.updates("available_commands_update")).toEqual([
       { sessionUpdate: "available_commands_update", availableCommands: SESSION_COMMANDS },
     ]);
+  });
+
+  it("starts Remote Control after the response when Claude Code asks for it", async () => {
+    const initialization = sdkDefaults.initializationResult;
+    sdk.initializationResult = async () => ({
+      ...(await initialization()),
+      remote_control_auto_enable: true,
+    });
+    const enableRemoteControl = vi.fn(async () => ({
+      session_url: "https://claude.ai/code/session_123",
+    }));
+    sdk.enableRemoteControl = enableRemoteControl;
+    // The query stream stays open, as Claude Code's does.
+    sdk.run = async function* () {
+      await new Promise<never>(() => {});
+      yield* [];
+    };
+    const client = v2Client();
+    const noticesAtResponse = await client.app.connectWith(connectRouter(), async (agent) => {
+      await initializeV2(agent);
+      await agent.request(v2.methods.agent.session.new, { cwd });
+      const atResponse = client.updates("notice").length;
+      await vi.waitFor(() => expect(client.updates("notice")).toHaveLength(1));
+      await client.authUpdate(1);
+      return atResponse;
+    });
+
+    expect(noticesAtResponse).toBe(0);
+    expect(enableRemoteControl).toHaveBeenCalledExactlyOnceWith(true);
+    expect(client.updates("notice")).toEqual([
+      {
+        sessionUpdate: "notice",
+        severity: "info",
+        title: "Remote Control connected",
+        description:
+          "Continue this session from claude.ai/code or the Claude mobile app: https://claude.ai/code/session_123\nRun /remote-control off to disconnect.",
+      },
+    ]);
+  });
+
+  it("holds a prompt back until the notice of Remote Control at session start is sent", async () => {
+    const initialization = sdkDefaults.initializationResult;
+    sdk.initializationResult = async () => ({
+      ...(await initialization()),
+      remote_control_auto_enable: true,
+    });
+    let connect!: () => void;
+    const enableRemoteControl = vi.fn(
+      () =>
+        new Promise<{ session_url?: string }>((resolve) => {
+          connect = () => resolve({ session_url: "https://claude.ai/code/session_123" });
+        }),
+    );
+    sdk.enableRemoteControl = enableRemoteControl;
+    const echoed = scriptTurns(async function* (options) {
+      yield assistantText(options, "Done.");
+      yield result(options);
+      yield idleState(options);
+    });
+    const client = v2Client();
+    const echoedWhileConnecting = await client.app.connectWith(connectRouter(), async (agent) => {
+      await initializeV2(agent);
+      const { sessionId } = await agent.request(v2.methods.agent.session.new, { cwd });
+      await vi.waitFor(() => expect(enableRemoteControl).toHaveBeenCalled());
+      const prompted = agent.request(v2.methods.agent.session.prompt, {
+        sessionId,
+        prompt: text("hi"),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const whileConnecting = echoed.length;
+      connect();
+      await prompted;
+      await vi.waitFor(() => expect(turnTrace(client.sessionUpdates)).toContain("idle end_turn"));
+      await client.authUpdate(1);
+      return whileConnecting;
+    });
+
+    expect(echoedWhileConnecting).toBe(0);
+    expect(echoed).toHaveLength(1);
+    expect(client.updates("notice")).toHaveLength(1);
   });
 
   it("rejects session/new with the reason Claude Code gave for not starting", async () => {
@@ -10495,25 +10584,42 @@ describe("ACP v2 terminal of a command in the background", () => {
         ambient: true,
       };
       const workflow = { task_id: "wf1", task_type: "local_workflow", description: "Review" };
+      /** A Monitor's task as the CLI reports it: the type of a shell command, not ambient. */
+      const localBashMonitor = {
+        task_id: "mon1",
+        task_type: "local_bash",
+        description: "Watch the logs",
+      };
       /** A Monitor call whose task `mon1` runs on after the call returns. The
        *  tool starts the task, which joins the level before its
        *  `task_started`, and returns. */
-      async function* monitorStarts(options: Options, task: typeof monitor = monitor) {
+      async function* monitorStarts(
+        options: Options,
+        task: typeof monitor = monitor,
+        resultFirst = false,
+      ) {
         yield toolUseMessage(options, "toolu_mon", "Monitor", { command: "tail -f app.log" });
-        yield level(options, [task]);
-        yield taskEvent(options, "task_started", { ...task, tool_use_id: "toolu_mon" });
-        yield {
+        const result = {
           ...toolResultMessage(options, "toolu_mon", { content: "Monitor started (task mon1)." }),
           tool_use_result: { taskId: "mon1", timeoutMs: 0, persistent: true },
         };
+        if (resultFirst) {
+          yield result;
+          yield level(options, [task]);
+          yield taskEvent(options, "task_started", { ...task, tool_use_id: "toolu_mon" });
+          return;
+        }
+        yield level(options, [task]);
+        yield taskEvent(options, "task_started", { ...task, tool_use_id: "toolu_mon" });
+        yield result;
       }
       const monitorEvent = (options: Options, subtype: string, fields: Record<string, unknown>) =>
         taskEvent(options, subtype, { ...fields, task_id: "mon1" });
 
-      /** The states with their lists, and the Monitor call's statuses and capability. */
-      const toolCallTrace = (client: ReturnType<typeof v2Client>) =>
+      /** The states with their lists, and one call's statuses and capability. */
+      const toolCallTrace = (client: ReturnType<typeof v2Client>, toolCallId = "toolu_mon") =>
         client.sessionUpdates.flatMap(({ update }) => {
-          if (update.sessionUpdate === "tool_call_update" && update.toolCallId === "toolu_mon") {
+          if (update.sessionUpdate === "tool_call_update" && update.toolCallId === toolCallId) {
             const capabilities = update.capabilities as { cancel?: unknown } | null | undefined;
             return [
               ...(update.status ? [String(update.status)] : []),
@@ -10570,11 +10676,6 @@ describe("ACP v2 terminal of a command in the background", () => {
         // What Claude Code sends for a requested Monitor in practice: the task
         // type of a shell command and no `ambient` flag. The call, not a
         // terminal, is the task's entity, as `Monitor` is in TASK_TOOLS.
-        const localBashMonitor = {
-          task_id: "mon1",
-          task_type: "local_bash",
-          description: "Watch the logs",
-        };
         scriptTurns(async function* (options) {
           yield* monitorStarts(options, localBashMonitor);
           yield result(options);
@@ -10600,6 +10701,197 @@ describe("ACP v2 terminal of a command in the background", () => {
           "completed",
           "no cancel",
           "idle []",
+        ]);
+      });
+
+      // Claude Code can name a task in `background_tasks_changed` only after
+      // the tool call that started it returned. The call is the task's entity
+      // either way, so it must not fall back to a `task_<taskId>` card.
+      type TaskAfterResult = {
+        toolCallId: string;
+        taskId: string;
+        starts: TurnScript;
+      };
+      async function* workflowStartsAfterResult(options: Options) {
+        yield toolUseMessage(options, "toolu_wf", "Workflow", { script: "review" });
+        yield {
+          ...toolResultMessage(options, "toolu_wf", { content: "Workflow launched." }),
+          tool_use_result: {
+            status: "async_launched",
+            taskId: workflow.task_id,
+            taskType: workflow.task_type,
+          },
+        };
+        yield level(options, [workflow]);
+        yield taskEvent(options, "task_started", { ...workflow, tool_use_id: "toolu_wf" });
+      }
+      const taskAfterResultSpecs: Array<[string, TaskAfterResult]> = [
+        [
+          "Monitor",
+          {
+            toolCallId: "toolu_mon",
+            taskId: localBashMonitor.task_id,
+            starts: (options) => monitorStarts(options, localBashMonitor, true),
+          },
+        ],
+        [
+          "Workflow",
+          {
+            toolCallId: "toolu_wf",
+            taskId: workflow.task_id,
+            starts: workflowStartsAfterResult,
+          },
+        ],
+      ];
+
+      it.each(taskAfterResultSpecs)(
+        "keeps a %s call in_progress when its task joins the live set after the result",
+        async (_tool, spec) => {
+          const ended = Promise.withResolvers<void>();
+          scriptTurns(async function* (options) {
+            yield* spec.starts(options);
+            yield result(options);
+            yield idleState(options);
+            await ended.promise;
+            yield taskEvent(options, "task_notification", {
+              tool_use_id: spec.toolCallId,
+              status: "completed",
+              output_file: `/tmp/tasks/${spec.taskId}.output`,
+              summary: "Done",
+            });
+            yield level(options, []);
+          });
+          const client = await promptUntil(
+            `idle end_turn [${spec.toolCallId}]`,
+            async (_agent, _sessionId, seen) => {
+              ended.resolve();
+              await vi.waitFor(() => expect(backgroundTrace(seen)).toContain("idle []"));
+            },
+          );
+
+          expect(toolCallTrace(client, spec.toolCallId)).toEqual([
+            "running []",
+            "pending",
+            "in_progress",
+            "cancel",
+            `running [${spec.toolCallId}]`,
+            `idle end_turn [${spec.toolCallId}]`,
+            "completed",
+            "no cancel",
+            "idle []",
+          ]);
+        },
+      );
+
+      it.each([
+        ["with a task_notification", true],
+        ["without a task_notification", false],
+      ])(
+        "stays completed when its task ends before the result names it, %s",
+        async (_name, notify) => {
+          scriptTurns(async function* (options) {
+            yield toolUseMessage(options, "toolu_mon", "Monitor", { command: "tail -f app.log" });
+            // With a notification, the task never joins a level: only `taskEnded` records its end.
+            if (!notify) yield level(options, [localBashMonitor]);
+            yield taskEvent(options, "task_started", {
+              ...localBashMonitor,
+              tool_use_id: "toolu_mon",
+            });
+            if (notify) {
+              yield monitorEvent(options, "task_notification", {
+                tool_use_id: "toolu_mon",
+                status: "completed",
+                output_file: "/tmp/tasks/mon1.output",
+                summary: "Done",
+              });
+            }
+            if (!notify) yield level(options, []);
+            yield {
+              ...toolResultMessage(options, "toolu_mon", {
+                content: "Monitor started (task mon1).",
+              }),
+              tool_use_result: { taskId: "mon1", timeoutMs: 0, persistent: true },
+            };
+            yield result(options);
+            yield idleState(options);
+          });
+          const client = await promptUntil("idle end_turn []");
+
+          expect(toolCallTrace(client, "toolu_mon")).toEqual([
+            "running []",
+            "pending",
+            "completed",
+            "idle end_turn []",
+          ]);
+          expect(backgroundTrace(client).join(" ")).not.toContain("task_mon1");
+        },
+      );
+
+      it.each([
+        ["with task_type at task_started", "local_bash"],
+        ["without task_type at task_started", undefined],
+      ])(
+        "ends a PowerShell call with a local_bash task completed, %s",
+        async (_name, startedType) => {
+          scriptTurns(async function* (options) {
+            yield toolUseMessage(options, "toolu_ps", "PowerShell", { command: "Start-Job" });
+            yield taskEvent(options, "task_started", {
+              task_id: "ps1",
+              ...(startedType ? { task_type: startedType } : {}),
+              description: "PowerShell job",
+              tool_use_id: "toolu_ps",
+            });
+            yield {
+              ...toolResultMessage(options, "toolu_ps", { content: "job started" }),
+              tool_use_result: { taskId: "ps1" },
+            };
+            yield level(options, [
+              { task_id: "ps1", task_type: "local_bash", description: "PowerShell job" },
+            ]);
+            yield result(options);
+            yield idleState(options);
+          });
+          const client = await promptUntil("idle end_turn []");
+
+          expect(toolCallTrace(client, "toolu_ps")).toEqual(
+            startedType
+              ? ["running []", "pending", "completed", "idle end_turn []"]
+              : ["running []", "pending", "in_progress", "completed", "idle end_turn []"],
+          );
+          expect(backgroundTrace(client).join(" ")).not.toContain("task_ps1");
+        },
+      );
+
+      it("keeps a paused call paused when the task paused before the level named it", async () => {
+        scriptTurns(async function* (options) {
+          yield toolUseMessage(options, "toolu_wf", "Workflow", { script: "review" });
+          yield {
+            ...toolResultMessage(options, "toolu_wf", { content: "Workflow launched." }),
+            tool_use_result: {
+              status: "async_launched",
+              taskId: workflow.task_id,
+              taskType: workflow.task_type,
+            },
+          };
+          yield taskEvent(options, "task_started", { ...workflow, tool_use_id: "toolu_wf" });
+          yield taskEvent(options, "task_updated", {
+            task_id: workflow.task_id,
+            patch: { status: "paused" },
+          });
+          yield level(options, [workflow]);
+          yield result(options);
+          yield idleState(options);
+        });
+        const client = await promptUntil("idle end_turn [toolu_wf]");
+
+        expect(toolCallTrace(client, "toolu_wf")).toEqual([
+          "running []",
+          "pending",
+          "in_progress",
+          "paused",
+          "cancel",
+          "running [toolu_wf]",
+          "idle end_turn [toolu_wf]",
         ]);
       });
 
@@ -12752,6 +13044,48 @@ describe("ACP v2 subscription guard (--hide-claude-auth)", () => {
     },
   );
 
+  it("starts Remote Control again on a sign-out's new query, before the prompt that waits for it", async () => {
+    accountsAtStart(API_KEY);
+    sdk.accountInfo = async () => API_KEY;
+    const initialization = sdk.initializationResult;
+    sdk.initializationResult = async () => ({
+      ...(await initialization()),
+      remote_control_auto_enable: true,
+    });
+    const enableRemoteControl = vi.fn(async () => ({
+      session_url: "https://claude.ai/code/session_123",
+    }));
+    sdk.enableRemoteControl = enableRemoteControl;
+    let turns = 0;
+    scriptTurns(async function* (options) {
+      turns += 1;
+      if (turns === 1) {
+        yield result(options, { is_error: true, result: "Not logged in · Please run /login" });
+        return;
+      }
+      // The prompt that waited for the restart keeps its turn open.
+      await new Promise<never>(() => {});
+    });
+    const connected = () =>
+      client.updates("notice").filter((notice) => notice.title === "Remote Control connected");
+    const client = v2Client();
+    await client.app.connectWith(connectRouter(), async (agent) => {
+      await initializeV2(agent);
+      const { sessionId } = await agent.request(v2.methods.agent.session.new, { cwd });
+      await vi.waitFor(() => expect(connected()).toHaveLength(1));
+      await agent.request(v2.methods.agent.session.prompt, { sessionId, prompt: text("hi") });
+      await vi.waitFor(() => expect(turnTrace(client.sessionUpdates)).toContain("idle error"));
+      // This prompt waits for the account restart that the sign-out started.
+      await agent.request(v2.methods.agent.session.prompt, { sessionId, prompt: text("again") });
+      await vi.waitFor(() => expect(connected()).toHaveLength(2));
+      await client.authUpdate(1);
+    });
+
+    expect(sdk.queryOptions).toHaveLength(2);
+    expect(enableRemoteControl).toHaveBeenCalledTimes(2);
+    expect(enableRemoteControl).toHaveBeenLastCalledWith(true);
+  });
+
   it("restarts the query for a provider change only after the account restart that runs", async () => {
     accountsAtStart(API_KEY);
     sdk.accountInfo = async () => API_KEY;
@@ -13013,3 +13347,303 @@ async function previewToolUse(
     }
   }
 }
+
+describe("ACP v2 /plugin", () => {
+  const pluginReply = (message: string) => ({ ok: false, operation: "install", message });
+
+  beforeEach(() => {
+    pluginRunner.run.mockReset();
+    pluginRunner.run.mockResolvedValue(pluginReply("INSTALLED"));
+  });
+
+  it("runs /plugin itself, without Claude Code, and answers as agent text", async () => {
+    const echoed = scriptTurns(async function* (options) {
+      yield result(options);
+    });
+    const client = v2Client();
+    await client.app.connectWith(connectRouter(), async (agent) => {
+      await initializeV2(agent);
+      const { sessionId } = await agent.request(v2.methods.agent.session.new, { cwd });
+      await agent.request(v2.methods.agent.session.prompt, {
+        sessionId,
+        prompt: text("/plugin install foo@bar"),
+      });
+      await vi.waitFor(() => expect(turnTrace(client.sessionUpdates)).toContain("idle end_turn"));
+      await client.authUpdate(1);
+    });
+
+    expect(pluginRunner.run).toHaveBeenCalledOnce();
+    expect(pluginRunner.run.mock.calls[0][1]).toMatchObject({ cwd });
+    expect(echoed).toEqual([]);
+    expect(client.updates("agent_message_chunk")[0].content).toMatchObject({
+      text: expect.stringContaining("INSTALLED"),
+    });
+    expect(turnTrace(client.sessionUpdates)).toEqual([
+      "user_message",
+      "running",
+      "agent_message_chunk",
+      "idle end_turn",
+    ]);
+  });
+
+  it("runs /plugin sent while Claude works once the turn ends", async () => {
+    const release = Promise.withResolvers<void>();
+    scriptTurns(async function* (options) {
+      await release.promise;
+      yield result(options);
+    });
+    const client = v2Client();
+    await client.app.connectWith(connectRouter(), async (agent) => {
+      await initializeV2(agent);
+      const { sessionId } = await agent.request(v2.methods.agent.session.new, { cwd });
+      await agent.request(v2.methods.agent.session.prompt, { sessionId, prompt: text("work") });
+      const command = agent.request(v2.methods.agent.session.prompt, {
+        sessionId,
+        prompt: text("/plugin list"),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(pluginRunner.run).not.toHaveBeenCalled();
+      release.resolve();
+      await command;
+      await vi.waitFor(() =>
+        expect(turnTrace(client.sessionUpdates)).toEqual([
+          "user_message",
+          "running",
+          "idle end_turn",
+          "user_message",
+          "running",
+          "agent_message_chunk",
+          "idle end_turn",
+        ]),
+      );
+      await client.authUpdate(1);
+    });
+    expect(pluginRunner.run).toHaveBeenCalledOnce();
+  });
+
+  it("aborts the command on cancel, sends no reply and ends the turn cancelled", async () => {
+    let signal: AbortSignal | undefined;
+    const started = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<unknown>();
+    pluginRunner.run.mockImplementation(async (_command, deps: { signal: AbortSignal }) => {
+      signal = deps.signal;
+      started.resolve();
+      return finish.promise;
+    });
+    const client = v2Client();
+    await client.app.connectWith(connectRouter(), async (agent) => {
+      await initializeV2(agent);
+      const { sessionId } = await agent.request(v2.methods.agent.session.new, { cwd });
+      await agent.request(v2.methods.agent.session.prompt, {
+        sessionId,
+        prompt: text("/plugin install foo@bar"),
+      });
+      await started.promise;
+      expect(signal?.aborted).toBe(false);
+      await agent.notify(v2.methods.agent.session.cancel, { sessionId });
+      await vi.waitFor(() => expect(signal?.aborted).toBe(true));
+      finish.resolve(pluginReply("TOO LATE"));
+      await vi.waitFor(() => expect(turnTrace(client.sessionUpdates)).toContain("idle cancelled"));
+      await client.authUpdate(1);
+    });
+
+    expect(client.updates("agent_message_chunk")).toEqual([]);
+    expect(turnTrace(client.sessionUpdates)).toEqual(["user_message", "running", "idle cancelled"]);
+  });
+
+  describe("behind the subscription guard", () => {
+    const promptTexts = (spy: { mock: { calls: unknown[][] } }) =>
+      spy.mock.calls.map(([prompt]) => JSON.stringify(prompt));
+
+    it("titles the session once the guard passes and the command ran", async () => {
+      const argv = process.argv;
+      process.argv = [...argv, "--hide-claude-auth"];
+      const titled = vi.spyOn(SessionReports.prototype, "promptSent");
+      scriptTurns(async function* (options) {
+        yield result(options);
+      });
+      const client = v2Client();
+      try {
+        await client.app.connectWith(connectRouter(), async (agent) => {
+          await initializeV2(agent);
+          const { sessionId } = await agent.request(v2.methods.agent.session.new, { cwd });
+          await agent.request(v2.methods.agent.session.prompt, {
+            sessionId,
+            prompt: text("/plugin list"),
+          });
+          await vi.waitFor(() =>
+            expect(turnTrace(client.sessionUpdates)).toContain("idle end_turn"),
+          );
+          await client.authUpdate(1);
+        });
+      } finally {
+        process.argv = argv;
+      }
+      const titledCalls = promptTexts(titled);
+      titled.mockRestore();
+
+      expect(pluginRunner.run).toHaveBeenCalledOnce();
+      expect(titledCalls).toHaveLength(1);
+    });
+
+    it("titles nothing for a command that a cancel answered while it waited for idle", async () => {
+      const argv = process.argv;
+      process.argv = [...argv, "--hide-claude-auth"];
+      const apiKey = { apiKeySource: "ANTHROPIC_API_KEY", apiProvider: "firstParty" };
+      sdk.initializationResult = async () => ({
+        ...(await sdkDefaults.initializationResult()),
+        account: apiKey,
+      });
+      sdk.accountInfo = async () => apiKey;
+      const titled = vi.spyOn(SessionReports.prototype, "promptSent");
+      const release = Promise.withResolvers<void>();
+      scriptTurns(async function* (options) {
+        await release.promise;
+        yield result(options);
+      });
+      const client = v2Client();
+      try {
+        await client.app.connectWith(connectRouter(), async (agent) => {
+          await initializeV2(agent);
+          const { sessionId } = await agent.request(v2.methods.agent.session.new, { cwd });
+          await agent.request(v2.methods.agent.session.prompt, { sessionId, prompt: text("work") });
+          await vi.waitFor(() => expect(titled).toHaveBeenCalledTimes(1));
+          const command = agent
+            .request(v2.methods.agent.session.prompt, {
+              sessionId,
+              prompt: text("/plugin list"),
+            })
+            .catch((error: unknown) => error);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          await agent.notify(v2.methods.agent.session.cancel, { sessionId });
+          await expect(command).resolves.toMatchObject({ code: -32800 });
+          release.resolve();
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        });
+      } finally {
+        process.argv = argv;
+        release.resolve();
+      }
+      const titledCalls = promptTexts(titled);
+      titled.mockRestore();
+
+      expect(pluginRunner.run).not.toHaveBeenCalled();
+      expect(titledCalls).toHaveLength(1);
+      expect(titledCalls[0]).toContain("work");
+    });
+  });
+
+  describe("when the adapter does not serve it", () => {
+    it("leaves /plugin to Claude Code, behind the subscription guard", async () => {
+      const argv = process.argv;
+      process.argv = [...argv, "--hide-claude-auth"];
+      const apiKey = { apiKeySource: "ANTHROPIC_API_KEY", apiProvider: "firstParty" };
+      sdk.initializationResult = async () => ({
+        ...(await sdkDefaults.initializationResult()),
+        account: apiKey,
+      });
+      const commands = sdkDefaults.supportedCommands;
+      sdk.supportedCommands = async () => [
+        ...(await commands()),
+        { name: "plugin", description: "Claude Code's", argumentHint: "" },
+      ];
+      const accountInfo = vi.fn(async () => apiKey);
+      sdk.accountInfo = accountInfo;
+      const echoed = scriptTurns(async function* (options) {
+        yield result(options);
+      });
+      const client = v2Client();
+      try {
+        await client.app.connectWith(connectRouter(), async (agent) => {
+          await initializeV2(agent);
+          const { sessionId } = await agent.request(v2.methods.agent.session.new, { cwd });
+          accountInfo.mockClear();
+          await agent.request(v2.methods.agent.session.prompt, {
+            sessionId,
+            prompt: text("/plugin list"),
+          });
+          await vi.waitFor(() => expect(echoed).toHaveLength(1));
+          await client.authUpdate(1);
+        });
+      } finally {
+        process.argv = argv;
+      }
+
+      expect(pluginRunner.run).not.toHaveBeenCalled();
+      expect(accountInfo).toHaveBeenCalled();
+    });
+
+    it("titles nothing and sends no notice when the guard refuses the /plugin it does not serve", async () => {
+      const argv = process.argv;
+      process.argv = [...argv, "--hide-claude-auth"];
+      vi.stubEnv("CLAUDE_CODE_EXECUTABLE", "/usr/bin/false");
+      const apiKey = { apiKeySource: "ANTHROPIC_API_KEY", apiProvider: "firstParty" };
+      sdk.initializationResult = async () => ({
+        ...(await sdkDefaults.initializationResult()),
+        account: apiKey,
+      });
+      const titled = vi.spyOn(SessionReports.prototype, "promptSent");
+      const notified = vi.spyOn(SessionConfig.prototype, "promptSent");
+      const echoed = scriptTurns(async function* (options) {
+        yield result(options);
+      });
+      const client = v2Client();
+      try {
+        await client.app.connectWith(connectRouter(), async (agent) => {
+          await initializeV2(agent);
+          const { sessionId } = await agent.request(v2.methods.agent.session.new, {
+            cwd,
+            _meta: { claudeCode: { options: { extraArgs: { "sdk-url": "wss://example.test" } } } },
+          });
+          sdk.accountInfo = async () => ({
+            email: "user@example.com",
+            subscriptionType: "max",
+            apiProvider: "firstParty",
+          });
+          await expect(
+            agent.request(v2.methods.agent.session.prompt, {
+              sessionId,
+              prompt: text("/plugin list"),
+            }),
+          ).rejects.toMatchObject({ code: -32000 });
+          await client.authUpdate(1);
+        });
+      } finally {
+        process.argv = argv;
+        vi.unstubAllEnvs();
+      }
+      const [titledCalls, notifiedCalls] = [titled.mock.calls.length, notified.mock.calls.length];
+      titled.mockRestore();
+      notified.mockRestore();
+
+      expect(pluginRunner.run).not.toHaveBeenCalled();
+      expect(echoed).toEqual([]);
+      expect(titledCalls).toBe(0);
+      expect(notifiedCalls).toBe(0);
+    });
+
+    it("leaves /plugin to Claude Code in a remote session, and does not list it", async () => {
+      const echoed = scriptTurns(async function* (options) {
+        yield result(options);
+      });
+      const client = v2Client();
+      const response = await client.app.connectWith(connectRouter(), async (agent) => {
+        await initializeV2(agent);
+        const response = await agent.request(v2.methods.agent.session.new, {
+          cwd,
+          _meta: { claudeCode: { options: { extraArgs: { "sdk-url": "wss://example.test" } } } },
+        });
+        await agent.request(v2.methods.agent.session.prompt, {
+          sessionId: response.sessionId,
+          prompt: text("/plugin list"),
+        });
+        await vi.waitFor(() => expect(echoed).toHaveLength(1));
+        await client.authUpdate(1);
+        return response;
+      });
+
+      expect(pluginRunner.run).not.toHaveBeenCalled();
+      expect(response.availableCommands?.map((command) => command.name)).not.toContain("plugin");
+    });
+  });
+});

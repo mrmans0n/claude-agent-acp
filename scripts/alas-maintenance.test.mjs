@@ -290,14 +290,6 @@ const CLAUDE_PATCHES = [
       "src/tests/v2/acp-v2.test.ts",
     ],
   },
-  {
-    name: "neutral-session-rewind",
-    identityCommit: "7813e3624c27dc192c6425b69e0b943e1dfa8c9f",
-    commit: "7813e3624c27dc192c6425b69e0b943e1dfa8c9f",
-    upstreamPr: null,
-    files: ["docs/air-extensions.md", "src/session-rewind.ts", "src/v1/acp-agent.ts"],
-    tests: ["src/tests/v1/session-rewind.test.ts"],
-  },
 ];
 
 afterEach(() => {
