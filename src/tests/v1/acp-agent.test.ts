@@ -15833,6 +15833,46 @@ describe("skill commands in available_commands_update", () => {
     expect((response._meta?.jetbrains as any)?.air?.capabilities).toContain("sessionRewind");
   });
 
+  // v0.112.0 (#1704): sessionRewind joins the AIR capability list of initialize;
+  // the client-neutral loadReplayEnd key stays a top-level sibling of jetbrains.
+  it("advertises loadReplayEnd next to the AIR sessionRewind of a client that declares both", async () => {
+    const response = await new ClaudeAcpAgent({} as unknown as AcpClient, {
+      log: () => {},
+      error: () => {},
+    }).initialize({
+      protocolVersion: 1,
+      clientCapabilities: {
+        _meta: {
+          loadReplayEnd: { version: 1 },
+          jetbrains: { air: { version: 1, capabilities: ["sessionRewind"] } },
+        },
+      },
+    });
+
+    expect(response._meta?.loadReplayEnd).toEqual({ version: 1 });
+    expect((response._meta?.jetbrains as any)?.air?.capabilities).toContain("sessionRewind");
+  });
+
+  // The client-neutral sessionRewind now replays below this patch (v0.113.0 sync);
+  // the client-neutral loadReplayEnd key stays a top-level sibling of it.
+  it("advertises loadReplayEnd next to the client-neutral sessionRewind of a client that opts into both", async () => {
+    const response = await new ClaudeAcpAgent({} as unknown as AcpClient, {
+      log: () => {},
+      error: () => {},
+    }).initialize({
+      protocolVersion: 1,
+      clientCapabilities: {
+        _meta: {
+          loadReplayEnd: { version: 1 },
+          sessionRewind: { version: 1 },
+        },
+      },
+    });
+
+    expect(response._meta?.loadReplayEnd).toEqual({ version: 1 });
+    expect(response._meta?.sessionRewind).toEqual({ version: 1 });
+  });
+
   it("marks a skill in the client-neutral form for a client that opts in", async () => {
     const neutral = await advertisedCommands({ _meta: { commandPresentation: { version: 1 } } });
     expect(neutral.find((c) => c.name === "review")?._meta).toEqual({
@@ -16460,6 +16500,7 @@ describe("logout", () => {
     "questionCustomAnswer",
     "recommendedConfigValue",
     "commandPresentation",
+    "loadReplayEnd",
   ])("client-neutral %s advert", (key) => {
     it("advertises version 1 to a client that opts in with any version, with no AIR key", async () => {
       const response = await createMockAgent().initialize({
