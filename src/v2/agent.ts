@@ -31,9 +31,11 @@ import {
   type SessionMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import packageJson from "../../package.json" with { type: "json" };
+import { sessionAdapterOptions } from "../adapter-command.js";
 import { messageIdForGrouping } from "../sdk-to-acp.js";
 import type { Logger } from "../logger.js";
 import { customAgents } from "../session-config-options.js";
+import { startsWithRemoteControl } from "../remote-control.js";
 import { AnnouncedChildren, restrictedChild } from "../acp-subagents.js";
 import { claudeCliPath, cliDelivery } from "../claude-cli.js";
 import { clientSystemPrompt, sessionSystemPrompt } from "../client-system-prompt.js";
@@ -775,7 +777,10 @@ class V2Agent implements AgentHandle, SessionConnection {
       persist: false,
     });
     try {
-      return fields(probe.config, await listed(new SessionCommands(probe.query)));
+      return fields(
+        probe.config,
+        await listed(new SessionCommands(probe.query, sessionAdapterOptions(setup).remoteSession)),
+      );
     } finally {
       probe.query.close();
       probe.settings.dispose();
@@ -1227,6 +1232,7 @@ class V2Agent implements AgentHandle, SessionConnection {
       input,
       perTaskStopAffordance,
       additionalDirectories,
+      sessionAdapterOptions(params),
     );
     const elicitationOptions = session.elicitations.queryOptions();
     const subagent = subagentHooks((input) => session.tasks.subagentHook(input));
@@ -1387,6 +1393,9 @@ class V2Agent implements AgentHandle, SessionConnection {
     }
     // For the description of a child's agent type in its configuration.
     session.tasks.configs.configureAgents(customAgents(initialization.agents ?? []));
+    // Read again for every query, so a restart's new query starts it too,
+    // unless the user turned it off (`restarts.ts` carries that over).
+    session.setRemoteControlAtStartup(startsWithRemoteControl(initialization));
     let models;
     try {
       models = await sessionModels(
