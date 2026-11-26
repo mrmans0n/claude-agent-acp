@@ -298,8 +298,8 @@ import {
   providerFailureCategory,
   SessionFailureController,
   type SessionFailureState,
+  sessionFailureForm,
   sessionFailureMeta,
-  supportsAirSessionFailures,
 } from "../session-failure-extension.js";
 import {
   claudeAuthRefusal,
@@ -386,8 +386,10 @@ import {
   ClientCapabilities as ToolCallClientCapabilities,
   NEUTRAL_DIFF_PATCH_KEY,
   NEUTRAL_PLAN_FILE_KEY,
+  NEUTRAL_SESSION_FAILURE_KEY,
   neutralDiffPatchCapability,
   neutralPlanFileCapability,
+  neutralSessionFailureCapability,
 } from "../tool-calls/client-capabilities.js";
 import {
   AcpToolCallRenderer,
@@ -1972,6 +1974,11 @@ export class ClaudeAcpAgent {
     });
   }
 
+  /** The typed failure lane of this client, or undefined on the JSON-RPC lane. */
+  private get sessionFailureForm() {
+    return sessionFailureForm(this.clientCapabilities);
+  }
+
   async initialize(request: InitializeRequest): Promise<InitializeResponse> {
     this.clientCapabilities = request.clientCapabilities;
     this.toolCallCapabilities = ToolCallClientCapabilities.from(request.clientCapabilities);
@@ -2134,6 +2141,10 @@ export class ClaudeAcpAgent {
           // ACP v1 only, like the neutral diff patch (`ClientCapabilities.from`).
           ...(this.toolCallCapabilities.neutralPlanFile
             ? { [NEUTRAL_PLAN_FILE_KEY]: neutralPlanFileCapability() }
+            : {}),
+          // ACP v1 only (`sessionFailureForm`). The AIR capability list stays as it is.
+          ...(this.sessionFailureForm === "neutral"
+            ? { [NEUTRAL_SESSION_FAILURE_KEY]: neutralSessionFailureCapability() }
             : {}),
         }),
       ),
@@ -3970,10 +3981,7 @@ export class ClaudeAcpAgent {
     };
 
     const internalErrorForClient = (data: unknown, rawDetail?: string) =>
-      RequestError.internalError(
-        data,
-        supportsAirSessionFailures(this.clientCapabilities) ? undefined : rawDetail,
-      );
+      RequestError.internalError(data, this.sessionFailureForm ? undefined : rawDetail);
 
     const ensureLocalCommandMarkdown = (
       turn: Turn,
@@ -4848,7 +4856,8 @@ export class ClaudeAcpAgent {
         this.markSessionForSignOutRespawn(params.sessionId, session);
         return;
       }
-      if (!supportsAirSessionFailures(this.clientCapabilities)) {
+      const form = this.sessionFailureForm;
+      if (!form) {
         failActive(error);
         return;
       }
@@ -4866,7 +4875,7 @@ export class ClaudeAcpAgent {
       }
       sessionFailures.recordActive(failure);
       await settleActive(
-        turnOutcome(session, "end_turn", sessionFailureMeta(failure)),
+        turnOutcome(session, "end_turn", sessionFailureMeta(failure, form)),
         "providerError",
       );
     };
@@ -6010,9 +6019,9 @@ export class ClaudeAcpAgent {
                 const { summary: fallbackSummary, explanation } = fallback;
                 // A silent model swap is a session-level advisory, not something the model said.
                 // Clients on the ACP notice contract get it as a `notice`; clients that negotiated
-                // AIR typed records get it as one of those; the rest keep the bold-label transcript
+                // typed records get it as one of those; the rest keep the bold-label transcript
                 // line, which was the only way to flag it before.
-                if (!supportsNotices && supportsAirSessionFailures(this.clientCapabilities)) {
+                if (!supportsNotices && this.sessionFailureForm) {
                   const useDetails =
                     explanation !== undefined &&
                     fallbackSummary.length + 2 + explanation.length > MAX_NOTICE_TITLE_LENGTH;
@@ -7400,7 +7409,7 @@ export class ClaudeAcpAgent {
               break;
             }
 
-            // AIR receives this provider condition on the terminal prompt
+            // A typed client receives this provider condition on the terminal prompt
             // response as a typed failure whose title is the exact assistant
             // error text captured above. Do not duplicate that text as an
             // ordinary assistant message; legacy clients retain the historical
@@ -7409,7 +7418,7 @@ export class ClaudeAcpAgent {
               message.type === "assistant" &&
               message.parent_tool_use_id === null &&
               (message.error || isSyntheticUsageLimitMessage(message.message)) &&
-              supportsAirSessionFailures(this.clientCapabilities)
+              this.sessionFailureForm
             ) {
               break;
             }
@@ -7743,7 +7752,7 @@ export class ClaudeAcpAgent {
           );
         }
       }
-      if (supportsAirSessionFailures(this.clientCapabilities) && session.activeTurn) {
+      if (this.sessionFailureForm && session.activeTurn) {
         if (!isHeldOpen(session.activeTurn)) {
           await failActiveWithSessionFailure(
             "transport_lost",
@@ -7781,9 +7790,7 @@ export class ClaudeAcpAgent {
       } else {
         this.logger.error(`Session ${params.sessionId}: query stream error: ${message}`);
         failAllTurns(
-          supportsAirSessionFailures(this.clientCapabilities)
-            ? internalErrorForClient({ errorKind: "transport_lost" })
-            : error,
+          this.sessionFailureForm ? internalErrorForClient({ errorKind: "transport_lost" }) : error,
         );
         this.closeQueryStream(session);
       }
@@ -8574,7 +8581,7 @@ export class ClaudeAcpAgent {
     const forwardSubagentText =
       !clientSupportsSubagents(this.clientCapabilities) &&
       (session?.forwardSubagentText ?? supportsSubagentTranscript(this.clientCapabilities));
-    const supportsTypedFailures = supportsAirSessionFailures(this.clientCapabilities);
+    const supportsTypedFailures = this.sessionFailureForm !== undefined;
     const activeUsageLimit = supportsTypedFailures ? activeUsageLimitMessage(messages) : undefined;
     const sessionFailures =
       session && supportsTypedFailures
