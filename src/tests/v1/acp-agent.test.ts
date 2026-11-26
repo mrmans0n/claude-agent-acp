@@ -5228,6 +5228,7 @@ describe("request validation", () => {
       ["review", "first"],
       ["compact", "Compact the conversation"],
       ["mcp", expect.any(String)],
+      ["plugin", expect.any(String)],
     ]);
   });
 });
@@ -6275,6 +6276,28 @@ describe("permission request cancellation", () => {
     expect(response._meta?.permissionPresentation).toEqual({ version: 1 });
     expect(response._meta?.questionCustomAnswer).toEqual({ version: 1 });
     expect((response._meta?.jetbrains as any)?.air?.capabilities).toContain("sessionRewind");
+  });
+
+  // The client-neutral sessionRewind now replays below this patch (v0.113.0 sync);
+  // the client-neutral permissionPresentation and questionCustomAnswer key stays a top-level sibling of it.
+  it("advertises permissionPresentation and questionCustomAnswer next to the client-neutral sessionRewind of a client that opts into both", async () => {
+    const response = await new ClaudeAcpAgent({} as unknown as AcpClient, {
+      log: () => {},
+      error: () => {},
+    }).initialize({
+      protocolVersion: 1,
+      clientCapabilities: {
+        _meta: {
+          permissionPresentation: { version: 1 },
+          questionCustomAnswer: { version: 1 },
+          sessionRewind: { version: 1 },
+        },
+      },
+    });
+
+    expect(response._meta?.permissionPresentation).toEqual({ version: 1 });
+    expect(response._meta?.questionCustomAnswer).toEqual({ version: 1 });
+    expect(response._meta?.sessionRewind).toEqual({ version: 1 });
   });
 
   it("sends a neutral permissionPresentation client one ExitPlanMode record with and without clear-context options", async () => {
@@ -14805,6 +14828,26 @@ describe("model refusal fallback handling", () => {
     expect((response._meta?.jetbrains as any)?.air?.capabilities).toContain("sessionRewind");
   });
 
+  // The client-neutral sessionRewind now replays below this patch (v0.113.0 sync);
+  // the client-neutral sessionFailure key stays a top-level sibling of it.
+  it("advertises sessionFailure next to the client-neutral sessionRewind of a client that opts into both", async () => {
+    const response = await new ClaudeAcpAgent({} as unknown as AcpClient, {
+      log: () => {},
+      error: () => {},
+    }).initialize({
+      protocolVersion: 1,
+      clientCapabilities: {
+        _meta: {
+          sessionFailure: { version: 1 },
+          sessionRewind: { version: 1 },
+        },
+      },
+    });
+
+    expect(response._meta?.sessionFailure).toEqual({ version: 1 });
+    expect(response._meta?.sessionRewind).toEqual({ version: 1 });
+  });
+
   it("publishes the model fallback as a neutral advisory without ACP notices", async () => {
     const { agent, sessionUpdate } = createCapturingAgent();
     await agent.initialize({
@@ -15558,10 +15601,11 @@ describe("terminal slash command filtering", () => {
     const updates = sessionUpdate.mock.calls.map((c: any[]) => (c[0] as { update: any }).update);
     const commandsUpdate = updates.find((u) => u.sessionUpdate === "available_commands_update");
     expect(commandsUpdate).toBeDefined();
-    // `mcp` is the adapter's own entry, advertised after the CLI's commands.
+    // `mcp` and `plugin` are the adapter's own entries, advertised after the CLI's commands.
     expect(commandsUpdate.availableCommands.map((c: { name: string }) => c.name)).toEqual([
       "compact",
       "mcp",
+      "plugin",
     ]);
   });
 
@@ -15650,6 +15694,7 @@ describe("skill commands in available_commands_update", () => {
   async function advertisedCommands(
     clientCapabilities: Record<string, unknown>,
     change?: () => Promise<void>,
+    session: Record<string, unknown> = {},
   ) {
     const sessionUpdate = vi.fn(async () => {});
     const agent = new ClaudeAcpAgent({ sessionUpdate } as unknown as AcpClient, {
@@ -15713,7 +15758,7 @@ describe("skill commands in available_commands_update", () => {
       };
       yield { type: "system", subtype: "session_state_changed", state: "idle" };
     }
-    injectGeneratorSession(agent, generator, { cwd });
+    injectGeneratorSession(agent, generator, { cwd, ...session });
 
     await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "hi" }] });
 
@@ -15734,6 +15779,7 @@ describe("skill commands in available_commands_update", () => {
       ["missing", undefined],
       ["mcp:review", undefined],
       ["mcp", undefined],
+      ["plugin", undefined],
     ]);
   });
 
@@ -15808,6 +15854,26 @@ describe("skill commands in available_commands_update", () => {
     expect((response._meta?.jetbrains as any)?.air?.capabilities).toContain("sessionRewind");
   });
 
+  // The client-neutral sessionRewind now replays below this patch (v0.113.0 sync);
+  // the client-neutral loadReplayEnd key stays a top-level sibling of it.
+  it("advertises loadReplayEnd next to the client-neutral sessionRewind of a client that opts into both", async () => {
+    const response = await new ClaudeAcpAgent({} as unknown as AcpClient, {
+      log: () => {},
+      error: () => {},
+    }).initialize({
+      protocolVersion: 1,
+      clientCapabilities: {
+        _meta: {
+          loadReplayEnd: { version: 1 },
+          sessionRewind: { version: 1 },
+        },
+      },
+    });
+
+    expect(response._meta?.loadReplayEnd).toEqual({ version: 1 });
+    expect(response._meta?.sessionRewind).toEqual({ version: 1 });
+  });
+
   it("marks a skill in the client-neutral form for a client that opts in", async () => {
     const neutral = await advertisedCommands({ _meta: { commandPresentation: { version: 1 } } });
     expect(neutral.find((c) => c.name === "review")?._meta).toEqual({
@@ -15858,8 +15924,56 @@ describe("skill commands in available_commands_update", () => {
       ["missing", undefined],
       ["mcp:review", undefined],
       ["mcp", undefined],
+      ["plugin", undefined],
     ]);
   });
+
+  // v0.113.0 (#1716): getAvailableSlashCommands takes upstream's remoteSession
+  // before the patch's skill records, and each v1 call site passes both.
+  it.each([
+    ["a local", {}, ["mcp", "plugin"]],
+    ["a remote (sdk-url)", { "sdk-url": "wss://example.test" }, ["mcp"]],
+  ])(
+    "marks a skill in the client-neutral form and lists the adapter commands of %s session",
+    async (_session, extraArgs, adapterCommands) => {
+      const neutral = { _meta: { commandPresentation: { version: 1 } } };
+      const creationParams = {
+        cwd,
+        mcpServers: [],
+        _meta: { claudeCode: { options: { extraArgs } } },
+      };
+      const review = ["review", { commandPresentation: { version: 1, kind: "skill", skillPath } }];
+      const adapter = adapterCommands.map((name) => [name, undefined]);
+
+      // The commands_changed update of the stream.
+      const streamed = await advertisedCommands(neutral, undefined, { creationParams });
+      expect(streamed.map((c) => [c.name, c._meta])).toEqual([
+        review,
+        ["compact", undefined],
+        ["missing", undefined],
+        ["mcp:review", undefined],
+        ...adapter,
+      ]);
+
+      // The list of a session/new, load or resume response.
+      const agent = new ClaudeAcpAgent(
+        { sessionUpdate: vi.fn(async () => {}) } as unknown as AcpClient,
+        {
+          log: () => {},
+          error: () => {},
+        },
+      );
+      await agent.initialize({ protocolVersion: 1, clientCapabilities: neutral });
+      injectGeneratorSession(agent, async function* () {}, { cwd, creationParams });
+      Object.assign(agent.sessions["test-session"].query, {
+        supportedCommands: async () => [
+          { name: "review", description: "Review the diff", argumentHint: "" },
+        ],
+      });
+      const listed = await agent.availableCommands("test-session");
+      expect(listed.map((c) => [c.name, c._meta])).toEqual([review, ...adapter]);
+    },
+  );
 });
 
 describe("skill files from getContextUsage in available_commands_update", () => {
@@ -16482,6 +16596,26 @@ describe("logout", () => {
       expect((response._meta?.jetbrains as any)?.air?.capabilities).toContain("sessionRewind");
     });
 
+    // The client-neutral sessionRewind now replays below this patch (v0.113.0 sync);
+    // the client-neutral agentFileChangeReport key stays a top-level sibling of it.
+    it("advertises agentFileChangeReport next to the client-neutral sessionRewind of a client that opts into both", async () => {
+      const response = await new ClaudeAcpAgent({} as unknown as AcpClient, {
+        log: () => {},
+        error: () => {},
+      }).initialize({
+        protocolVersion: 1,
+        clientCapabilities: {
+          _meta: {
+            agentFileChangeReport: { version: 1 },
+            sessionRewind: { version: 1 },
+          },
+        },
+      });
+
+      expect(response._meta?.agentFileChangeReport).toEqual({ version: 1 });
+      expect(response._meta?.sessionRewind).toEqual({ version: 1 });
+    });
+
     it("advertises it at top level to a client that opts in, with no AIR key", async () => {
       const response = await createMockAgent().initialize({
         protocolVersion: 1,
@@ -16737,6 +16871,26 @@ describe("session/fork", () => {
 
     expect(response._meta?.promptSuggestions).toEqual({ version: 1 });
     expect((response._meta?.jetbrains as any)?.air?.capabilities).toContain("sessionRewind");
+  });
+
+  // The client-neutral sessionRewind now replays below this patch (v0.113.0 sync);
+  // the client-neutral promptSuggestions key stays a top-level sibling of it.
+  it("advertises promptSuggestions next to the client-neutral sessionRewind of a client that opts into both", async () => {
+    const response = await new ClaudeAcpAgent({} as unknown as AcpClient, {
+      log: () => {},
+      error: () => {},
+    }).initialize({
+      protocolVersion: 1,
+      clientCapabilities: {
+        _meta: {
+          promptSuggestions: { version: 1 },
+          sessionRewind: { version: 1 },
+        },
+      },
+    });
+
+    expect(response._meta?.promptSuggestions).toEqual({ version: 1 });
+    expect(response._meta?.sessionRewind).toEqual({ version: 1 });
   });
 
   it("gives a neutral promptSuggestions client only the prediction of the prompt that asked", async () => {
@@ -33733,6 +33887,26 @@ describe("agent selection config option", () => {
 
       expect(response._meta?.recommendedConfigValue).toEqual({ version: 1 });
       expect((response._meta?.jetbrains as any)?.air?.capabilities).toContain("sessionRewind");
+    });
+
+    // The client-neutral sessionRewind now replays below this patch (v0.113.0 sync);
+    // the client-neutral recommendedConfigValue key stays a top-level sibling of it.
+    it("advertises recommendedConfigValue next to the client-neutral sessionRewind of a client that opts into both", async () => {
+      const response = await new ClaudeAcpAgent({} as unknown as AcpClient, {
+        log: () => {},
+        error: () => {},
+      }).initialize({
+        protocolVersion: 1,
+        clientCapabilities: {
+          _meta: {
+            recommendedConfigValue: { version: 1 },
+            sessionRewind: { version: 1 },
+          },
+        },
+      });
+
+      expect(response._meta?.recommendedConfigValue).toEqual({ version: 1 });
+      expect(response._meta?.sessionRewind).toEqual({ version: 1 });
     });
 
     it("keeps the neutral recommendation on the model option that a model switch rebuilds", async () => {

@@ -1428,6 +1428,11 @@ describe.skipIf(baselineDir)("ACP scenarios", () => {
       // The agent's own clear-context path, without a Claude Code process.
       vi.spyOn(agent, "closeQueryStream").mockImplementation(() => {});
       vi.spyOn(agent, "ensureConsumer").mockImplementation(() => {});
+      // v0.113.0 (#1523): the restart's last step, next to the plan link, also spends the
+      // fresh query's Remote Control startup request.
+      const connectRemoteControl = vi
+        .spyOn(agent, "connectRemoteControlAtStartup")
+        .mockResolvedValue(undefined);
       vi.spyOn(agent, "createSession").mockImplementation(async (...args: unknown[]) => {
         const { publicSessionId } = args[1] as { publicSessionId: string };
         agent.sessions[publicSessionId] = session({});
@@ -1447,6 +1452,7 @@ describe.skipIf(baselineDir)("ACP scenarios", () => {
           plan: { type: "markdown", planId: "plan-mode:toolu_plan", content: plan },
         },
       ]);
+      expect(connectRemoteControl.mock.calls).toEqual([["plan-session"]]);
     });
 
     it("sends only the neutral form to a client that also declares the AIR planFile", async () => {

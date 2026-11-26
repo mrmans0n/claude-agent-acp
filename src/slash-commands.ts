@@ -4,13 +4,9 @@
  */
 import type { AvailableCommand } from "@agentclientprotocol/sdk/unstable";
 import type { Query, SlashCommand } from "@anthropic-ai/claude-agent-sdk";
+import { adapterAvailableCommands } from "./adapter-command.js";
 import { AIR_KIND_KEY, AIR_SKILL_PATH_KEY, withAirMeta } from "./air-extension.js";
 import { MCP_AVAILABLE_COMMAND } from "./mcp-command.js";
-import {
-  claudeCodeOffersCommand,
-  REMOTE_CONTROL_COMMAND_NAME,
-  supportsRemoteControl,
-} from "./remote-control.js";
 import { NEUTRAL_COMMAND_PRESENTATION_KEY } from "./tool-calls/client-capabilities.js";
 import { resolveSkillPath, type SkillScanCache } from "./tool-calls/reporters/interaction.js";
 
@@ -56,6 +52,8 @@ export function getAvailableSlashCommands(
   // A listed skill gets its path from here; one that is not listed, or has no
   // path (remote connections), is looked up on disk.
   skillFiles?: ReadonlyMap<string, { path?: string }>,
+  // A session that runs Claude Code remotely (`sdk-url`): the adapter cannot serve `/plugin` for it.
+  remoteSession = false,
   // The forms of the skill record: AIR's `_meta.jetbrains.air` and the neutral `_meta.commandPresentation`.
   skillRecords: SkillRecords = { air: true, neutral: false },
 ): AvailableCommand[] {
@@ -79,18 +77,6 @@ export function getAvailableSlashCommands(
     "release-notes",
     "todos",
   ];
-
-  const remoteControlCommands: AvailableCommand[] =
-    query && supportsRemoteControl(query)
-      ? [
-          {
-            name: REMOTE_CONTROL_COMMAND_NAME,
-            description:
-              "Continue this session from claude.ai/code or the Claude mobile app; `off` disconnects",
-            input: { hint: "[session name | off]" },
-          },
-        ]
-      : [];
 
   // The adapter replaces the terminal text of `/mcp` and runs its actions,
   // even when Claude Code tags the command terminal-bound.
@@ -132,9 +118,7 @@ export function getAvailableSlashCommands(
   return [
     ...advertised,
     MCP_AVAILABLE_COMMAND,
-    ...remoteControlCommands.filter(
-      (command) => !claudeCodeOffersCommand(commands, terminalCommands, command.name),
-    ),
+    ...adapterAvailableCommands(commands, terminalCommands, query, { remoteSession }),
   ].filter((command) => {
     if (/\s/.test(command.name) || names.has(command.name)) return false;
     names.add(command.name);
