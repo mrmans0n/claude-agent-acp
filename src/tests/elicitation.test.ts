@@ -329,6 +329,70 @@ describe("askUserQuestionsToCreateRequest", () => {
     expect(plainSchema.properties?.["question_0_custom"]).not.toHaveProperty("_meta");
   });
 
+  it("links each custom-answer field to its question for a client that opted into the neutral form", () => {
+    const questions = [
+      mkQuestion("Which?", [{ label: "A" }, { label: "A" }]),
+      mkQuestion("What else?", [{ label: "C" }]),
+    ];
+    const schema = (
+      askUserQuestionsToCreateRequest(questions, SESSION_ID, undefined, false, true) as Extract<
+        CreateElicitationRequest,
+        { mode: "form" }
+      >
+    ).requestedSchema;
+
+    expect(schema.properties?.["question_0_custom"]?._meta).toEqual({
+      questionCustomAnswer: { version: 1, questionId: "question_0" },
+    });
+    expect(schema.properties?.["question_1_custom"]?._meta).toEqual({
+      questionCustomAnswer: { version: 1, questionId: "question_1" },
+    });
+    expect(schema.properties?.["question_0"]).not.toHaveProperty("_meta");
+  });
+
+  it("gives an AIR client that also opts into the neutral form both custom-answer markers", () => {
+    const questions = [mkQuestion("Which?", [{ label: "A" }, { label: "B" }])];
+    const schema = (
+      askUserQuestionsToCreateRequest(questions, SESSION_ID, undefined, true, true) as Extract<
+        CreateElicitationRequest,
+        { mode: "form" }
+      >
+    ).requestedSchema;
+
+    const customAnswer = { questionId: "question_0", isCustomAnswer: true };
+    expect(schema.properties?.["question_0_custom"]?._meta).toEqual({
+      _askUserQuestionCustomAnswer: customAnswer,
+      jetbrains: { air: { version: 1, customAnswer } },
+      questionCustomAnswer: { version: 1, questionId: "question_0" },
+    });
+    expect(schema.properties?.["question_0"]).not.toHaveProperty("_meta");
+  });
+
+  // v0.110.1 (#1542) lists the companion fields at request level for AIR only.
+  it("keeps the request-level customAnswerFields list off a client of the neutral form alone", () => {
+    const questions = [
+      mkQuestion("Which?", [{ label: "A" }, { label: "B" }]),
+      mkQuestion("What else?", [{ label: "C" }, { label: "D" }]),
+    ];
+    type FormRequest = Extract<CreateElicitationRequest, { mode: "form" }>;
+
+    const neutral = askUserQuestionsToCreateRequest(questions, SESSION_ID, undefined, false, true);
+    expect(neutral).not.toHaveProperty("_meta");
+    expect(
+      (neutral as FormRequest).requestedSchema.properties?.["question_1_custom"]?._meta,
+    ).toEqual({ questionCustomAnswer: { version: 1, questionId: "question_1" } });
+
+    const both = askUserQuestionsToCreateRequest(questions, SESSION_ID, undefined, true, true);
+    expect(both._meta).toEqual({
+      jetbrains: {
+        air: { version: 1, customAnswerFields: ["question_0_custom", "question_1_custom"] },
+      },
+    });
+    expect(
+      (both as FormRequest).requestedSchema.properties?.["question_1_custom"]?._meta,
+    ).toMatchObject({ questionCustomAnswer: { version: 1, questionId: "question_1" } });
+  });
+
   it("builds an array property for multi-select questions and includes per-field question text", () => {
     const questions = [
       mkQuestion("Pick one?", [{ label: "A" }, { label: "B" }]),
