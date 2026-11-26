@@ -24,6 +24,7 @@ import {
 } from "@agentclientprotocol/sdk/unstable";
 import type { AcpSessionNotification } from "../../acp-subagents.js";
 import { NativeSubagentRuntime } from "../../native-subagents.js";
+import { PromptSuggestions } from "../../prompt-suggestions.js";
 import { nodeToWebWritable, nodeToWebReadable } from "../../utils.js";
 import { createPostToolUseHook, markdownEscape, toDisplayPath } from "../../tools.js";
 import { toolUpdateFromDiffToolResponse } from "../../diff.js";
@@ -16501,6 +16502,7 @@ describe("logout", () => {
     "recommendedConfigValue",
     "commandPresentation",
     "loadReplayEnd",
+    "promptSuggestions",
   ])("client-neutral %s advert", (key) => {
     it("advertises version 1 to a client that opts in with any version, with no AIR key", async () => {
       const response = await createMockAgent().initialize({
@@ -16848,6 +16850,234 @@ describe("session/fork", () => {
       expect(response.usage).toMatchObject({ inputTokens: 7, outputTokens: 3 });
     },
   );
+
+  // The reader runs from setup (#1623), so a cron cycle that Claude Code runs
+  // before the first prompt predicts after its own result, for no request.
+  // v0.112.0 (#1704): sessionRewind joins the AIR capability list of initialize;
+  // the client-neutral promptSuggestions key stays a top-level sibling of jetbrains.
+  it("advertises promptSuggestions next to the AIR sessionRewind of a client that declares both", async () => {
+    const response = await new ClaudeAcpAgent({} as unknown as AcpClient, {
+      log: () => {},
+      error: () => {},
+    }).initialize({
+      protocolVersion: 1,
+      clientCapabilities: {
+        _meta: {
+          promptSuggestions: { version: 1 },
+          jetbrains: { air: { version: 1, capabilities: ["sessionRewind"] } },
+        },
+      },
+    });
+
+    expect(response._meta?.promptSuggestions).toEqual({ version: 1 });
+    expect((response._meta?.jetbrains as any)?.air?.capabilities).toContain("sessionRewind");
+  });
+
+  // The client-neutral sessionRewind now replays below this patch (v0.113.0 sync);
+  // the client-neutral promptSuggestions key stays a top-level sibling of it.
+  it("advertises promptSuggestions next to the client-neutral sessionRewind of a client that opts into both", async () => {
+    const response = await new ClaudeAcpAgent({} as unknown as AcpClient, {
+      log: () => {},
+      error: () => {},
+    }).initialize({
+      protocolVersion: 1,
+      clientCapabilities: {
+        _meta: {
+          promptSuggestions: { version: 1 },
+          sessionRewind: { version: 1 },
+        },
+      },
+    });
+
+    expect(response._meta?.promptSuggestions).toEqual({ version: 1 });
+    expect(response._meta?.sessionRewind).toEqual({ version: 1 });
+  });
+
+  it("gives a neutral promptSuggestions client only the prediction of the prompt that asked", async () => {
+    const state = (state: "running" | "idle") => ({
+      type: "system",
+      subtype: "session_state_changed",
+      state,
+      uuid: randomUUID(),
+      session_id: "resumed-id",
+    });
+    const suggestion = (text: string) => ({
+      type: "prompt_suggestion",
+      suggestion: text,
+      uuid: randomUUID(),
+      session_id: "resumed-id",
+    });
+    const { agent, updates } = forkingAgent(
+      (prompt) => [
+        userEcho(prompt),
+        state("running"),
+        successfulResultMessage(),
+        suggestion("Run the tests"),
+        state("idle"),
+      ],
+      [state("running"), successfulResultMessage(), suggestion("Check the cron"), state("idle")],
+    );
+    await initializeClient(agent, { _meta: { promptSuggestions: { version: 1 } } });
+    await agent.resumeSession({ sessionId: "resumed-id", cwd: "/workspace", mcpServers: [] });
+    await vi.waitFor(() => expect(agent.sessions["resumed-id"].lastSessionState).toBe("idle"));
+    const predictions = () =>
+      updates.flatMap(({ update }) => {
+        const meta = update.sessionUpdate === "session_info_update" ? (update._meta as any) : {};
+        return meta?.promptSuggestions ? [meta.promptSuggestions] : [];
+      });
+
+    await agent.prompt({
+      sessionId: "resumed-id",
+      prompt: [{ type: "text", text: "go on" }],
+      _meta: { promptSuggestions: { id: "prompt-1" } },
+    });
+
+    await vi.waitFor(() => expect(predictions()).toHaveLength(1));
+    expect(predictions()).toEqual([{ suggestions: [{ text: "Run the tests" }], id: "prompt-1" }]);
+  });
+
+  // v0.112.0 (#1704): a rewind during the prompt's awaits leaves the prompt a
+  // new session, whose predictions start fresh. The request id goes to it.
+  it("gives a neutral promptSuggestions client the prediction of a prompt that follows a rewind", async () => {
+    const state = (state: "running" | "idle") => ({
+      type: "system",
+      subtype: "session_state_changed",
+      state,
+      uuid: randomUUID(),
+      session_id: "resumed-id",
+    });
+    const { agent, updates } = forkingAgent(
+      (prompt) => [
+        userEcho(prompt),
+        state("running"),
+        successfulResultMessage(),
+        {
+          type: "prompt_suggestion",
+          suggestion: "Run the tests",
+          uuid: randomUUID(),
+          session_id: "resumed-id",
+        },
+        state("idle"),
+      ],
+      [state("idle")],
+    );
+    await initializeClient(agent, { _meta: { promptSuggestions: { version: 1 } } });
+    await agent.resumeSession({ sessionId: "resumed-id", cwd: "/workspace", mcpServers: [] });
+    await vi.waitFor(() => expect(agent.sessions["resumed-id"].lastSessionState).toBe("idle"));
+    // The prompt's second rewind check finds a rewind. Following it gives the
+    // prompt a session with fresh predictions, as the rewind's new session has.
+    vi.spyOn(agent as any, "rewindToFollow")
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    vi.spyOn(agent as any, "followRewind").mockImplementationOnce(async (...args: unknown[]) => {
+      const session = args[1] as { promptSuggestions?: PromptSuggestions };
+      session.promptSuggestions = PromptSuggestions.forClient({
+        meta: false,
+        update: false,
+        neutral: true,
+      });
+      return session;
+    });
+
+    await agent.prompt({
+      sessionId: "resumed-id",
+      prompt: [{ type: "text", text: "go on" }],
+      _meta: { promptSuggestions: { id: "prompt-1" } },
+    });
+
+    await vi.waitFor(() =>
+      expect(
+        updates.flatMap(({ update }) => {
+          const meta = update.sessionUpdate === "session_info_update" ? (update._meta as any) : {};
+          return meta?.promptSuggestions ? [meta.promptSuggestions] : [];
+        }),
+      ).toEqual([{ suggestions: [{ text: "Run the tests" }], id: "prompt-1" }]),
+    );
+  });
+
+  // v0.108.1 (#1603): a client in the RFD form of subagent sessions gets the
+  // prompt's response at its result while a subagent runs. The subagent's
+  // follow-up cycle then predicts after its own result, for no request.
+  it("gives a neutral promptSuggestions client in the RFD form no prediction of a subagent's follow-up", async () => {
+    const message = (fields: Record<string, unknown>) => ({
+      uuid: randomUUID(),
+      session_id: "resumed-id",
+      ...fields,
+    });
+    const state = (state: "running" | "idle") =>
+      message({ type: "system", subtype: "session_state_changed", state });
+    const suggestion = (text: string) => message({ type: "prompt_suggestion", suggestion: text });
+    const task = { task_id: "agent-1", tool_use_id: "toolu_agent-1" };
+    const { agent, updates } = forkingAgent((prompt) => [
+      userEcho(prompt),
+      state("running"),
+      message({
+        type: "system",
+        subtype: "task_started",
+        ...task,
+        description: "Explore the project",
+        subagent_type: "Explore",
+      }),
+      successfulResultMessage(),
+      suggestion("Wait for the explorer"),
+      state("idle"),
+      message({
+        type: "system",
+        subtype: "task_notification",
+        ...task,
+        status: "completed",
+        output_file: "",
+        summary: "Explored",
+      }),
+      state("running"),
+      message({
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: {
+          id: "msg_summary",
+          role: "assistant",
+          model: "claude-sonnet-4-20250514",
+          content: [{ type: "text", text: "Summary" }],
+          usage: { input_tokens: 0, output_tokens: 0 },
+        },
+      }),
+      { ...successfulResultMessage(), origin: { kind: "task-notification" } },
+      suggestion("Read the summary"),
+      state("idle"),
+    ]);
+    await initializeClient(agent, {
+      subagents: {},
+      _meta: { promptSuggestions: { version: 1 } },
+    } as ClientCapabilities);
+    await agent.resumeSession({ sessionId: "resumed-id", cwd: "/workspace", mcpServers: [] });
+    const predictions = () =>
+      updates.flatMap(({ update }) => {
+        const meta = update.sessionUpdate === "session_info_update" ? (update._meta as any) : {};
+        return meta?.promptSuggestions ? [meta.promptSuggestions] : [];
+      });
+
+    const response = await agent.prompt({
+      sessionId: "resumed-id",
+      prompt: [{ type: "text", text: "explore" }],
+      _meta: { promptSuggestions: { id: "prompt-1" } },
+    });
+    expect(response.stopReason).toBe("end_turn");
+
+    // The follow-up's text, then its result, prediction and idle.
+    await vi.waitFor(() =>
+      expect(
+        updates.some(
+          ({ update }) =>
+            update.sessionUpdate === "agent_message_chunk" &&
+            (update.content as { text?: string }).text === "Summary",
+        ),
+      ).toBe(true),
+    );
+    await vi.waitFor(() => expect(agent.sessions["resumed-id"].lastSessionState).toBe("idle"));
+    expect(predictions()).toEqual([
+      { suggestions: [{ text: "Wait for the explorer" }], id: "prompt-1" },
+    ]);
+  });
 
   // The reader runs from setup (#1623), so the init that Claude Code sends
   // before the first prompt starts the skill file read at once.
