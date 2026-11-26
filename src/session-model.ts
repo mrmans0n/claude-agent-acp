@@ -9,6 +9,7 @@ import {
   type Settings,
 } from "@anthropic-ai/claude-agent-sdk";
 import { AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY, withAirMeta } from "./air-extension.js";
+import { NEUTRAL_RECOMMENDED_CONFIG_VALUE_KEY } from "./tool-calls/client-capabilities.js";
 import { bedrockRegionPrefix } from "./gateway-models.js";
 import { modelReasoningEffortsMeta } from "./session-effort.js";
 
@@ -266,6 +267,7 @@ export function buildModelConfigOption(
   /** The client is AIR: each entry names its model's effort levels (see
    *  {@link modelReasoningEffortsMeta}). A client that is not AIR gets no AIR key. */
   airClient = false,
+  useNeutralRecommendedValue: boolean = false,
 ): SessionConfigOption {
   const defaultInfo = modelInfos.find((model) => model.value === "default");
   // The listed model that the `default` row runs, which names the row.
@@ -342,6 +344,16 @@ export function buildModelConfigOption(
     }
   }
 
+  const airMeta = concreteRecommendation
+    ? withAirMeta(undefined, AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY, recommended.value)
+    : undefined;
+  // The client-neutral record only names a row: the `default` row and the
+  // current value stay as they are.
+  const neutralMeta =
+    useNeutralRecommendedValue && recommended !== null
+      ? { [NEUTRAL_RECOMMENDED_CONFIG_VALUE_KEY]: { version: 1, value: recommended.value } }
+      : undefined;
+
   return {
     id: MODEL_CONFIG_ID,
     name: "Model",
@@ -349,11 +361,7 @@ export function buildModelConfigOption(
     category: "model",
     type: "select",
     currentValue,
-    ...(concreteRecommendation
-      ? {
-          _meta: withAirMeta(undefined, AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY, recommended.value),
-        }
-      : {}),
+    ...(airMeta || neutralMeta ? { _meta: { ...airMeta, ...neutralMeta } } : {}),
     options,
   };
 }
